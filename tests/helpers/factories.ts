@@ -20,6 +20,7 @@ import {
   type ActorType,
   type ApprovalPolicy,
   type CachePolicy,
+  type CronTriggerConfig,
   type FieldType,
   fieldDefinitions,
   type HttpAuthConfig,
@@ -34,6 +35,7 @@ import {
   httpOperations,
   httpServices,
   labels,
+  type ManualTriggerConfig,
   type Model,
   type ModelCapabilities,
   type ModelInferenceDefaults,
@@ -45,11 +47,14 @@ import {
   type RateLimitConfig,
   type RetryPolicy,
   type StateKind,
+  type TriggerType,
   teamMembers,
   teams,
   ticketFieldValues,
   tickets,
+  triggers,
   users,
+  type WebhookTriggerConfig,
   type WorkspaceRole,
   workflowStates,
   workflows,
@@ -57,6 +62,13 @@ import {
   workspaceMembers,
   workspaces
 } from '../../src/lib/server/db/schema';
+import type { FileService, IngestFileInput } from '../../src/lib/server/files/contracts';
+import type {
+  CreateTicketInput,
+  TicketService,
+  TicketSummary
+} from '../../src/lib/server/tickets/contracts';
+import type { TicketRelationshipType } from '../../src/lib/server/tickets/types';
 
 export interface WorkspaceFixture {
   id: string;
@@ -634,4 +646,246 @@ export async function createHttpOperation(
   )[0];
   if (!row) throw new Error('Failed to create http_operation fixture');
   return row;
+}
+
+export interface TriggerFixture {
+  id: string;
+  webhookToken: string | null;
+}
+
+/**
+ * Insert a trigger row directly. Trigger *behaviour* tests install the service
+ * under test; this factory exists so mapping/cron/webhook tests can build the
+ * exact persisted shape without depending on the service they are exercising.
+ */
+export async function createTriggerRecord(
+  db: Executor,
+  options: {
+    workspaceId: string;
+    workflowId: string;
+    name?: string;
+    type?: TriggerType;
+    enabled?: boolean;
+    config?: WebhookTriggerConfig | CronTriggerConfig | ManualTriggerConfig | null;
+    webhookToken?: string | null;
+    targetStateId?: string | null;
+    upsertOnDedupe?: boolean;
+    nextRunAt?: number | null;
+    lastFiredAt?: number | null;
+    createdByUserId?: string | null;
+  }
+): Promise<TriggerFixture> {
+  const id = uuidv7();
+  const webhookToken = options.webhookToken === undefined ? null : options.webhookToken;
+  const now = Date.now();
+  await db
+    .insert(triggers)
+    .values({
+      id,
+      workspaceId: options.workspaceId,
+      workflowId: options.workflowId,
+      name: options.name ?? unique('Trigger'),
+      type: options.type ?? 'webhook',
+      enabled: options.enabled ?? true,
+      config: (options.config as never) ?? null,
+      webhookToken,
+      targetStateId: options.targetStateId ?? null,
+      upsertOnDedupe: options.upsertOnDedupe ?? false,
+      nextRunAt: options.nextRunAt ?? null,
+      lastFiredAt: options.lastFiredAt ?? null,
+      createdByUserId: options.createdByUserId ?? null,
+      createdAt: now,
+      updatedAt: now
+    })
+    .run();
+  return { id, webhookToken };
+}
+
+export interface FakeTicketService {
+  service: TicketService;
+  createCalls: CreateTicketInput[];
+  fieldCalls: Array<{ ticketId: string; values: Record<string, unknown>; force?: boolean }>;
+  attachCalls: Array<{ ticketId: string; fileId: string; relationship?: string }>;
+  relationshipCalls: Array<{
+    fromTicketId: string;
+    toTicketId: string;
+    type: TicketRelationshipType;
+  }>;
+  noteCalls: Array<{ ticketId: string; body: string }>;
+  /** Pre-register a ticket, e.g. a parent referenced by `parentTicketPath`. */
+  seed(ticket: TicketSummary): void;
+  tickets(): TicketSummary[];
+}
+
+/**
+ * A recording TicketService. The locator seam (`setTicketService`) is exactly
+ * for this: triggers depend on the contract, so their mapping logic is testable
+ * without the (separately owned) ticket implementation.
+ *
+ * `create` honours `dedupeKey` the way the real service contract promises, so
+ * upsert/dedupe tests exercise the mapping's decision rather than the fake's.
+ */
+export function createFakeTicketService(
+  options: { defaultStateId?: string } = {}
+): FakeTicketService {
+  const defaultStateId = options.defaultStateId ?? 'state-default';
+  const byId = new Map<string, TicketSummary>();
+  const byDedupe = new Map<string, string>();
+  const createCalls: CreateTicketInput[] = [];
+  const fieldCalls: FakeTicketService['fieldCalls'] = [];
+  const attachCalls: FakeTicketService['attachCalls'] = [];
+  const relationshipCalls: FakeTicketService['relationshipCalls'] = [];
+  const noteCalls: FakeTicketService['noteCalls'] = [];
+  let counter = 0;
+
+  const service: TicketService = {
+    async create(_actor, input) {
+      createCalls.push(input);
+      if (input.dedupeKey) {
+        const existingId = byDedupe.get(input.dedupeKey);
+        const existing = existingId ? byId.get(existingId) : undefined;
+        if (existing) return existing;
+      }
+      counter += 1;
+      const ticket: TicketSummary = {
+        id: uuidv7(),
+        key: `FAKE-${counter}`,
+        number: counter,
+        title: input.title,
+        workflowId: input.workflowId,
+        stateId: input.stateId ?? defaultStateId,
+        priority: input.priority ?? 'none',
+        ownerUserId: input.ownerUserId ?? null,
+        ownerTeamId: input.ownerTeamId ?? null,
+        version: 1,
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      };
+      byId.set(ticket.id, ticket);
+      if (input.dedupeKey) byDedupe.set(input.dedupeKey, ticket.id);
+      return ticket;
+    },
+    async requireTicket(_actor, ticketId) {
+      const ticket = byId.get(ticketId);
+      if (!ticket) throw new Error(`Fake ticket ${ticketId} not found`);
+      return ticket;
+    },
+    async addNote(_actor, input) {
+      noteCalls.push({ ticketId: input.ticketId, body: input.body });
+      return { noteId: uuidv7() };
+    },
+    async setFields(_actor, input) {
+      fieldCalls.push({ ticketId: input.ticketId, values: input.values, force: input.force });
+      return { changed: [] };
+    },
+    async requestTransition(_actor, ticketId) {
+      const ticket = byId.get(ticketId);
+      return { enteredStateId: ticket?.stateId ?? defaultStateId, transitionId: null };
+    },
+    async transfer(_actor, ticketId, input) {
+      const ticket = byId.get(ticketId);
+      return {
+        ticketId,
+        workflowId: input.targetWorkflowId,
+        stateId: input.targetStateId ?? ticket?.stateId ?? defaultStateId
+      };
+    },
+    async attachFile(_actor, input) {
+      attachCalls.push({
+        ticketId: input.ticketId,
+        fileId: input.fileId,
+        relationship: input.relationship
+      });
+    },
+    async linkRelationship(_actor, input) {
+      relationshipCalls.push({
+        fromTicketId: input.fromTicketId,
+        toTicketId: input.toTicketId,
+        type: input.type
+      });
+    },
+    async setWaitingOn() {
+      // No-op: waiting state is asserted through the real ticket suite.
+    }
+  };
+
+  return {
+    service,
+    createCalls,
+    fieldCalls,
+    attachCalls,
+    relationshipCalls,
+    noteCalls,
+    seed: (ticket) => {
+      byId.set(ticket.id, ticket);
+    },
+    tickets: () => [...byId.values()]
+  };
+}
+
+export interface FakeFileService {
+  service: FileService;
+  ingestCalls: IngestFileInput[];
+  linkCalls: Array<{ fileId: string; ticketId: string; relationship?: string }>;
+  workflowContextCalls: Array<{ fileId: string; workflowId: string }>;
+}
+
+/** A recording FileService used by trigger attachment tests. */
+export function createFakeFileService(): FakeFileService {
+  const ingestCalls: IngestFileInput[] = [];
+  const linkCalls: FakeFileService['linkCalls'] = [];
+  const workflowContextCalls: FakeFileService['workflowContextCalls'] = [];
+  let counter = 0;
+
+  const service: FileService = {
+    async ingest(_actor, input) {
+      ingestCalls.push(input);
+      counter += 1;
+      return {
+        fileId: uuidv7(),
+        blobId: uuidv7(),
+        contentHash: `hash-${counter}`,
+        size: input.bytes.length,
+        deduplicated: false,
+        reusedFile: false,
+        processingQueued: false
+      };
+    },
+    async requireFile(_actor, fileId) {
+      return {
+        id: fileId,
+        filename: 'file',
+        mimeType: 'application/octet-stream',
+        size: 0,
+        status: 'ready',
+        summary: null,
+        contentHash: 'hash',
+        createdAt: Date.now(),
+        provenance: null,
+        workflowIds: [],
+        ticketIds: []
+      };
+    },
+    async listForTicket() {
+      return [];
+    },
+    async linkToTicket(_actor, input) {
+      linkCalls.push({
+        fileId: input.fileId,
+        ticketId: input.ticketId,
+        relationship: input.relationship
+      });
+    },
+    async addWorkflowContext(_actor, input) {
+      workflowContextCalls.push({ fileId: input.fileId, workflowId: input.workflowId });
+    },
+    async getExtractedText() {
+      return null;
+    },
+    async queueProcessing() {
+      // No-op: processing is owned by the files workstream.
+    }
+  };
+
+  return { service, ingestCalls, linkCalls, workflowContextCalls };
 }
