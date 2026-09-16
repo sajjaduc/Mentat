@@ -1,26 +1,26 @@
 <script lang="ts">
-  /** Modal: centred dialog for focused, blocking decisions (create, approve, connect). */
-  interface Props {
-    open: boolean;
-    title: string;
-    description?: string;
-    width?: string;
-    onclose: () => void;
-    footer?: import('svelte').Snippet;
-    children?: import('svelte').Snippet;
-  }
-  let { open, title, description, width = '30rem', onclose, footer, children }: Props = $props();
+/** Modal: centred dialog for focused, blocking decisions (create, approve, connect). */
+interface Props {
+  open: boolean;
+  title: string;
+  description?: string;
+  width?: string;
+  onclose: () => void;
+  footer?: import('svelte').Snippet;
+  children?: import('svelte').Snippet;
+}
+let { open, title, description, width = '30rem', onclose, footer, children }: Props = $props();
 
-  let panel: HTMLElement | undefined = $state();
-  $effect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onclose();
-    };
-    document.addEventListener('keydown', onKey);
-    panel?.focus();
-    return () => document.removeEventListener('keydown', onKey);
-  });
+let panel: HTMLElement | undefined = $state();
+$effect(() => {
+  if (!open) return;
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') onclose();
+  };
+  document.addEventListener('keydown', onKey);
+  panel?.focus();
+  return () => document.removeEventListener('keydown', onKey);
+});
 </script>
 
 {#if open}

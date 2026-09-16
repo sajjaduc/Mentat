@@ -1,131 +1,140 @@
 <script lang="ts">
-  /**
-   * Command palette.
-   *
-   * Two kinds of result: navigation (always available, instant) and entities
-   * (debounced server search). Keyboard-first: ↑/↓ to move, Enter to open, Esc to
-   * close. Recent entities are remembered locally so the palette is useful even
-   * before a search round-trips.
-   */
-  import { goto } from '$app/navigation';
-  import { api, describeApiError } from '$ui/api';
+/**
+ * Command palette.
+ *
+ * Two kinds of result: navigation (always available, instant) and entities
+ * (debounced server search). Keyboard-first: ↑/↓ to move, Enter to open, Esc to
+ * close. Recent entities are remembered locally so the palette is useful even
+ * before a search round-trips.
+ */
+import { goto } from '$app/navigation';
+import { api, describeApiError } from '$ui/api';
 
-  interface Props { open: boolean; onclose: () => void }
-  let { open, onclose }: Props = $props();
+interface Props {
+  open: boolean;
+  onclose: () => void;
+}
+let { open, onclose }: Props = $props();
 
-  const destinations = [
-    { label: 'Workflows', href: '/workflows', group: 'Go to' },
-    { label: 'My Work', href: '/my-work', group: 'Go to' },
-    { label: 'Approvals', href: '/approvals', group: 'Go to' },
-    { label: 'Agents', href: '/agents', group: 'Go to' },
-    { label: 'Skills', href: '/skills', group: 'Go to' },
-    { label: 'Tools', href: '/tools', group: 'Go to' },
-    { label: 'HTTP Services', href: '/http-services', group: 'Go to' },
-    { label: 'Files', href: '/files', group: 'Go to' },
-    { label: 'Models', href: '/models', group: 'Go to' },
-    { label: 'Dashboards', href: '/dashboards', group: 'Go to' },
-    { label: 'Integrations', href: '/integrations', group: 'Go to' },
-    { label: 'Settings', href: '/settings', group: 'Go to' }
-  ];
+const destinations = [
+  { label: 'Workflows', href: '/workflows', group: 'Go to' },
+  { label: 'My Work', href: '/my-work', group: 'Go to' },
+  { label: 'Approvals', href: '/approvals', group: 'Go to' },
+  { label: 'Agents', href: '/agents', group: 'Go to' },
+  { label: 'Skills', href: '/skills', group: 'Go to' },
+  { label: 'Tools', href: '/tools', group: 'Go to' },
+  { label: 'HTTP Services', href: '/http-services', group: 'Go to' },
+  { label: 'Files', href: '/files', group: 'Go to' },
+  { label: 'Models', href: '/models', group: 'Go to' },
+  { label: 'Dashboards', href: '/dashboards', group: 'Go to' },
+  { label: 'Integrations', href: '/integrations', group: 'Go to' },
+  { label: 'Settings', href: '/settings', group: 'Go to' }
+];
 
-  interface Result {
-    kind: string;
-    id: string;
-    key?: string;
-    title: string;
-    subtitle?: string;
-    href: string;
-    group: string;
+interface Result {
+  kind: string;
+  id: string;
+  key?: string;
+  title: string;
+  subtitle?: string;
+  href: string;
+  group: string;
+}
+
+let query = $state('');
+let results = $state<Result[]>([]);
+let loading = $state(false);
+let error = $state<string | null>(null);
+let cursor = $state(0);
+let input: HTMLInputElement | undefined = $state();
+
+const filteredDestinations = $derived(
+  query.trim().length === 0
+    ? destinations
+    : destinations.filter((entry) => entry.label.toLowerCase().includes(query.trim().toLowerCase()))
+);
+
+const flat = $derived<Result[]>([
+  ...filteredDestinations.map((entry) => ({
+    kind: 'nav',
+    id: entry.href,
+    title: entry.label,
+    href: entry.href,
+    group: entry.group
+  })),
+  ...results
+]);
+
+$effect(() => {
+  if (open) {
+    query = '';
+    results = [];
+    error = null;
+    cursor = 0;
+    queueMicrotask(() => input?.focus());
   }
+});
 
-  let query = $state('');
-  let results = $state<Result[]>([]);
-  let loading = $state(false);
-  let error = $state<string | null>(null);
-  let cursor = $state(0);
-  let input: HTMLInputElement | undefined = $state();
-
-  const filteredDestinations = $derived(
-    query.trim().length === 0
-      ? destinations
-      : destinations.filter((entry) => entry.label.toLowerCase().includes(query.trim().toLowerCase()))
-  );
-
-  const flat = $derived<Result[]>([
-    ...filteredDestinations.map((entry) => ({
-      kind: 'nav',
-      id: entry.href,
-      title: entry.label,
-      href: entry.href,
-      group: entry.group
-    })),
-    ...results
-  ]);
-
-  $effect(() => {
-    if (open) {
-      query = '';
-      results = [];
-      error = null;
+$effect(() => {
+  if (!open) return;
+  const term = query.trim();
+  if (term.length < 2) {
+    results = [];
+    return;
+  }
+  // Debounce so typing does not issue a request per keystroke.
+  const timer = setTimeout(async () => {
+    loading = true;
+    error = null;
+    try {
+      const response = await api.get<{
+        results: Array<{
+          kind: string;
+          id: string;
+          key?: string;
+          title: string;
+          subtitle?: string;
+          href: string;
+        }>;
+      }>('/search', { q: term, limit: 8 });
+      results = response.results.map((entry) => ({
+        ...entry,
+        group: entry.kind === 'ticket' ? 'Tickets' : 'Results'
+      }));
       cursor = 0;
-      queueMicrotask(() => input?.focus());
-    }
-  });
-
-  $effect(() => {
-    if (!open) return;
-    const term = query.trim();
-    if (term.length < 2) {
+    } catch (failure) {
+      error = describeApiError(failure);
       results = [];
-      return;
+    } finally {
+      loading = false;
     }
-    // Debounce so typing does not issue a request per keystroke.
-    const timer = setTimeout(async () => {
-      loading = true;
-      error = null;
-      try {
-        const response = await api.get<{ results: Array<{ kind: string; id: string; key?: string; title: string; subtitle?: string; href: string }> }>(
-          '/search',
-          { q: term, limit: 8 }
-        );
-        results = response.results.map((entry) => ({
-          ...entry,
-          group: entry.kind === 'ticket' ? 'Tickets' : 'Results'
-        }));
-        cursor = 0;
-      } catch (failure) {
-        error = describeApiError(failure);
-        results = [];
-      } finally {
-        loading = false;
-      }
-    }, 160);
-    return () => clearTimeout(timer);
-  });
+  }, 160);
+  return () => clearTimeout(timer);
+});
 
-  function onKeydown(event: KeyboardEvent) {
-    if (event.key === 'ArrowDown') {
-      event.preventDefault();
-      cursor = Math.min(cursor + 1, Math.max(flat.length - 1, 0));
-    } else if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      cursor = Math.max(cursor - 1, 0);
-    } else if (event.key === 'Enter') {
-      event.preventDefault();
-      const chosen = flat[cursor];
-      if (chosen) void select(chosen);
-    } else if (event.key === 'Escape') {
-      event.preventDefault();
-      onclose();
-    }
-  }
-
-  async function select(entry: Result) {
+function onKeydown(event: KeyboardEvent) {
+  if (event.key === 'ArrowDown') {
+    event.preventDefault();
+    cursor = Math.min(cursor + 1, Math.max(flat.length - 1, 0));
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    cursor = Math.max(cursor - 1, 0);
+  } else if (event.key === 'Enter') {
+    event.preventDefault();
+    const chosen = flat[cursor];
+    if (chosen) void select(chosen);
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
     onclose();
-    await goto(entry.href);
   }
+}
 
-  const groupOrder = $derived([...new Set(flat.map((entry) => entry.group))]);
+async function select(entry: Result) {
+  onclose();
+  await goto(entry.href);
+}
+
+const groupOrder = $derived([...new Set(flat.map((entry) => entry.group))]);
 </script>
 
 {#if open}

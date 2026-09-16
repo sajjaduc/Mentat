@@ -1,15 +1,25 @@
 <script lang="ts">
-  /** Select: native select styled to match Input, with grouped options support. */
-  import type { HTMLSelectAttributes } from 'svelte/elements';
-  interface Props extends HTMLSelectAttributes {
-    label?: string;
-    hint?: string;
-    error?: string | null;
-    options: Option[];
-    placeholder?: string;
-  }
-  let { label, hint, error = null, options, placeholder, class: className = '', id, ...rest }: Props = $props();
-  const inputId = id ?? `select-${Math.random().toString(36).slice(2, 9)}`;
+/** Select: native select styled to match Input, with grouped options support. */
+import type { HTMLSelectAttributes } from 'svelte/elements';
+
+interface Props extends HTMLSelectAttributes {
+  label?: string;
+  hint?: string;
+  error?: string | null;
+  options: Option[];
+  placeholder?: string;
+}
+let {
+  label,
+  hint,
+  error = null,
+  options,
+  placeholder,
+  class: className = '',
+  id,
+  ...rest
+}: Props = $props();
+const inputId = id ?? `select-${Math.random().toString(36).slice(2, 9)}`;
 </script>
 
 <div class="flex flex-col gap-1.5">

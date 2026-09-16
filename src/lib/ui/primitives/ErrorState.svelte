@@ -1,7 +1,12 @@
 <script lang="ts">
-  /** ErrorState: always offers a retry, and shows the stable code for support. */
-  interface Props { message: string; code?: string | null; requestId?: string | null; onRetry?: () => void }
-  let { message, code = null, requestId = null, onRetry }: Props = $props();
+/** ErrorState: always offers a retry, and shows the stable code for support. */
+interface Props {
+  message: string;
+  code?: string | null;
+  requestId?: string | null;
+  onRetry?: () => void;
+}
+let { message, code = null, requestId = null, onRetry }: Props = $props();
 </script>
 
 <div class="flex flex-col items-start gap-3 rounded-[var(--radius-lg)] border border-[color-mix(in_oklch,var(--color-danger)_35%,transparent)] bg-[color-mix(in_oklch,var(--color-danger)_6%,var(--color-surface))] p-4">

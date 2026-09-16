@@ -1,15 +1,24 @@
 <script lang="ts">
-  /** Input: labelled text field with inline error and hint text. */
-  import type { HTMLInputAttributes } from 'svelte/elements';
-  interface Props extends HTMLInputAttributes {
-    label?: string;
-    hint?: string;
-    error?: string | null;
-    size?: 'sm' | 'md';
-  }
-  let { label, hint, error = null, size = 'md', class: className = '', id, ...rest }: Props = $props();
-  const inputId = id ?? `input-${Math.random().toString(36).slice(2, 9)}`;
-  const sizes = { sm: 'h-7 text-xs', md: 'h-9 text-sm' } as const;
+/** Input: labelled text field with inline error and hint text. */
+import type { HTMLInputAttributes } from 'svelte/elements';
+
+interface Props extends HTMLInputAttributes {
+  label?: string;
+  hint?: string;
+  error?: string | null;
+  size?: 'sm' | 'md';
+}
+let {
+  label,
+  hint,
+  error = null,
+  size = 'md',
+  class: className = '',
+  id,
+  ...rest
+}: Props = $props();
+const inputId = id ?? `input-${Math.random().toString(36).slice(2, 9)}`;
+const sizes = { sm: 'h-7 text-xs', md: 'h-9 text-sm' } as const;
 </script>
 
 <div class="flex flex-col gap-1.5">

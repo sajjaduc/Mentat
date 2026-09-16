@@ -1,38 +1,38 @@
 <script lang="ts">
-  /**
-   * Drawer: the ticket detail surface.
-   *
-   * Renders inside the page (not a portal) so URL state and scroll position are
-   * preserved when it opens and closes. Escape closes it; focus is moved to the
-   * panel so keyboard users are not stranded behind it.
-   */
-  interface Props {
-    open: boolean;
-    title?: string;
-    subtitle?: string;
-    width?: string;
-    onclose: () => void;
-    children?: import('svelte').Snippet;
-    header?: import('svelte').Snippet;
-  }
-  let { open, title, subtitle, width = '42rem', onclose, children, header }: Props = $props();
+/**
+ * Drawer: the ticket detail surface.
+ *
+ * Renders inside the page (not a portal) so URL state and scroll position are
+ * preserved when it opens and closes. Escape closes it; focus is moved to the
+ * panel so keyboard users are not stranded behind it.
+ */
+interface Props {
+  open: boolean;
+  title?: string;
+  subtitle?: string;
+  width?: string;
+  onclose: () => void;
+  children?: import('svelte').Snippet;
+  header?: import('svelte').Snippet;
+}
+let { open, title, subtitle, width = '42rem', onclose, children, header }: Props = $props();
 
-  let panel: HTMLElement | undefined = $state();
+let panel: HTMLElement | undefined = $state();
 
-  $effect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onclose();
-    };
-    document.addEventListener('keydown', onKey);
-    panel?.focus();
-    const previous = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      document.body.style.overflow = previous;
-    };
-  });
+$effect(() => {
+  if (!open) return;
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') onclose();
+  };
+  document.addEventListener('keydown', onKey);
+  panel?.focus();
+  const previous = document.body.style.overflow;
+  document.body.style.overflow = 'hidden';
+  return () => {
+    document.removeEventListener('keydown', onKey);
+    document.body.style.overflow = previous;
+  };
+});
 </script>
 
 {#if open}

@@ -1,17 +1,17 @@
 <script lang="ts">
-  /**
-   * Toasts: transient feedback for background failures and confirmations.
-   *
-   * Deliberately dismissible and never blocking: a toast reports something that
-   * already happened, so it must not require a decision.
-   */
-  import { toasts, dismissToast } from '$lib/ui/toast';
+/**
+ * Toasts: transient feedback for background failures and confirmations.
+ *
+ * Deliberately dismissible and never blocking: a toast reports something that
+ * already happened, so it must not require a decision.
+ */
+import { dismissToast, toasts } from '$lib/ui/toast';
 
-  const tones = {
-    success: 'border-[color-mix(in_oklch,var(--color-positive)_40%,transparent)]',
-    error: 'border-[color-mix(in_oklch,var(--color-danger)_40%,transparent)]',
-    info: 'border-[var(--color-border-subtle)]'
-  } as const;
+const tones = {
+  success: 'border-[color-mix(in_oklch,var(--color-positive)_40%,transparent)]',
+  error: 'border-[color-mix(in_oklch,var(--color-danger)_40%,transparent)]',
+  info: 'border-[var(--color-border-subtle)]'
+} as const;
 </script>
 
 <div class="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-80 flex-col gap-2" aria-live="polite" role="status">

@@ -1,105 +1,105 @@
 <script lang="ts">
-  /**
-   * Application shell.
-   *
-   * The navigation is grouped the way the plan describes it: work surfaces first,
-   * then configuration resources, then platform. Counts are live-ish: they come from
-   * the last layout load and are refreshed after mutations that matter (approvals).
-   *
-   * The command palette is available everywhere via ⌘K / Ctrl-K, which is also how
-   * keyboard-first users reach anything the sidebar hides.
-   */
-  import { goto } from '$app/navigation';
-  import { page } from '$app/state';
-  import Avatar from '$ui/primitives/Avatar.svelte';
-  import Badge from '$ui/primitives/Badge.svelte';
-  import CommandPalette from '$ui/shell/CommandPalette.svelte';
-  import { api } from '$ui/api';
-  import { pushToast } from '$ui/toast';
+/**
+ * Application shell.
+ *
+ * The navigation is grouped the way the plan describes it: work surfaces first,
+ * then configuration resources, then platform. Counts are live-ish: they come from
+ * the last layout load and are refreshed after mutations that matter (approvals).
+ *
+ * The command palette is available everywhere via ⌘K / Ctrl-K, which is also how
+ * keyboard-first users reach anything the sidebar hides.
+ */
+import { goto } from '$app/navigation';
+import { page } from '$app/state';
+import { api } from '$ui/api';
+import Avatar from '$ui/primitives/Avatar.svelte';
+import Badge from '$ui/primitives/Badge.svelte';
+import CommandPalette from '$ui/shell/CommandPalette.svelte';
+import { pushToast } from '$ui/toast';
 
-  let { data, children } = $props();
+let { data, children } = $props();
 
-  let paletteOpen = $state(false);
-  let userMenuOpen = $state(false);
-  let mobileNavOpen = $state(false);
+let paletteOpen = $state(false);
+let userMenuOpen = $state(false);
+let mobileNavOpen = $state(false);
 
-  const nav = $derived([
-    {
-      label: 'Work',
-      items: [
-        { href: '/workflows', label: 'Workflows', icon: 'columns', match: /^\/workflows/ },
-        { href: '/my-work', label: 'My Work', icon: 'inbox', count: data.counts?.waitingForMe },
-        {
-          href: '/approvals',
-          label: 'Approvals',
-          icon: 'check',
-          count: data.counts?.approvals,
-          tone: 'accent' as const
-        }
-      ]
-    },
-    {
-      label: 'Resources',
-      items: [
-        { href: '/agents', label: 'Agents', icon: 'spark' },
-        { href: '/skills', label: 'Skills', icon: 'book' },
-        { href: '/tools', label: 'Tools', icon: 'wrench' },
-        { href: '/http-services', label: 'HTTP Services', icon: 'globe' },
-        { href: '/files', label: 'Files', icon: 'file' }
-      ]
-    },
-    {
-      label: 'Platform',
-      items: [
-        { href: '/models', label: 'Models', icon: 'cpu' },
-        { href: '/dashboards', label: 'Dashboards', icon: 'chart' },
-        { href: '/integrations', label: 'Integrations', icon: 'plug' },
-        { href: '/settings', label: 'Settings', icon: 'cog' }
-      ]
-    }
-  ]);
-
-  function isActive(item: { href: string }) {
-    return page.url.pathname === item.href || page.url.pathname.startsWith(`${item.href}/`);
+const nav = $derived([
+  {
+    label: 'Work',
+    items: [
+      { href: '/workflows', label: 'Workflows', icon: 'columns', match: /^\/workflows/ },
+      { href: '/my-work', label: 'My Work', icon: 'inbox', count: data.counts?.waitingForMe },
+      {
+        href: '/approvals',
+        label: 'Approvals',
+        icon: 'check',
+        count: data.counts?.approvals,
+        tone: 'accent' as const
+      }
+    ]
+  },
+  {
+    label: 'Resources',
+    items: [
+      { href: '/agents', label: 'Agents', icon: 'spark' },
+      { href: '/skills', label: 'Skills', icon: 'book' },
+      { href: '/tools', label: 'Tools', icon: 'wrench' },
+      { href: '/http-services', label: 'HTTP Services', icon: 'globe' },
+      { href: '/files', label: 'Files', icon: 'file' }
+    ]
+  },
+  {
+    label: 'Platform',
+    items: [
+      { href: '/models', label: 'Models', icon: 'cpu' },
+      { href: '/dashboards', label: 'Dashboards', icon: 'chart' },
+      { href: '/integrations', label: 'Integrations', icon: 'plug' },
+      { href: '/settings', label: 'Settings', icon: 'cog' }
+    ]
   }
+]);
 
-  function onGlobalKey(event: KeyboardEvent) {
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
-      event.preventDefault();
-      paletteOpen = true;
-    }
+function isActive(item: { href: string }) {
+  return page.url.pathname === item.href || page.url.pathname.startsWith(`${item.href}/`);
+}
+
+function onGlobalKey(event: KeyboardEvent) {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+    event.preventDefault();
+    paletteOpen = true;
   }
+}
 
-  async function signOut() {
-    try {
-      await api.post('/auth/logout');
-      await goto('/login');
-    } catch {
-      pushToast({ tone: 'error', title: 'Could not sign out' });
-    }
+async function signOut() {
+  try {
+    await api.post('/auth/logout');
+    await goto('/login');
+  } catch {
+    pushToast({ tone: 'error', title: 'Could not sign out' });
   }
+}
 
-  async function switchWorkspace(workspaceId: string) {
-    await api.post('/auth/switch-workspace', { workspaceId });
-    userMenuOpen = false;
-    await goto('/workflows');
-    await goto(page.url.pathname, { invalidateAll: true });
-  }
+async function switchWorkspace(workspaceId: string) {
+  await api.post('/auth/switch-workspace', { workspaceId });
+  userMenuOpen = false;
+  await goto('/workflows');
+  await goto(page.url.pathname, { invalidateAll: true });
+}
 
-  const icons: Record<string, string> = {
-    columns: 'M4 5h4v14H4zM10 5h4v9h-4zM16 5h4v11h-4z',
-    inbox: 'M4 13h4l1 2h6l1-2h4M4 13l2-7h12l2 7v5H4z',
-    check: 'M5 13l4 4L19 7',
-    spark: 'M12 3v5M12 16v5M3 12h5M16 12h5M6.5 6.5l3 3M14.5 14.5l3 3M17.5 6.5l-3 3M9.5 14.5l-3 3',
-    book: 'M5 4h9a3 3 0 013 3v13H8a3 3 0 01-3-3zM5 4v13',
-    wrench: 'M14 6a4 4 0 105.7 3.7L21 8l-1.5-1.5-1.7 1.7A4 4 0 0014 6zM13 9l-8 8v3h3l8-8',
-    globe: 'M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18',
-    file: 'M7 3h7l5 5v13H7zM14 3v5h5',
-    cpu: 'M8 8h8v8H8zM4 10v4M20 10v4M10 4h4M10 20h4M6 6h12v12H6z',
-    chart: 'M4 20V10M10 20V4M16 20v-7M22 20H2',
-    plug: 'M9 3v6M15 3v6M7 9h10v3a5 5 0 01-10 0zM12 17v4',
-    cog: 'M12 9a3 3 0 100 6 3 3 0 000-6zM19 12l1.5-1-1-2.6-1.7.6-1.4-.8-.3-1.8H13l-.3 1.8-1.4.8-1.7-.6-1 2.6L10 12l0 .9-1.5 1 1 2.6 1.7-.6 1.4.8.3 1.8h3.2l.3-1.8 1.4-.8 1.7.6 1-2.6-1.5-1z'
-  };
+const icons: Record<string, string> = {
+  columns: 'M4 5h4v14H4zM10 5h4v9h-4zM16 5h4v11h-4z',
+  inbox: 'M4 13h4l1 2h6l1-2h4M4 13l2-7h12l2 7v5H4z',
+  check: 'M5 13l4 4L19 7',
+  spark: 'M12 3v5M12 16v5M3 12h5M16 12h5M6.5 6.5l3 3M14.5 14.5l3 3M17.5 6.5l-3 3M9.5 14.5l-3 3',
+  book: 'M5 4h9a3 3 0 013 3v13H8a3 3 0 01-3-3zM5 4v13',
+  wrench: 'M14 6a4 4 0 105.7 3.7L21 8l-1.5-1.5-1.7 1.7A4 4 0 0014 6zM13 9l-8 8v3h3l8-8',
+  globe: 'M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18',
+  file: 'M7 3h7l5 5v13H7zM14 3v5h5',
+  cpu: 'M8 8h8v8H8zM4 10v4M20 10v4M10 4h4M10 20h4M6 6h12v12H6z',
+  chart: 'M4 20V10M10 20V4M16 20v-7M22 20H2',
+  plug: 'M9 3v6M15 3v6M7 9h10v3a5 5 0 01-10 0zM12 17v4',
+  cog: 'M12 9a3 3 0 100 6 3 3 0 000-6zM19 12l1.5-1-1-2.6-1.7.6-1.4-.8-.3-1.8H13l-.3 1.8-1.4.8-1.7-.6-1 2.6L10 12l0 .9-1.5 1 1 2.6 1.7-.6 1.4.8.3 1.8h3.2l.3-1.8 1.4-.8 1.7.6 1-2.6-1.5-1z'
+};
 </script>
 
 <svelte:window onkeydown={onGlobalKey} />

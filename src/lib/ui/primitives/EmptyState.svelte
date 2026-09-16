@@ -1,7 +1,12 @@
 <script lang="ts">
-  /** EmptyState: explains what this space is for and what to do next. */
-  interface Props { title: string; description?: string; class?: string; children?: import('svelte').Snippet }
-  let { title, description, class: className = '', children }: Props = $props();
+/** EmptyState: explains what this space is for and what to do next. */
+interface Props {
+  title: string;
+  description?: string;
+  class?: string;
+  children?: import('svelte').Snippet;
+}
+let { title, description, class: className = '', children }: Props = $props();
 </script>
 
 <div class="flex flex-col items-center justify-center gap-3 px-6 py-12 text-center {className}">

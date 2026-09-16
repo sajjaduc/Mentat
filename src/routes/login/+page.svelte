@@ -1,43 +1,43 @@
 <script lang="ts">
-  /**
-   * Sign in / create the first account.
-   *
-   * One screen for both because a fresh local install has no accounts: when the
-   * instance is empty the form creates the owner account and its starter workspace.
-   * Errors are inline and specific; the panel is deliberately calm and narrow.
-   */
-  import { goto } from '$app/navigation';
-  import Button from '$ui/primitives/Button.svelte';
-  import Input from '$ui/primitives/Input.svelte';
-  import { api, describeApiError } from '$ui/api';
+/**
+ * Sign in / create the first account.
+ *
+ * One screen for both because a fresh local install has no accounts: when the
+ * instance is empty the form creates the owner account and its starter workspace.
+ * Errors are inline and specific; the panel is deliberately calm and narrow.
+ */
+import { goto } from '$app/navigation';
+import { api, describeApiError } from '$ui/api';
+import Button from '$ui/primitives/Button.svelte';
+import Input from '$ui/primitives/Input.svelte';
 
-  let { data } = $props();
+let { data } = $props();
 
-  let mode = $state<'login' | 'register'>(data.needsSetup ? 'register' : 'login');
-  let email = $state('');
-  let name = $state('');
-  let password = $state('');
-  let busy = $state(false);
-  let error = $state<string | null>(null);
+let mode = $state<'login' | 'register'>(data.needsSetup ? 'register' : 'login');
+let email = $state('');
+let name = $state('');
+let password = $state('');
+let busy = $state(false);
+let error = $state<string | null>(null);
 
-  async function submit(event: SubmitEvent) {
-    event.preventDefault();
-    busy = true;
-    error = null;
-    try {
-      if (mode === 'register') {
-        await api.post('/auth/register', { email, name, password });
-      } else {
-        await api.post('/auth/login', { email, password });
-      }
-      const next = new URLSearchParams(location.search).get('next');
-      await goto(next && next.startsWith('/') ? next : '/workflows');
-    } catch (failure) {
-      error = describeApiError(failure);
-    } finally {
-      busy = false;
+async function submit(event: SubmitEvent) {
+  event.preventDefault();
+  busy = true;
+  error = null;
+  try {
+    if (mode === 'register') {
+      await api.post('/auth/register', { email, name, password });
+    } else {
+      await api.post('/auth/login', { email, password });
     }
+    const next = new URLSearchParams(location.search).get('next');
+    await goto(next?.startsWith('/') ? next : '/workflows');
+  } catch (failure) {
+    error = describeApiError(failure);
+  } finally {
+    busy = false;
   }
+}
 </script>
 
 <svelte:head><title>Sign in · Mentat</title></svelte:head>

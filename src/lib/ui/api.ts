@@ -132,7 +132,7 @@ export const api = {
 
 export interface OptimisticOptions<T> {
   /** Apply the change locally; the returned value is used as the rollback snapshot. */
-  optimistic?: () => void | (() => void);
+  optimistic?: () => undefined | (() => void);
   /** Called with the server's response when it succeeds. */
   onSuccess?: (result: T) => void;
   /** Called with the error body when it fails, after the rollback ran. */

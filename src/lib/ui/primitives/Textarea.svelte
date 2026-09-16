@@ -1,14 +1,23 @@
 <script lang="ts">
-  /** Textarea: multi-line field with an optional monospace mode for JSON/templates. */
-  import type { HTMLTextareaAttributes } from 'svelte/elements';
-  interface Props extends HTMLTextareaAttributes {
-    label?: string;
-    hint?: string;
-    error?: string | null;
-    mono?: boolean;
-  }
-  let { label, hint, error = null, mono = false, class: className = '', id, ...rest }: Props = $props();
-  const inputId = id ?? `textarea-${Math.random().toString(36).slice(2, 9)}`;
+/** Textarea: multi-line field with an optional monospace mode for JSON/templates. */
+import type { HTMLTextareaAttributes } from 'svelte/elements';
+
+interface Props extends HTMLTextareaAttributes {
+  label?: string;
+  hint?: string;
+  error?: string | null;
+  mono?: boolean;
+}
+let {
+  label,
+  hint,
+  error = null,
+  mono = false,
+  class: className = '',
+  id,
+  ...rest
+}: Props = $props();
+const inputId = id ?? `textarea-${Math.random().toString(36).slice(2, 9)}`;
 </script>
 
 <div class="flex flex-col gap-1.5">

@@ -1,27 +1,37 @@
 <script lang="ts">
-  /**
-   * Tabs: roving-tabindex tab list so arrow keys work as expected. The selected tab
-   * is part of URL state on the pages that use it, which keeps deep links useful.
-   */
-  interface Tab { id: string; label: string; count?: number; disabled?: boolean }
-  interface Props { tabs: Tab[]; active: string; onselect: (id: string) => void; class?: string }
-  let { tabs, active, onselect, class: className = '' }: Props = $props();
+/**
+ * Tabs: roving-tabindex tab list so arrow keys work as expected. The selected tab
+ * is part of URL state on the pages that use it, which keeps deep links useful.
+ */
+interface Tab {
+  id: string;
+  label: string;
+  count?: number;
+  disabled?: boolean;
+}
+interface Props {
+  tabs: Tab[];
+  active: string;
+  onselect: (id: string) => void;
+  class?: string;
+}
+let { tabs, active, onselect, class: className = '' }: Props = $props();
 
-  function onKeydown(event: KeyboardEvent, index: number) {
-    const enabled = tabs.filter((tab) => !tab.disabled);
-    if (enabled.length === 0) return;
-    const current = tabs.findIndex((tab) => tab.id === active);
-    let next = current;
-    if (event.key === 'ArrowRight') next = (current + 1) % tabs.length;
-    else if (event.key === 'ArrowLeft') next = (current - 1 + tabs.length) % tabs.length;
-    else if (event.key === 'Home') next = 0;
-    else if (event.key === 'End') next = tabs.length - 1;
-    else return;
-    event.preventDefault();
-    const candidate = tabs[next];
-    if (candidate && !candidate.disabled) onselect(candidate.id);
-    void index;
-  }
+function onKeydown(event: KeyboardEvent, index: number) {
+  const enabled = tabs.filter((tab) => !tab.disabled);
+  if (enabled.length === 0) return;
+  const current = tabs.findIndex((tab) => tab.id === active);
+  let next = current;
+  if (event.key === 'ArrowRight') next = (current + 1) % tabs.length;
+  else if (event.key === 'ArrowLeft') next = (current - 1 + tabs.length) % tabs.length;
+  else if (event.key === 'Home') next = 0;
+  else if (event.key === 'End') next = tabs.length - 1;
+  else return;
+  event.preventDefault();
+  const candidate = tabs[next];
+  if (candidate && !candidate.disabled) onselect(candidate.id);
+  void index;
+}
 </script>
 
 <div role="tablist" class="flex items-center gap-1 border-b border-[var(--color-border-subtle)] {className}">

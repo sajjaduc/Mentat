@@ -1,7 +1,11 @@
 <script lang="ts">
-  /** Skeleton: placeholder that preserves layout instead of jumping. */
-  interface Props { class?: string; lines?: number; height?: string }
-  let { class: className = '', lines = 1, height = '0.75rem' }: Props = $props();
+/** Skeleton: placeholder that preserves layout instead of jumping. */
+interface Props {
+  class?: string;
+  lines?: number;
+  height?: string;
+}
+let { class: className = '', lines = 1, height = '0.75rem' }: Props = $props();
 </script>
 
 <div class="flex flex-col gap-2 {className}" aria-hidden="true">

@@ -5,14 +5,15 @@
  * navigation. Everything else is fetched by the page that owns it, which keeps this
  * loader small and cacheable.
  */
-import type { LayoutServerLoad } from './$types';
+
 import { redirect } from '@sveltejs/kit';
+import { countPendingApprovals } from '$server/approvals/service';
+import { listMemberships } from '$server/auth/sessions';
 import { ensureBootstrapped } from '$server/bootstrap';
 import { getDb } from '$server/db/client';
-import { listMemberships } from '$server/auth/sessions';
-import { requireWorkspace } from '$server/workspaces/service';
-import { countPendingApprovals } from '$server/approvals/service';
 import { myWork } from '$server/tickets/service';
+import { requireWorkspace } from '$server/workspaces/service';
+import type { LayoutServerLoad } from './$types';
 
 export const load: LayoutServerLoad = async ({ locals, url }) => {
   await ensureBootstrapped();
@@ -36,7 +37,8 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
   }
 
   const active =
-    memberships.find((membership) => membership.workspaceId === locals.workspaceId) ?? memberships[0]!;
+    memberships.find((membership) => membership.workspaceId === locals.workspaceId) ??
+    memberships[0]!;
 
   let counts = { approvals: 0, waitingForMe: 0 };
   if (locals.actor) {

@@ -8,7 +8,6 @@
  * Svelte 5 runes only. No global store: state belongs to the screen that owns it.
  */
 import type { Snippet } from 'svelte';
-import type { HTMLButtonAttributes, HTMLInputAttributes } from 'svelte/elements';
 
 export type Tone = 'neutral' | 'accent' | 'positive' | 'caution' | 'danger' | 'muted';
 

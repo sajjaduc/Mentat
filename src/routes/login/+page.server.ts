@@ -5,12 +5,13 @@
  * the form into "create the first account" instead of requiring an out-of-band
  * bootstrap step.
  */
-import type { PageServerLoad } from './$types';
+
 import { redirect } from '@sveltejs/kit';
 import { ensureBootstrapped } from '$server/bootstrap';
+import { allowSignup } from '$server/config/env';
 import { getDb } from '$server/db/client';
 import { users } from '$server/db/schema';
-import { allowSignup } from '$server/config/env';
+import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals }) => {
   await ensureBootstrapped();
