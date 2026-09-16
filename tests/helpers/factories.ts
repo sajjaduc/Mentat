@@ -18,8 +18,21 @@ import { keyPrefix, uuidv7 } from '../../src/lib/server/core/ids';
 import type { Executor } from '../../src/lib/server/db/client';
 import {
   type ActorType,
+  type ApprovalPolicy,
+  type CachePolicy,
   type FieldType,
   fieldDefinitions,
+  type HttpAuthConfig,
+  type HttpAuthType,
+  type HttpBodyMapping,
+  type HttpMethod,
+  type HttpOperation,
+  type HttpParameterMapping,
+  type HttpResponseMapping,
+  type HttpService,
+  type HttpSuccessRules,
+  httpOperations,
+  httpServices,
   labels,
   type Model,
   type ModelCapabilities,
@@ -29,6 +42,8 @@ import {
   type ProviderConfig,
   type ProviderType,
   providers,
+  type RateLimitConfig,
+  type RetryPolicy,
   type StateKind,
   teamMembers,
   teams,
@@ -497,4 +512,126 @@ export async function createModelRow(db: Executor, options: ModelRowOptions): Pr
     .run();
   const rows = await db.select().from(models).where(eq(models.id, id)).all();
   return rows[0]!;
+}
+
+export interface CreateHttpServiceFixtureOptions {
+  workspaceId: string;
+  name?: string;
+  baseUrl: string;
+  workflowId?: string | null;
+  authType?: HttpAuthType;
+  authConfig?: HttpAuthConfig | null;
+  defaultHeaders?: Record<string, string> | null;
+  timeoutMs?: number;
+  retryPolicy?: RetryPolicy | null;
+  cachePolicy?: CachePolicy | null;
+  rateLimit?: RateLimitConfig | null;
+  defaultApprovalPolicy?: ApprovalPolicy | null;
+  allowedHosts?: string[] | null;
+}
+
+/** Write an `http_services` row directly, bypassing the service layer. */
+export async function createHttpService(
+  db: Executor,
+  options: CreateHttpServiceFixtureOptions
+): Promise<HttpService> {
+  const id = uuidv7();
+  const now = Date.now();
+  const name = options.name ?? unique('http-service');
+  const row = (
+    await db
+      .insert(httpServices)
+      .values({
+        id,
+        workspaceId: options.workspaceId,
+        workflowId: options.workflowId ?? null,
+        name,
+        baseUrl: options.baseUrl,
+        authType: options.authType ?? 'none',
+        authConfig: options.authConfig ?? null,
+        defaultHeaders: options.defaultHeaders ?? null,
+        timeoutMs: options.timeoutMs ?? 15_000,
+        retryPolicy: options.retryPolicy ?? null,
+        cachePolicy: options.cachePolicy ?? null,
+        rateLimit: options.rateLimit ?? null,
+        defaultApprovalPolicy: options.defaultApprovalPolicy ?? null,
+        allowedHosts: options.allowedHosts ?? null,
+        createdAt: now,
+        updatedAt: now
+      })
+      .returning()
+      .all()
+  )[0];
+  if (!row) throw new Error('Failed to create http_service fixture');
+  return row;
+}
+
+export interface CreateHttpOperationFixtureOptions {
+  workspaceId: string;
+  serviceId: string;
+  key?: string;
+  name?: string;
+  description?: string;
+  method?: HttpMethod;
+  path: string;
+  parameters?: HttpParameterMapping[] | null;
+  headers?: Record<string, string> | null;
+  body?: HttpBodyMapping | null;
+  inputSchema?: unknown;
+  outputSchema?: unknown;
+  successRules?: HttpSuccessRules | null;
+  responseMapping?: HttpResponseMapping | null;
+  timeoutMs?: number | null;
+  retryPolicy?: RetryPolicy | null;
+  cachePolicy?: CachePolicy | null;
+  approvalPolicy?: ApprovalPolicy | null;
+  rateLimitOverride?: RateLimitConfig | null;
+  exposeAsTool?: boolean;
+  enabled?: boolean;
+  position?: number;
+}
+
+/** Write an `http_operations` row directly; tool sync is exercised via the service layer. */
+export async function createHttpOperation(
+  db: Executor,
+  options: CreateHttpOperationFixtureOptions
+): Promise<HttpOperation> {
+  const id = uuidv7();
+  const now = Date.now();
+  const key = options.key ?? unique('op');
+  const row = (
+    await db
+      .insert(httpOperations)
+      .values({
+        id,
+        workspaceId: options.workspaceId,
+        serviceId: options.serviceId,
+        key,
+        name: options.name ?? key,
+        description: options.description ?? '',
+        method: options.method ?? 'GET',
+        path: options.path,
+        parameters: options.parameters ?? null,
+        headers: options.headers ?? null,
+        body: options.body ?? null,
+        inputSchema: options.inputSchema ?? null,
+        outputSchema: options.outputSchema ?? null,
+        successRules: options.successRules ?? null,
+        responseMapping: options.responseMapping ?? null,
+        timeoutMs: options.timeoutMs ?? null,
+        retryPolicy: options.retryPolicy ?? null,
+        cachePolicy: options.cachePolicy ?? null,
+        approvalPolicy: options.approvalPolicy ?? null,
+        rateLimitOverride: options.rateLimitOverride ?? null,
+        exposeAsTool: options.exposeAsTool ?? true,
+        enabled: options.enabled ?? true,
+        position: options.position ?? 0,
+        createdAt: now,
+        updatedAt: now
+      })
+      .returning()
+      .all()
+  )[0];
+  if (!row) throw new Error('Failed to create http_operation fixture');
+  return row;
 }
