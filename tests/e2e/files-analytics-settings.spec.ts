@@ -4,6 +4,7 @@ import {
   createWorkflow,
   expectNoPageError,
   gotoApp,
+  projectBaseUrl,
   registerAndSignIn,
   signInBrowser,
   until,
@@ -42,8 +43,7 @@ let session: Session;
 let tag = '';
 
 test.beforeAll(async ({ playwright }) => {
-  const baseURL =
-    process.env.MENTAT_E2E_BASE_URL ?? `http://127.0.0.1:${process.env.MENTAT_E2E_PORT ?? 5373}`;
+  const baseURL = projectBaseUrl();
   const request = await playwright.request.newContext({ baseURL });
   try {
     const registered = await registerAndSignIn(request);

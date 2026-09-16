@@ -12,7 +12,13 @@
  * churn fails.
  */
 import { expect, test } from '@playwright/test';
-import { apiCall, registerAndSignIn, signInThroughForm, useSessionCookie } from './helpers';
+import {
+  apiCall,
+  projectBaseUrl,
+  registerAndSignIn,
+  signInThroughForm,
+  useSessionCookie
+} from './helpers';
 
 const account = {
   email: 'stability@mentat.test',
@@ -32,7 +38,7 @@ let workflowId = '';
 test.describe.configure({ mode: 'serial' });
 
 test.beforeAll(async ({ playwright }) => {
-  const request = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:5373' });
+  const request = await playwright.request.newContext({ baseURL: projectBaseUrl() });
   try {
     const session = await registerAndSignIn(request, account).catch(async () => {
       const response = await request.post('/api/auth/login', {

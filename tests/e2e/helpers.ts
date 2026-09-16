@@ -9,7 +9,7 @@
  * Fixtures are namespaced per run so parallel or repeated runs never collide, and
  * the server always has a clean database (see `playwright.config.ts`).
  */
-import { type APIRequestContext, expect, type Page } from '@playwright/test';
+import { type APIRequestContext, expect, type Page, test } from '@playwright/test';
 
 export const DEMO_PASSWORD = 'mentat-e2e-password';
 
@@ -148,6 +148,23 @@ export async function signInBrowser(
 }
 
 /** Sign in through the form (used by the auth spec, which must test the real path). */
+/**
+ * The base URL of the server serving the current project.
+ *
+ * Each Playwright project runs against its own isolated server and database, so a spec
+ * that creates an out-of-browser API context must point at the same one the browser
+ * uses — otherwise it signs in against a different database and every request 401s.
+ */
+export function projectBaseUrl(): string {
+  const project = test.info().project;
+  const fromConfig = project.use.baseURL;
+  if (typeof fromConfig === 'string' && fromConfig.length > 0) return fromConfig;
+  if (project.name.includes('narrow')) {
+    return `http://127.0.0.1:${process.env.MENTAT_E2E_NARROW_PORT ?? 5374}`;
+  }
+  return `http://127.0.0.1:${process.env.MENTAT_E2E_PORT ?? 5373}`;
+}
+
 /**
  * Navigate to an in-app page and wait for hydration.
  *

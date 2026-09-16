@@ -20,6 +20,7 @@ import {
   apiCall,
   createWorkflow,
   gotoApp,
+  projectBaseUrl,
   registerAndSignIn,
   signInBrowser,
   uniqueSuffix,
@@ -74,7 +75,7 @@ async function sessionIsValid(request: APIRequestContext, cookie: string): Promi
 // its first account, and later registrations do not. Reusing a persisted session keeps the
 // whole file on one account across worker restarts and repeated runs.
 test.beforeAll(async ({ playwright }) => {
-  const port = process.env.MENTAT_E2E_PORT ?? '5373';
+  const port = new URL(projectBaseUrl()).port;
   const request = await playwright.request.newContext({ baseURL: `http://127.0.0.1:${port}` });
   try {
     const stored = readSharedSession();

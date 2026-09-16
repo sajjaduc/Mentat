@@ -62,10 +62,14 @@ Legend: **IT** = `tests/integration/**`, **UT** = `tests/unit/**`, **E2E** =
 database under `.e2e/`, in two viewport projects: `chromium` (1280x720) and
 `chromium-narrow` (900x900).
 
+Each project gets its own dev server and database, so the two cannot contaminate each
+other's fixtures or empty states.
+
 | Project | Result |
 | --- | --- |
-| `chromium` | **74/74 passing** |
-| `chromium-narrow` | **74/74 passing** |
+| `chromium` (1280x720) | **74/74 passing** |
+| `chromium-narrow` (900x900) | **74/74 passing** |
+| Total | **148/148 passing** |
 
 | Spec | Tests | What it covers |
 | --- | --- | --- |

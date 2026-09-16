@@ -58,18 +58,33 @@ const moveTargets = $derived(
 );
 
 let menuOpen = $state(false);
+let menuRoot: HTMLDivElement | null = null;
 
 function toggleMenu() {
   menuOpen = !menuOpen;
 }
 
-/** Close the menu on Escape or a click anywhere outside the card. */
+/** Close the menu on Escape or a click outside it. */
 function onWindowKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') menuOpen = false;
 }
+
+/**
+ * Close on an outside click rather than on `mouseleave`.
+ *
+ * The menu extends below the card, so moving the pointer towards an item left the
+ * card's box and closed the menu before the item could be clicked. Click-outside is
+ * also the behaviour a menu is expected to have.
+ */
+function onWindowClick(event: MouseEvent) {
+  if (!menuOpen) return;
+  const target = event.target as Node | null;
+  if (target && menuRoot?.contains(target)) return;
+  menuOpen = false;
+}
 </script>
 
-<svelte:window onkeydown={onWindowKeydown} />
+<svelte:window onkeydown={onWindowKeydown} onclickcapture={onWindowClick} />
 
 <div
   role="listitem"
@@ -82,7 +97,6 @@ function onWindowKeydown(event: KeyboardEvent) {
   draggable="true"
   ondragstart={onDragStart}
   ondragend={onDragEnd}
-  onmouseleave={() => (menuOpen = false)}
   data-testid="board-card"
 >
   <div class="flex items-start gap-1.5">
@@ -98,7 +112,7 @@ function onWindowKeydown(event: KeyboardEvent) {
     <!-- A real button with menu semantics rather than a <details> disclosure: the
          card's move actions are a menu, and this keeps them keyboard reachable and
          announced as such. -->
-    <div class="relative shrink-0">
+    <div bind:this={menuRoot} class="relative shrink-0">
       <button
         type="button"
         class="flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] text-[var(--color-ink-subtle)] hover:bg-[var(--color-surface-muted)] hover:text-[var(--color-ink)]"

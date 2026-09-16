@@ -12,7 +12,14 @@
  * breaks them is a real regression in the interface contract.
  */
 import { expect, test } from '@playwright/test';
-import { apiCall, registerAndSignIn, signInThroughForm, useSessionCookie } from './helpers';
+import {
+  apiCall,
+  gotoApp,
+  projectBaseUrl,
+  registerAndSignIn,
+  signInThroughForm,
+  useSessionCookie
+} from './helpers';
 
 /** A fixed account so a warm `.e2e` database can be signed into rather than needing a wipe. */
 const account = {
@@ -27,7 +34,7 @@ test.describe.configure({ mode: 'serial' });
 let workspaceId: string;
 
 test.beforeAll(async ({ playwright }) => {
-  const request = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:5373' });
+  const request = await playwright.request.newContext({ baseURL: projectBaseUrl() });
   try {
     const session = await registerAndSignIn(request, account).catch(async () => {
       const response = await request.post('/api/auth/login', {
@@ -181,18 +188,26 @@ test('5. the other primary surfaces load without an error state', async ({ page 
 
 test('6. a secret is written but never rendered back', async ({ page }) => {
   await signInThroughForm(page, account);
-  await page.goto('/settings/secrets');
+  await gotoApp(page, '/settings/secrets');
 
   const plaintext = `sk-smoke-${Date.now().toString(36)}-secret`;
-  await page.getByRole('button', { name: /new secret|add secret/i }).click();
-  const dialog = page.getByRole('dialog');
-  await dialog
-    .getByLabel(/key/i)
+  const key = `SMOKE_${Date.now().toString(36).toUpperCase()}`;
+  await page
+    .getByRole('button', { name: /new secret|add secret/i })
     .first()
-    .fill(`SMOKE_${Date.now().toString(36).toUpperCase()}`);
-  await dialog.getByLabel(/value/i).first().fill(plaintext);
-  await dialog.getByRole('button', { name: /create|save/i }).click();
+    .click();
 
+  // Wait for the dialog before filling: the form is rendered on demand, and a fill
+  // that races the open is a test bug, not a product one.
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel('Key', { exact: true }).fill(key);
+  await dialog.getByLabel('Value', { exact: true }).fill(plaintext);
+  await dialog.getByRole('button', { name: /create secret/i }).click();
+
+  await expect(page.getByText(/will never be shown again/i).first()).toBeVisible({
+    timeout: 15_000
+  });
   await expect(page.getByText(plaintext)).toHaveCount(0);
   expect(page.url()).not.toContain(plaintext);
 });
