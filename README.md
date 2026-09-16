@@ -131,6 +131,7 @@ secret has been re-encrypted; ciphertexts record the key version that produced t
 | `docs/development.md` | Local setup, testing strategy, conventions and how to add a feature |
 | `docs/operations.md` | Running it, backups, key rotation, worker scaling, troubleshooting |
 | `docs/postgres-migration.md` | The concrete path from SQLite to PostgreSQL, and what is already portable |
+| `docs/definition-of-done.md` | Every milestone requirement mapped to the test or surface that proves it |
 | `docs/workstream-brief.md` | Conventions and the Definition of Done used during the build |
 | `docs/ui-brief.md` | Design system, data-loading pattern and the complete API surface |
 
