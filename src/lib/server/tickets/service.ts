@@ -1795,6 +1795,8 @@ export async function getTicketDetail(
 
 export interface TicketSearchOptions {
   workflowId?: string | null;
+  /** Restrict to specific states (used by the board's per-column query). */
+  stateIds?: string[];
   filter?: FilterAst | null;
   sort?: TicketSort[];
   limit?: number;

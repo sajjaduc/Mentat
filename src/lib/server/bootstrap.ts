@@ -22,7 +22,6 @@
  */
 import { eq, sql } from 'drizzle-orm';
 import { env, workerEnabled } from './config/env';
-import { systemActor } from './core/context';
 import { errors } from './core/errors';
 import { moduleLogger, rootLogger } from './core/logger';
 import { type Executor, getDatabaseHandle, getDb, withTransaction } from './db/client';

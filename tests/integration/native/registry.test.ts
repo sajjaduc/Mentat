@@ -72,6 +72,10 @@ describe('registerNativeTools', () => {
 
 describe('default registry', () => {
   test('getDefaultToolRegistry returns one shared instance until reset', () => {
+    // The default registry is process-global, so another suite (bootstrap) may
+    // already have registered into it. Start from a clean instance to keep this
+    // assertion about identity rather than about what other suites registered.
+    resetDefaultToolRegistry();
     const first = getDefaultToolRegistry();
     expect(getDefaultToolRegistry()).toBe(first);
     registerNativeTools(first);
