@@ -56,7 +56,20 @@ const moveTargets = $derived(
     label: transition.name
   }))
 );
+
+let menuOpen = $state(false);
+
+function toggleMenu() {
+  menuOpen = !menuOpen;
+}
+
+/** Close the menu on Escape or a click anywhere outside the card. */
+function onWindowKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') menuOpen = false;
+}
 </script>
+
+<svelte:window onkeydown={onWindowKeydown} />
 
 <div
   role="listitem"
@@ -69,6 +82,7 @@ const moveTargets = $derived(
   draggable="true"
   ondragstart={onDragStart}
   ondragend={onDragEnd}
+  onmouseleave={() => (menuOpen = false)}
   data-testid="board-card"
 >
   <div class="flex items-start gap-1.5">
@@ -81,43 +95,63 @@ const moveTargets = $derived(
       <span class="mt-0.5 block text-sm leading-snug font-medium">{row.ticket.title}</span>
     </button>
 
-    <details class="relative shrink-0">
-      <summary
-        class="flex h-6 w-6 cursor-pointer list-none items-center justify-center rounded-[var(--radius-sm)] text-[var(--color-ink-subtle)] hover:bg-[var(--color-surface-muted)] hover:text-[var(--color-ink)]"
+    <!-- A real button with menu semantics rather than a <details> disclosure: the
+         card's move actions are a menu, and this keeps them keyboard reachable and
+         announced as such. -->
+    <div class="relative shrink-0">
+      <button
+        type="button"
+        class="flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] text-[var(--color-ink-subtle)] hover:bg-[var(--color-surface-muted)] hover:text-[var(--color-ink)]"
         aria-label="Card actions"
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
         title="Card actions"
+        onclick={toggleMenu}
       >
         ⋯
-      </summary>
-      <div
-        class="animate-pop-in absolute right-0 z-30 mt-1 w-52 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface)] p-1 shadow-[var(--shadow-overlay)]"
-      >
-        <button
-          type="button"
-          class="block w-full rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-xs hover:bg-[var(--color-surface-muted)]"
-          onclick={onOpen}
+      </button>
+
+      {#if menuOpen}
+        <div
+          role="menu"
+          aria-label="Card actions"
+          class="animate-pop-in absolute right-0 z-30 mt-1 w-52 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface)] p-1 shadow-[var(--shadow-overlay)]"
         >
-          Open ticket
-        </button>
-        <p class="px-2 pt-2 pb-1 text-[10px] font-semibold tracking-wider text-[var(--color-ink-subtle)] uppercase">
-          Move to…
-        </p>
-        {#each moveTargets as target (target.id)}
           <button
             type="button"
+            role="menuitem"
             class="block w-full rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-xs hover:bg-[var(--color-surface-muted)]"
-            onclick={() => onMove(target.toStateId, target.id)}
+            onclick={() => {
+              menuOpen = false;
+              onOpen();
+            }}
           >
-            {target.label}
+            Open ticket
           </button>
-        {/each}
-        {#if moveTargets.length === 0}
-          <p class="px-2 py-1.5 text-[11px] text-[var(--color-ink-subtle)]">
-            No transitions available from this state.
+          <p class="px-2 pt-2 pb-1 text-[10px] font-semibold tracking-wider text-[var(--color-ink-subtle)] uppercase">
+            Move to…
           </p>
-        {/if}
-      </div>
-    </details>
+          {#each moveTargets as target (target.id)}
+            <button
+              type="button"
+              role="menuitem"
+              class="block w-full rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-xs hover:bg-[var(--color-surface-muted)]"
+              onclick={() => {
+                menuOpen = false;
+                onMove(target.toStateId, target.id);
+              }}
+            >
+              {target.label}
+            </button>
+          {/each}
+          {#if moveTargets.length === 0}
+            <p class="px-2 py-1.5 text-[11px] text-[var(--color-ink-subtle)]">
+              No transitions available from this state.
+            </p>
+          {/if}
+        </div>
+      {/if}
+    </div>
   </div>
 
   <div class="mt-2 flex flex-wrap items-center gap-1.5">

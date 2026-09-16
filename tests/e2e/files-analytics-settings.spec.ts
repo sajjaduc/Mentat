@@ -5,7 +5,8 @@ import {
   expectNoPageError,
   registerAndSignIn,
   signInBrowser,
-  until
+  until,
+  useSessionCookie
 } from './helpers';
 
 /**
@@ -52,6 +53,7 @@ test.beforeAll(async ({ playwright }) => {
       workspaceId: registered.workspaceId,
       email: registered.identity.email
     };
+    useSessionCookie(registered.cookie);
   } finally {
     await request.dispose();
   }
@@ -84,10 +86,26 @@ async function uploadTextFile(
 }
 
 /** Create a workspace-scoped file field definition. */
+/**
+ * Ensure a file field definition exists.
+ *
+ * The key is workspace-unique, so a rerun against a warm database finds it already
+ * there; that is the state the test wants, not a failure.
+ */
 async function createFileField(page: Page, key: string): Promise<void> {
-  await apiCall(page.request, 'POST', '/fields', {
-    data: { key, name: key.replace(/_/g, ' '), type: 'short_text', scope: 'file' }
+  const response = await page.request.fetch('/api/fields', {
+    method: 'POST',
+    data: { key, name: key.replace(/_/g, ' '), type: 'short_text', scope: 'file' },
+    headers: {
+      'content-type': 'application/json',
+      cookie: session.cookie
+    },
+    failOnStatusCode: false
   });
+  if (response.ok() || response.status() === 409) return;
+  throw new Error(
+    `Could not ensure file field ${key}: ${response.status()} ${await response.text()}`
+  );
 }
 
 /** Create a file field definition and set a value on one file. */
@@ -458,7 +476,7 @@ test.describe('Settings', () => {
       .click();
     await page.getByLabel('Email').fill(`owner-${tag}@mentat.test`);
     await page.getByLabel('Name').fill('Second Owner');
-    await page.getByLabel('Role').selectOption('owner');
+    await page.getByLabel('Role', { exact: true }).first().selectOption('owner');
     await page.getByRole('button', { name: /send invite/i }).click();
     await expect(page.getByText('Second Owner').first()).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText(/last active owner/i)).toHaveCount(0);

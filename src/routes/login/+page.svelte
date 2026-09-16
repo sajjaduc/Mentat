@@ -22,6 +22,13 @@ let name = $state('');
 let password = $state('');
 let busy = $state(false);
 let error = $state<string | null>(null);
+// The form is enhanced, so it is only interactive once hydrated. Exposing that as an
+// attribute lets tests (and anyone debugging) wait for the real thing instead of
+// racing a native submit that would put the password in the URL.
+let hydrated = $state(false);
+$effect(() => {
+  hydrated = true;
+});
 
 async function submit(event: SubmitEvent) {
   event.preventDefault();
@@ -55,7 +62,11 @@ async function submit(event: SubmitEvent) {
       </p>
     </div>
 
-    <form class="space-y-4 rounded-[var(--radius-xl)] border border-[var(--color-border-subtle)] bg-[var(--color-surface)] p-5 shadow-[var(--shadow-card)]" onsubmit={submit}>
+    <form
+      data-hydrated={hydrated}
+      class="space-y-4 rounded-[var(--radius-xl)] border border-[var(--color-border-subtle)] bg-[var(--color-surface)] p-5 shadow-[var(--shadow-card)]"
+      onsubmit={submit}
+    >
       {#if mode === 'register'}
         <Input label="Your name" bind:value={name} autocomplete="name" required placeholder="Ada Lovelace" />
       {/if}

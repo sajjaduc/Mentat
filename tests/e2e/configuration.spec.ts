@@ -16,7 +16,14 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { type APIRequestContext, expect, test } from '@playwright/test';
-import { apiCall, createWorkflow, registerAndSignIn, signInBrowser, uniqueSuffix } from './helpers';
+import {
+  apiCall,
+  createWorkflow,
+  registerAndSignIn,
+  signInBrowser,
+  uniqueSuffix,
+  useSessionCookie
+} from './helpers';
 
 interface SharedSession {
   cookie: string;
@@ -72,10 +79,12 @@ test.beforeAll(async ({ playwright }) => {
     const stored = readSharedSession();
     if (stored && (await sessionIsValid(request, stored.cookie))) {
       session = stored;
+      useSessionCookie(stored.cookie);
       return;
     }
     const created = await registerAndSignIn(request);
     session = { cookie: created.cookie, workspaceId: created.workspaceId };
+    useSessionCookie(created.cookie);
     writeSharedSession(session);
   } finally {
     await request.dispose();
@@ -98,7 +107,7 @@ test('HTTP services: create a service, build an operation, run a test request', 
   const origin = new URL(page.url()).origin;
   await page.getByRole('button', { name: 'New service' }).click();
   const dialog = page.getByRole('dialog').last();
-  await dialog.getByLabel('Name').fill(name);
+  await dialog.getByLabel('Name', { exact: true }).first().fill(name);
   await dialog.getByLabel('Base URL').fill(origin);
   await dialog.getByRole('button', { name: 'Create service' }).click();
 
@@ -155,7 +164,7 @@ test('Models & providers: fake provider, connection test, hand-registered model'
 
   const dialog = page.getByRole('dialog').last();
   await dialog.getByLabel('Type').selectOption('fake');
-  await dialog.getByLabel('Name').fill(providerName);
+  await dialog.getByLabel('Name', { exact: true }).first().fill(providerName);
   await dialog.getByRole('button', { name: 'Create provider' }).click();
 
   // The post-create step tests connectivity and reports reachable/unreachable.
@@ -189,7 +198,7 @@ test('Agents: create an agent and inspect its configuration tabs', async ({ page
   await page.getByRole('button', { name: 'New agent' }).click();
 
   const dialog = page.getByRole('dialog').last();
-  await dialog.getByLabel('Name').fill(name);
+  await dialog.getByLabel('Name', { exact: true }).first().fill(name);
   await dialog.getByRole('button', { name: 'Create agent' }).click();
   await page.waitForURL(/\/agents\/[^/]+$/, { timeout: 20_000 });
   await expect(page.getByRole('heading', { name })).toBeVisible();
@@ -224,7 +233,7 @@ test('Skills: create a skill and save an instruction change', async ({ page }) =
   await page.getByRole('button', { name: 'New skill' }).click();
 
   const dialog = page.getByRole('dialog').last();
-  await dialog.getByLabel('Name').fill(name);
+  await dialog.getByLabel('Name', { exact: true }).first().fill(name);
   await dialog.getByRole('button', { name: 'Create skill' }).click();
   await page.waitForURL(/\/skills\/[^/]+$/, { timeout: 20_000 });
 

@@ -142,13 +142,11 @@ export async function dispatchApi(input: DispatchInput): Promise<DispatchResult>
     }
 
     const shaped = (response ?? {}) as ApiResponse;
-    // A handler may hand back a promise for the body (for example `body: mutate(...)`).
-    // Awaiting it here keeps every handler free of ceremony while still guaranteeing
-    // that a promise is never serialized as `{}`.
-    const resolvedBody =
-      shaped.body && typeof (shaped.body as { then?: unknown }).then === 'function'
-        ? await (shaped.body as Promise<unknown>)
-        : shaped.body;
+    // Resolve promises *anywhere* in the body, not just at the top level. A handler
+    // that writes `{ jobs: listJobs(...) }` without awaiting would otherwise
+    // serialize `{}` and the client would see an empty collection with no error —
+    // the hardest kind of bug to notice. Deep resolution makes that impossible.
+    const resolvedBody = await resolveDeep(shaped.body);
     return {
       status: shaped.status ?? 200,
       body: resolvedBody ?? null,
@@ -165,6 +163,27 @@ export async function dispatchApi(input: DispatchInput): Promise<DispatchResult>
     });
     return errorResult(appError, requestId);
   }
+}
+
+/** Await promises nested in objects and arrays, up to a depth limit. */
+async function resolveDeep(value: unknown, depth = 0): Promise<unknown> {
+  if (depth > 6) return value;
+  if (value && typeof (value as { then?: unknown }).then === 'function') {
+    return resolveDeep(await (value as Promise<unknown>), depth + 1);
+  }
+  if (Array.isArray(value)) {
+    return Promise.all(value.map((entry) => resolveDeep(entry, depth + 1)));
+  }
+  if (value && typeof value === 'object' && !(value instanceof Date)) {
+    const entries = await Promise.all(
+      Object.entries(value as Record<string, unknown>).map(async ([key, entry]) => [
+        key,
+        await resolveDeep(entry, depth + 1)
+      ])
+    );
+    return Object.fromEntries(entries);
+  }
+  return value;
 }
 
 function errorResult(error: ReturnType<typeof toAppError>, requestId: string): DispatchResult {

@@ -1088,12 +1088,12 @@ export const dataRoutes = [
     path: '/jobs',
     permission: Permissions.jobRead,
     summary: 'Durable jobs with status, attempts and lease information',
-    handler: ({ db, actor, query, request }) => {
+    handler: async ({ db, actor, query, request }) => {
       const url = new URL(request.url);
       const status = url.searchParams.getAll('status');
       return {
         body: {
-          jobs: listJobs(db, {
+          jobs: await listJobs(db, {
             workspaceId: actor.workspaceId,
             status: status.length > 0 ? (status as never) : undefined,
             type: (url.searchParams.get('type') as never) ?? undefined,

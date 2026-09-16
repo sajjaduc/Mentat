@@ -13,7 +13,8 @@ import {
   createWorkflow,
   DEMO_PASSWORD,
   registerAndSignIn,
-  signInBrowser
+  signInBrowser,
+  useSessionCookie
 } from './helpers';
 
 /**
@@ -34,7 +35,12 @@ let session: { cookie: string; workspaceId: string } | null = null;
  * fall back to signing in rather than registering again.
  */
 async function ensureSession(request: APIRequestContext) {
-  if (session) return session;
+  if (session) {
+    // The API call helper is per-file state; keep it pointing at this session even
+    // when the cookie came from a previous test.
+    useSessionCookie(session.cookie);
+    return session;
+  }
   const registered = await registerAndSignIn(request, account).catch(async () => {
     const response = await request.post('/api/auth/login', {
       data: { email: account.email, password: account.password },
@@ -48,11 +54,9 @@ async function ensureSession(request: APIRequestContext) {
       'the e2e account has no workspace; delete .e2e/mentat-e2e.db and rerun'
     ).toBeTruthy();
     const setCookie = response.headers()['set-cookie'] ?? '';
-    return {
-      identity: account,
-      cookie: setCookie.split(';')[0] ?? '',
-      workspaceId: workspaceId as string
-    };
+    const cookie = setCookie.split(';')[0] ?? '';
+    useSessionCookie(cookie);
+    return { identity: account, cookie, workspaceId: workspaceId as string };
   });
   session = { cookie: registered.cookie, workspaceId: registered.workspaceId };
   return session;
@@ -193,7 +197,7 @@ test.describe('workflow surfaces', () => {
       'Drawer ticket renamed'
     );
 
-    await page.getByRole('button', { name: 'Close' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
     await expect(page).not.toHaveURL(/ticket=/);
     await expect(page.getByTestId('board-card').first()).toBeVisible();
   });

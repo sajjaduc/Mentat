@@ -41,17 +41,36 @@ export interface ApiEnvelope {
   error?: { code: string; message: string; details?: Record<string, unknown> };
 }
 
-/** Call the API through the browser's own request context (shares no cookies). */
+/**
+ * The session cookie the specs' API calls should carry.
+ *
+ * Playwright's `request` fixture is a fresh context per test, so a cookie held in a
+ * spec-level variable is not automatically present on it. Rather than thread the
+ * cookie through every call site, the session helpers register it here once and
+ * `apiCall` sends it. `signInBrowser` still puts it in the browser.
+ */
+let sessionCookie: string | null = null;
+
+export function useSessionCookie(cookie: string): void {
+  sessionCookie = cookie;
+}
+
+/** Call the API, carrying the registered session cookie when there is one. */
 export async function apiCall<T>(
   request: APIRequestContext,
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   path: string,
-  options: { data?: unknown; cookies?: Array<{ name: string; value: string }> } = {}
+  options: { data?: unknown; cookie?: string } = {}
 ): Promise<T> {
+  const cookie = options.cookie ?? sessionCookie;
+  const headers: Record<string, string> = {};
+  if (options.data !== undefined) headers['content-type'] = 'application/json';
+  if (cookie) headers.cookie = cookie;
+
   const response = await request.fetch(`/api${path}`, {
     method,
     data: options.data,
-    headers: options.data === undefined ? undefined : { 'content-type': 'application/json' },
+    headers: Object.keys(headers).length > 0 ? headers : undefined,
     failOnStatusCode: false
   });
   const text = await response.text();
@@ -87,6 +106,7 @@ export async function registerAndSignIn(
 
   const setCookie = response.headers()['set-cookie'] ?? '';
   const cookie = setCookie.split(';')[0] ?? '';
+  useSessionCookie(cookie);
   const body = (await response.json()) as { workspaceId: string | null };
 
   // Registration only creates a starter workspace on an empty instance. A second
@@ -130,10 +150,13 @@ export async function signInBrowser(
 /** Sign in through the form (used by the auth spec, which must test the real path). */
 export async function signInThroughForm(page: Page, id: TestIdentity): Promise<void> {
   await page.goto('/login');
+  // The form is progressively enhanced, so wait for hydration before clicking:
+  // a pre-hydration click submits natively and puts the password in the URL.
+  await expect(page.locator('form[data-hydrated="true"]')).toBeVisible({ timeout: 15_000 });
   await page.getByLabel('Email').fill(id.email);
   await page.getByLabel('Password').fill(id.password);
   await page.getByRole('button', { name: /sign in|create account/i }).click();
-  await expect(page).toHaveURL(/\/(workflows|my-work)/);
+  await expect(page).toHaveURL(/\/(workflows|my-work)/, { timeout: 20_000 });
 }
 
 /** Create a workflow through the API and return its id. */

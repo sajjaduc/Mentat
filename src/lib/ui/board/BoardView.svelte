@@ -97,6 +97,10 @@ async function load(query: string | null, options: { silent?: boolean } = {}) {
       { filter: query, limit: 50 }
     );
     columns = response.columns;
+    // Fetch each column's outgoing transitions as soon as the board renders. Without
+    // this the card's "Move to…" menu is empty until a card has been dragged, so the
+    // keyboard-accessible move path silently does nothing.
+    await Promise.all(response.columns.map((column) => ensureTransitions(column.state.id)));
   } catch (failure) {
     if (!options.silent) error = describeApiError(failure);
   } finally {
@@ -308,28 +312,36 @@ const hasStates = $derived(states.length > 0);
       >
         <Button variant="primary" onclick={onConfigure}>Open configuration</Button>
       </EmptyState>
-    {:else if isEmpty}
-      <EmptyState
-        title={isFilterActive(filter) ? 'No tickets match these filters' : 'No tickets yet'}
-        description={isFilterActive(filter)
-          ? 'Filters hide every ticket in this workflow. Clear them to see the full board.'
-          : 'Use the + on any column to create the first ticket, or send one in through a trigger.'}
-      >
-        {#if isFilterActive(filter)}
-          <Button
-            variant="secondary"
-            onclick={() =>
-              onFilterChange({
-                stateIds: [],
-                priorities: [],
-                ownerUserId: '',
-                labelIds: [],
-                search: ''
-              })}>Clear filters</Button
-          >
-        {/if}
-      </EmptyState>
     {:else if columns}
+      <!-- Columns always render, including when they hold no tickets: an empty board
+           with visible columns is how a first ticket gets created (the + is on the
+           column), and it keeps the state machine legible from the start. The empty
+           hint appears above the columns rather than replacing them. -->
+      {#if isEmpty}
+        <div
+          class="mb-3 flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-muted)] px-3 py-2"
+        >
+          <p class="text-xs text-[var(--color-ink-muted)]">
+            {isFilterActive(filter)
+              ? 'Filters hide every ticket in this workflow.'
+              : 'No tickets yet. Use the + on any column to create the first one, or send one in through a trigger.'}
+          </p>
+          {#if isFilterActive(filter)}
+            <Button
+              variant="secondary"
+              size="sm"
+              onclick={() =>
+                onFilterChange({
+                  stateIds: [],
+                  priorities: [],
+                  ownerUserId: '',
+                  labelIds: [],
+                  search: ''
+                })}>Clear filters</Button
+            >
+          {/if}
+        </div>
+      {/if}
       <div class="flex h-full min-h-0 items-start gap-3">
         {#each columns as column (column.state.id)}
           <BoardColumn
