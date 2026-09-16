@@ -16,13 +16,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { type APIRequestContext, expect, test } from '@playwright/test';
-import {
-  apiCall,
-  createWorkflow,
-  registerAndSignIn,
-  signInBrowser,
-  uniqueSuffix
-} from './helpers';
+import { apiCall, createWorkflow, registerAndSignIn, signInBrowser, uniqueSuffix } from './helpers';
 
 interface SharedSession {
   cookie: string;

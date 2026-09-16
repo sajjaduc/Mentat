@@ -7,11 +7,12 @@
  * operator can predict the gate, and says plainly that an unreadable or empty
  * condition fails closed — requiring approval instead of silently allowing the call.
  */
-import { defaultApprovalPolicy, describeApprovalPolicy } from './policy';
-import type { ApprovalPolicy } from './types';
+
 import SelectField from './controls/SelectField.svelte';
 import TextField from './controls/TextField.svelte';
 import Toggle from './controls/Toggle.svelte';
+import { defaultApprovalPolicy, describeApprovalPolicy } from './policy';
+import type { ApprovalPolicy } from './types';
 
 interface Props {
   value?: ApprovalPolicy | null;

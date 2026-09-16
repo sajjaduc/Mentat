@@ -6,11 +6,12 @@
  * fingerprint of the secret the request would use, so a cached response can never be
  * replayed under a different credential (the runtime's `computeAuthScope`).
  */
-import { defaultCachePolicy, describeCachePolicy } from './policy';
-import type { CachePolicy } from './types';
+
 import NumberField from './controls/NumberField.svelte';
 import TagsInput from './controls/TagsInput.svelte';
 import Toggle from './controls/Toggle.svelte';
+import { defaultCachePolicy, describeCachePolicy } from './policy';
+import type { CachePolicy } from './types';
 
 interface Props {
   value?: CachePolicy | null;

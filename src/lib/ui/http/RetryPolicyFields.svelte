@@ -4,11 +4,12 @@
  * override. "Override" is explicit because `null` means "inherit the service value"
  * and a UI that cannot express that makes the effective policy unknowable.
  */
-import { defaultRetryPolicy, describeRetryPolicy } from './policy';
-import type { RetryPolicy } from './types';
+
 import NumberField from './controls/NumberField.svelte';
 import TagsInput from './controls/TagsInput.svelte';
 import Toggle from './controls/Toggle.svelte';
+import { defaultRetryPolicy, describeRetryPolicy } from './policy';
+import type { RetryPolicy } from './types';
 
 interface Props {
   value?: RetryPolicy | null;

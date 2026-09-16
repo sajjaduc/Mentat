@@ -1,9 +1,10 @@
 <script lang="ts">
 /** RateLimitFields: requests per window and in-flight concurrency for a service. */
-import { defaultRateLimit, describeRateLimit } from './policy';
-import type { RateLimitConfig } from './types';
+
 import NumberField from './controls/NumberField.svelte';
 import Toggle from './controls/Toggle.svelte';
+import { defaultRateLimit, describeRateLimit } from './policy';
+import type { RateLimitConfig } from './types';
 
 interface Props {
   value?: RateLimitConfig | null;
