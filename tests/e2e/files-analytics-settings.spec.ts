@@ -3,6 +3,7 @@ import {
   apiCall,
   createWorkflow,
   expectNoPageError,
+  gotoApp,
   registerAndSignIn,
   signInBrowser,
   until,
@@ -85,7 +86,7 @@ async function uploadTextFile(
   return (await response.json()) as { fileId: string; deduplicated: boolean };
 }
 
-/** Create a workspace-scoped file field definition. */
+/**\s+Create\s+a\s+workspace-scoped\s+file\s+field\s+definition.\s+*/
 /**
  * Ensure a file field definition exists.
  *
@@ -108,7 +109,7 @@ async function createFileField(page: Page, key: string): Promise<void> {
   );
 }
 
-/** Create a file field definition and set a value on one file. */
+/**\s+Create\s+a\s+file\s+field\s+definition\s+and\s+set\s+a\s+value\s+on\s+one\s+file.\s+*/
 async function setFileField(page: Page, fileId: string, key: string, value: string): Promise<void> {
   await createFileField(page, key);
   await apiCall(page.request, 'PUT', `/files/${fileId}/fields`, {
@@ -128,8 +129,8 @@ test.describe('Files', () => {
     expect(second.deduplicated).toBe(true);
     expect(second.fileId).not.toBe(first.fileId);
 
-    await page.goto('/files');
-    await expect(page.getByRole('heading', { name: 'Files' })).toBeVisible();
+    await gotoApp(page, '/files');
+    await expect(page.getByRole('heading', { name: 'Files', exact: true })).toBeVisible();
     await expect(page.getByText(`${tag}-invoice.txt`).first()).toBeVisible();
     await expect(page.getByText(`${tag}-invoice-copy.txt`).first()).toBeVisible();
     await expectNoPageError(page);
@@ -140,12 +141,12 @@ test.describe('Files', () => {
   }) => {
     await uploadTextFile(page, 'dedupe-source.txt');
 
-    await page.goto('/files');
+    await gotoApp(page, '/files');
     await page
-      .getByRole('button', { name: /upload files/i })
+      .getByRole('button', { name: /upload\s+files/i })
       .first()
       .click();
-    await expect(page.getByText(/drop files here/i)).toBeVisible();
+    await expect(page.getByText(/drop\s+files\s+here/i)).toBeVisible();
 
     // Second upload of identical content through the real upload path.
     await page.locator('input[type="file"]').setInputFiles({
@@ -154,7 +155,7 @@ test.describe('Files', () => {
       buffer: Buffer.from(TEXT_BODY)
     });
 
-    await expect(page.getByText(/already existed in this workspace/i).first()).toBeVisible({
+    await expect(page.getByText(/already\s+existed\s+in\s+this\s+workspace/i).first()).toBeVisible({
       timeout: 15_000
     });
   });
@@ -195,7 +196,7 @@ test.describe('Files', () => {
     expect(missed.items.map((item) => item.id)).not.toContain(uploaded.fileId);
 
     // And the UI executes the URL's filter, so a filtered list is a shareable link.
-    await page.goto(`/files?filter=${encodeURIComponent(filter)}`);
+    await gotoApp(page, `/files?filter=${encodeURIComponent(filter)}`);
     await expect(page.getByText(`${tag}-filter-me.txt`).first()).toBeVisible();
     await expectNoPageError(page);
   });
@@ -203,9 +204,9 @@ test.describe('Files', () => {
   test('the filter builder writes the shared AST into ?filter=', async ({ page }) => {
     await createFileField(page, 'document_type');
 
-    await page.goto('/files');
-    await page.getByRole('button', { name: /structured filters/i }).click();
-    await page.getByRole('button', { name: /start from file fields/i }).click();
+    await gotoApp(page, '/files');
+    await page.getByRole('button', { name: /structured\s+filters/i }).click();
+    await page.getByRole('button', { name: /start\s+from\s+file\s+fields/i }).click();
 
     await expect(page).toHaveURL(/filter=/);
     const url = new URL(page.url());
@@ -246,8 +247,8 @@ test.describe('Files', () => {
         }
       ]
     });
-    await page.goto(`/files?filter=${encodeURIComponent(incomplete)}`);
-    await expect(page.getByRole('heading', { name: 'Files' })).toBeVisible();
+    await gotoApp(page, `/files?filter=${encodeURIComponent(incomplete)}`);
+    await expect(page.getByRole('heading', { name: 'Files', exact: true })).toBeVisible();
     await expectNoPageError(page);
     // The valid half still applies.
     await expect(page.getByText(`${tag}-invoice.txt`).first()).toBeVisible();
@@ -269,14 +270,14 @@ test.describe('Files', () => {
       { description: 'extracted content', timeoutMs: 40_000 }
     );
 
-    await page.goto('/files');
+    await gotoApp(page, '/files');
     await page.getByRole('radio', { name: 'Content' }).click();
-    await page.getByLabel(/search extracted content/i).fill('deliberately searchable');
-    await page.getByRole('button', { name: /search content/i }).click();
+    await page.getByLabel(/search\s+extracted\s+content/i).fill('deliberately searchable');
+    await page.getByRole('button', { name: /search\s+content/i }).click();
 
-    await expect(page.getByRole('heading', { name: /content matches/i })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /content\s+matches/i })).toBeVisible();
     await expect(page.getByText(`${tag}-searchable.txt`).first()).toBeVisible();
-    await expect(page.getByRole('button', { name: /back to metadata list/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: /back\s+to\s+metadata\s+list/i })).toBeVisible();
   });
 
   test('file detail covers all six tabs and states that unlinking is non-destructive', async ({
@@ -285,7 +286,7 @@ test.describe('Files', () => {
     const uploaded = await uploadTextFile(page, 'detail.txt');
     await setFileField(page, uploaded.fileId, 'customer_name', 'ACME');
 
-    await page.goto(`/files/${uploaded.fileId}`);
+    await gotoApp(page, `/files/${uploaded.fileId}`);
     for (const tab of ['Overview', 'Fields', 'Content', 'Relationships', 'Processing', 'History']) {
       await expect(page.getByRole('tab', { name: tab })).toBeVisible();
     }
@@ -302,11 +303,13 @@ test.describe('Files', () => {
 
     // Relationships explains that unlinking never removes the file or its bytes.
     await page.getByRole('tab', { name: 'Relationships' }).click();
-    await expect(page.getByText(/never deletes the file or its bytes/i)).toBeVisible();
+    await expect(page.getByText(/never\s+deletes\s+the\s+file\s+or\s+its\s+bytes/i)).toBeVisible();
 
     // Processing explains the full processing identity.
     await page.getByRole('tab', { name: 'Processing' }).click();
-    await expect(page.getByText(/contentHash \+ processorType \+ processorVersion/i)).toBeVisible();
+    await expect(
+      page.getByText(/contentHash\s+\+\s+processorType\s+\+\s+processorVersion/i)
+    ).toBeVisible();
 
     // History is the file-scoped audit ledger.
     await page.getByRole('tab', { name: 'History' }).click();
@@ -319,29 +322,31 @@ test.describe('Dashboards', () => {
   test('creates a dashboard, adds a KPI widget and renders its exact value', async ({ page }) => {
     await createWorkflow(page.request, `Analytics ${tag}`, 'claims');
 
-    await page.goto('/dashboards');
-    await expect(page.getByRole('heading', { name: 'Dashboards' })).toBeVisible();
+    await gotoApp(page, '/dashboards');
+    await expect(page.getByRole('heading', { name: 'Dashboards', exact: true })).toBeVisible();
 
     await page
-      .getByRole('button', { name: /new dashboard/i })
+      .getByRole('button', { name: /new\s+dashboard/i })
       .first()
       .click();
     await page.getByLabel('Name').fill(`Operations board ${tag}`);
-    await page.getByRole('button', { name: /create dashboard/i }).click();
+    await page.getByRole('button', { name: /create\s+dashboard/i }).click();
     await page.waitForURL(/\/dashboards\/[0-9a-f-]+/i);
 
     await expect(page.getByRole('heading', { name: `Operations board ${tag}` })).toBeVisible();
     // The interface states that both filter levels share the ticket-list language.
-    await expect(page.getByText(/same filter language as the ticket list/i)).toBeVisible();
+    await expect(
+      page.getByText(/same\s+filter\s+language\s+as\s+the\s+ticket\s+list/i)
+    ).toBeVisible();
 
     await page
-      .getByRole('button', { name: /add widget/i })
+      .getByRole('button', { name: /add\s+widget/i })
       .first()
       .click();
     await page.getByLabel('Title').fill('Ticket count');
     await page.getByLabel('Aggregation').selectOption('count');
     await page
-      .getByRole('button', { name: /add widget/i })
+      .getByRole('button', { name: /add\s+widget/i })
       .last()
       .click();
 
@@ -351,17 +356,17 @@ test.describe('Dashboards', () => {
   });
 
   test('every chart exposes a data-table fallback with the exact numbers', async ({ page }) => {
-    await page.goto('/dashboards');
+    await gotoApp(page, '/dashboards');
     await page
-      .getByRole('button', { name: /new dashboard/i })
+      .getByRole('button', { name: /new\s+dashboard/i })
       .first()
       .click();
     await page.getByLabel('Name').fill(`Fallback board ${tag}`);
-    await page.getByRole('button', { name: /create dashboard/i }).click();
+    await page.getByRole('button', { name: /create\s+dashboard/i }).click();
     await page.waitForURL(/\/dashboards\/[0-9a-f-]+/i);
 
     await page
-      .getByRole('button', { name: /add widget/i })
+      .getByRole('button', { name: /add\s+widget/i })
       .first()
       .click();
     await page.getByLabel('Title').fill('By state');
@@ -369,7 +374,7 @@ test.describe('Dashboards', () => {
     await page.getByLabel('Aggregation').selectOption('count');
     await page.getByLabel('Group by').selectOption('state');
     await page
-      .getByRole('button', { name: /add widget/i })
+      .getByRole('button', { name: /add\s+widget/i })
       .last()
       .click();
     await expect(page.getByText('By state').first()).toBeVisible();
@@ -384,27 +389,29 @@ test.describe('Dashboards', () => {
   }) => {
     await createWorkflow(page.request, `Funnel ${tag}`, 'claims');
 
-    await page.goto('/dashboards');
+    await gotoApp(page, '/dashboards');
     await page
-      .getByRole('button', { name: /new dashboard/i })
+      .getByRole('button', { name: /new\s+dashboard/i })
       .first()
       .click();
     await page.getByLabel('Name').fill(`Funnel board ${tag}`);
-    await page.getByRole('button', { name: /create dashboard/i }).click();
+    await page.getByRole('button', { name: /create\s+dashboard/i }).click();
     await page.waitForURL(/\/dashboards\/[0-9a-f-]+/i);
 
     await page
-      .getByRole('button', { name: /add widget/i })
+      .getByRole('button', { name: /add\s+widget/i })
       .first()
       .click();
     await page.getByLabel('Title').fill('Intake to closed');
     await page.getByLabel('Visualisation').selectOption('funnel');
 
-    await expect(page.getByText(/funnel milestones \(explicit order\)/i)).toBeVisible();
-    await expect(page.getByText(/board order is never used to infer stage order/i)).toBeVisible();
+    await expect(page.getByText(/funnel\s+milestones\s+\(explicit\s+order\)/i)).toBeVisible();
+    await expect(
+      page.getByText(/board\s+order\s+is\s+never\s+used\s+to\s+infer\s+stage\s+order/i)
+    ).toBeVisible();
 
-    await page.getByRole('button', { name: /add milestone/i }).click();
-    await page.getByRole('button', { name: /add milestone/i }).click();
+    await page.getByRole('button', { name: /add\s+milestone/i }).click();
+    await page.getByRole('button', { name: /add\s+milestone/i }).click();
     await page.getByLabel('Label').nth(2).fill('Closed');
 
     // Ordering is a control the author owns, with explicit move buttons.
@@ -413,107 +420,118 @@ test.describe('Dashboards', () => {
   });
 
   test('an aging widget states that its numbers come from recorded history', async ({ page }) => {
-    await page.goto('/dashboards');
+    await gotoApp(page, '/dashboards');
     await page
-      .getByRole('button', { name: /new dashboard/i })
+      .getByRole('button', { name: /new\s+dashboard/i })
       .first()
       .click();
     await page.getByLabel('Name').fill(`Aging board ${tag}`);
-    await page.getByRole('button', { name: /create dashboard/i }).click();
+    await page.getByRole('button', { name: /create\s+dashboard/i }).click();
     await page.waitForURL(/\/dashboards\/[0-9a-f-]+/i);
 
     await page
-      .getByRole('button', { name: /add widget/i })
+      .getByRole('button', { name: /add\s+widget/i })
       .first()
       .click();
     await page.getByLabel('Title').fill('Dwell time');
     await page.getByLabel('Visualisation').selectOption('aging');
     await expect(page.getByText(/ticket_state_history/i).first()).toBeVisible();
-    await expect(page.getByText(/in-progress work is counted rather than dropped/i)).toBeVisible();
+    await expect(
+      page.getByText(/in-progress\s+work\s+is\s+counted\s+rather\s+than\s+dropped/i)
+    ).toBeVisible();
   });
 });
 
 test.describe('Settings', () => {
   test('workspace settings persist and are audited', async ({ page }) => {
-    await page.goto('/settings');
-    await expect(page.getByRole('heading', { name: 'Workspace' })).toBeVisible();
+    await gotoApp(page, '/settings');
+    await expect(page.getByRole('heading', { name: 'Workspace', exact: true })).toBeVisible();
 
     await page.getByLabel('Retention (days)').fill('30');
     await page.getByLabel('Default timezone').selectOption('Europe/London');
-    await page.getByRole('button', { name: /save workspace/i }).click();
-    await expect(page.getByText(/workspace settings saved/i).first()).toBeVisible({
+    await page.getByRole('button', { name: /save\s+workspace/i }).click();
+    await expect(page.getByText(/workspace\s+settings\s+saved/i).first()).toBeVisible({
       timeout: 15_000
     });
 
-    await page.goto('/settings/audit');
-    await expect(page.getByText('workspace.updated').first()).toBeVisible({ timeout: 15_000 });
+    await gotoApp(page, '/settings/audit');
+    await expect(page.getByRole('table').getByText('workspace.updated').first()).toBeVisible({
+      timeout: 15_000
+    });
   });
 
   // Order matters here: this asserts the rule *before* a second owner exists, and
   // the next test promotes one. Both run in declaration order in a single worker.
   test('the last active owner rule is visible before the attempt', async ({ page }) => {
-    await page.goto('/settings/members');
-    await expect(page.getByText(/last active owner/i).first()).toBeVisible();
-    const row = page.locator('tr', { hasText: /last active owner/i }).first();
+    await gotoApp(page, '/settings/members');
+    await expect(page.getByText(/last\s+active\s+owner/i).first()).toBeVisible();
+    const row = page.locator('tr', { hasText: /last\s+active\s+owner/i }).first();
     await expect(row.getByRole('button', { name: /remove/i })).toBeDisabled();
     await expect(row.getByRole('button', { name: /suspend/i })).toBeDisabled();
   });
 
   test('promoting a second owner clears the last-owner flag', async ({ page }) => {
-    await page.goto('/settings/members');
+    await gotoApp(page, '/settings/members');
     await page
-      .getByRole('button', { name: /invite member/i })
+      .getByRole('button', { name: /invite\s+member/i })
       .first()
       .click();
     await page.getByLabel('Email').fill(`teammate-${tag}@mentat.test`);
     await page.getByLabel('Name').fill('Teammate');
-    await page.getByRole('button', { name: /send invite/i }).click();
+    await page.getByRole('button', { name: /send\s+invite/i }).click();
     await expect(page.getByText('Teammate').first()).toBeVisible({ timeout: 15_000 });
 
     await page
-      .getByRole('button', { name: /invite member/i })
+      .getByRole('button', { name: /invite\s+member/i })
       .first()
       .click();
     await page.getByLabel('Email').fill(`owner-${tag}@mentat.test`);
     await page.getByLabel('Name').fill('Second Owner');
     await page.getByLabel('Role', { exact: true }).first().selectOption('owner');
-    await page.getByRole('button', { name: /send invite/i }).click();
+    await page.getByRole('button', { name: /send\s+invite/i }).click();
     await expect(page.getByText('Second Owner').first()).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByText(/last active owner/i)).toHaveCount(0);
+    // The rule counts *active* owners: an invitation alone must not clear it, which is
+    // exactly the mistake that would let a workspace lose its last owner.
+    await expect(page.getByText(/last\s+active\s+owner/i).first()).toBeVisible();
+
+    const invitedRow = page.getByRole('row').filter({ hasText: 'Second Owner' }).first();
+    await invitedRow.getByRole('button', { name: /reactivate/i }).click();
+    await expect(page.getByText(/last\s+active\s+owner/i)).toHaveCount(0, { timeout: 15_000 });
   });
 
   test('teams can be created and membership managed as a set', async ({ page }) => {
-    await page.goto('/settings/teams');
+    await gotoApp(page, '/settings/teams');
     await page
-      .getByRole('button', { name: /new team/i })
+      .getByRole('button', { name: /new\s+team/i })
       .first()
       .click();
     await page.getByLabel('Name').fill(`Claims adjusters ${tag}`);
-    await page.getByRole('button', { name: /create team/i }).click();
+    await page.getByRole('button', { name: /create\s+team/i }).click();
     await expect(page.getByText(`Claims adjusters ${tag}`).first()).toBeVisible({
       timeout: 15_000
     });
-    await expect(page.getByText(/0 member/i).first()).toBeVisible();
+    await expect(page.getByText(/0\s+member/i).first()).toBeVisible();
   });
 
   test('secrets are write-only: no plaintext in the DOM or the URL', async ({ page }) => {
     const secretValue = 'super-secret-e2e-value';
-    await page.goto('/settings/secrets');
+    await gotoApp(page, '/settings/secrets');
     await page
-      .getByRole('button', { name: /new secret/i })
+      .getByRole('button', { name: /new\s+secret/i })
       .first()
       .click();
-    await page.getByLabel('Key').fill(`SMOKE_API_KEY_${tag.toUpperCase()}`);
+    const secretKey = `SMOKE_API_KEY_${tag.toUpperCase().replace(/-/g, '_')}`;
+    await page.getByLabel('Key').fill(secretKey);
     await page.getByLabel('Value').fill(secretValue);
-    await page.getByRole('button', { name: /create secret/i }).click();
+    await page.getByRole('button', { name: /create\s+secret/i }).click();
 
-    await expect(page.getByText(/will never be shown again/i).first()).toBeVisible({
+    await expect(page.getByText(/will\s+never\s+be\s+shown\s+again/i).first()).toBeVisible({
       timeout: 15_000
     });
     expect(page.url()).not.toContain(secretValue);
     await expect(page.getByText(secretValue)).toHaveCount(0);
 
-    const row = page.locator('tr', { hasText: `SMOKE_API_KEY_${tag.toUpperCase()}` }).first();
+    const row = page.locator('tr', { hasText: secretKey }).first();
     await expect(row).toBeVisible();
     await expect(row.getByText(/••••/)).toBeVisible();
   });
@@ -521,19 +539,21 @@ test.describe('Settings', () => {
   test('environment shows provenance per key and explains override resolution', async ({
     page
   }) => {
-    const key = `HUBSPOT_REGION_${tag.toUpperCase()}`;
+    const key = `HUBSPOT_REGION_${tag.toUpperCase().replace(/-/g, '_')}`;
     await apiCall(page.request, 'PUT', '/environment', {
       data: { key, value: 'eu-west-1' }
     });
 
-    await page.goto('/settings/environment');
-    await expect(page.getByText(/workflow override > workspace value/i).first()).toBeVisible();
+    await gotoApp(page, '/settings/environment');
+    await expect(
+      page.getByText(/workflow\s+override\s+>\s+workspace\s+value/i).first()
+    ).toBeVisible();
     await expect(page.getByText(key).first()).toBeVisible();
     await expect(page.getByText('Local', { exact: true }).first()).toBeVisible();
 
     // Provenance is inspectable per key.
     await page.getByRole('button', { name: key }).click();
-    await expect(page.getByText(/effective source/i).first()).toBeVisible();
+    await expect(page.getByText(/effective\s+source/i).first()).toBeVisible();
   });
 
   test('overrides describe bindings as provenance rows and can bind a resource', async ({
@@ -553,9 +573,9 @@ test.describe('Settings', () => {
       }
     });
 
-    await page.goto(`/settings/overrides?workflowId=${workflow.id}`);
-    await expect(page.getByRole('heading', { name: 'Overrides' })).toBeVisible();
-    await expect(page.getByText(/removing one resumes inheritance/i).first()).toBeVisible();
+    await gotoApp(page, `/settings/overrides?workflowId=${workflow.id}`);
+    await expect(page.getByRole('heading', { name: 'Overrides', exact: true })).toBeVisible();
+    await expect(page.getByText(/removing\s+one\s+resumes\s+inheritance/i).first()).toBeVisible();
 
     await page.getByLabel('Workflow').selectOption(workflow.id);
     await expect(page.getByText(`agent-local-${tag}`).first()).toBeVisible({ timeout: 15_000 });
@@ -565,16 +585,16 @@ test.describe('Settings', () => {
       .getByRole('button', { name: /remove/i })
       .first()
       .click();
-    await expect(page.getByText(/resumes inheritance/i).first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(/resumes\s+inheritance/i).first()).toBeVisible({ timeout: 15_000 });
   });
 
   test('storage states the database/store split and never returns a credential', async ({
     page
   }) => {
-    await page.goto('/settings/storage');
-    await expect(page.getByRole('heading', { name: 'Storage' })).toBeVisible();
-    await expect(page.getByText(/never in a database table/i)).toBeVisible();
-    await expect(page.getByText(/never returned by the api/i)).toBeVisible();
+    await gotoApp(page, '/settings/storage');
+    await expect(page.getByRole('heading', { name: 'Storage', exact: true })).toBeVisible();
+    await expect(page.getByText(/never\s+in\s+a\s+database\s+table/i)).toBeVisible();
+    await expect(page.getByText(/never\s+rendered\s+here/i)).toBeVisible();
   });
 
   test('jobs show lease state and an attempts drawer including lease expiry', async ({ page }) => {
@@ -591,15 +611,15 @@ test.describe('Settings', () => {
       { description: 'a completed file processing job', timeoutMs: 40_000 }
     );
 
-    await page.goto('/settings/jobs');
-    await expect(page.getByRole('heading', { name: 'Jobs' })).toBeVisible();
+    await gotoApp(page, '/settings/jobs');
+    await expect(page.getByRole('heading', { name: 'Jobs', exact: true })).toBeVisible();
     await expect(page.getByText('file.process').first()).toBeVisible();
 
     await page
       .getByRole('button', { name: /attempts/i })
       .first()
       .click();
-    await expect(page.getByText(/attempt history/i)).toBeVisible();
+    await expect(page.getByText(/attempt\s+history/i)).toBeVisible();
   });
 
   test('audit is append-only with a redacted payload detail', async ({ page }) => {
@@ -607,24 +627,25 @@ test.describe('Settings', () => {
       data: { key: `AUDITED_KEY_${tag.toUpperCase()}`, value: 'value' }
     });
 
-    await page.goto('/settings/audit');
-    await expect(page.getByRole('heading', { name: 'Audit' })).toBeVisible();
-    await expect(page.getByText('variable.set').first()).toBeVisible({ timeout: 15_000 });
+    await gotoApp(page, '/settings/audit');
+    await expect(page.getByRole('heading', { name: 'Audit', exact: true })).toBeVisible();
+    const ledger = page.getByRole('table');
+    await expect(ledger.getByText('variable.set').first()).toBeVisible({ timeout: 15_000 });
 
-    await page.getByRole('button', { name: 'variable.set' }).first().click();
-    await expect(page.getByText(/data payload/i)).toBeVisible();
-    await expect(page.getByText(/redacted before storage/i).first()).toBeVisible();
+    await ledger.getByRole('button', { name: 'variable.set' }).first().click();
+    await expect(page.getByText(/data\s+payload/i)).toBeVisible();
+    await expect(page.getByText(/redacted\s+before\s+storage/i).first()).toBeVisible();
   });
 });
 
 test.describe('Workflow data', () => {
   test('collections support record create, edit with versioning, and delete', async ({ page }) => {
     const key = `smoke_collection_${tag}`;
-    await page.goto('/data');
-    await expect(page.getByRole('heading', { name: /workflow data/i })).toBeVisible();
+    await gotoApp(page, '/data');
+    await expect(page.getByRole('heading', { name: /workflow\s+data/i })).toBeVisible();
 
     await page
-      .getByRole('button', { name: /\+ new/i })
+      .getByRole('button', { name: /\+\s+new/i })
       .first()
       .click();
     await page.getByLabel('Key').fill(key);
@@ -632,29 +653,29 @@ test.describe('Workflow data', () => {
     await page
       .getByLabel('JSON schema')
       .fill('{"type":"object","properties":{"name":{"type":"string"}}}');
-    await page.getByRole('button', { name: /create collection/i }).click();
+    await page.getByRole('button', { name: /create\s+collection/i }).click();
     await expect(page.getByText(`Smoke collection ${tag}`).first()).toBeVisible({
       timeout: 15_000
     });
 
     // A record is edited as JSON and written with optimistic versioning.
-    await page.getByRole('button', { name: /new record/i }).click();
-    await page.getByLabel(/record \(json\)/i).fill('{"name":"ACME"}');
-    await page.getByRole('button', { name: /create record/i }).click();
+    await page.getByRole('button', { name: /new\s+record/i }).click();
+    await page.getByLabel(/record\s+\(json\)/i).fill('{"name":"ACME"}');
+    await page.getByRole('button', { name: /create\s+record/i }).click();
     await expect(page.getByText(/ACME/).first()).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText(/v1/).first()).toBeVisible();
 
     await page.getByRole('button', { name: /edit/i }).first().click();
-    await expect(page.getByText(/editing version 1/i)).toBeVisible();
-    await page.getByLabel(/record \(json\)/i).fill('{"name":"ACME Holdings"}');
-    await page.getByRole('button', { name: /save record/i }).click();
-    await expect(page.getByText(/ACME Holdings/).first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(/editing\s+version\s+1/i)).toBeVisible();
+    await page.getByLabel(/record\s+\(json\)/i).fill('{"name":"ACME Holdings"}');
+    await page.getByRole('button', { name: /save\s+record/i }).click();
+    await expect(page.getByText(/ACME\s+Holdings/).first()).toBeVisible({ timeout: 15_000 });
 
     await page
       .getByRole('button', { name: /delete/i })
       .first()
       .click();
-    await expect(page.getByText(/no records/i).first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(/no\s+records/i).first()).toBeVisible({ timeout: 15_000 });
   });
 
   test('agent state is read-only and cache values are only shown on request', async ({ page }) => {
@@ -672,21 +693,23 @@ test.describe('Workflow data', () => {
       }
     });
 
-    await page.goto('/data');
-    await page.getByRole('tab', { name: /agent state/i }).click();
-    await expect(page.getByText(/written by tools during runs/i)).toBeVisible();
-    await page.getByRole('button', { name: /load workspace state/i }).click();
+    await gotoApp(page, '/data');
+    await page.getByRole('tab', { name: /agent\s+state/i }).click();
+    await expect(page.getByText(/written\s+by\s+tools\s+during\s+runs/i)).toBeVisible();
+    await page.getByRole('button', { name: /load\s+workspace\s+state/i }).click();
     await expect(page.getByText(stateKey).first()).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByText(/hidden —/i).first()).toBeVisible();
+    await expect(page.getByText(/hidden\s+—/i).first()).toBeVisible();
 
     await page
       .getByRole('button', { name: /reveal/i })
       .first()
       .click();
-    await expect(page.getByText(/hidden by default/).first()).toBeVisible();
+    await expect(page.getByText(/hidden\s+by\s+default/).first()).toBeVisible();
 
     await page.getByRole('tab', { name: /^cache$/i }).click();
-    await expect(page.getByText(/only shown when you explicitly request them/i)).toBeVisible();
+    await expect(
+      page.getByText(/only\s+shown\s+when\s+you\s+explicitly\s+request\s+them/i)
+    ).toBeVisible();
     await page.getByRole('button', { name: /^load$/i }).click();
     await expect(page.getByText(cacheKey).first()).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText('hidden', { exact: true }).first()).toBeVisible();

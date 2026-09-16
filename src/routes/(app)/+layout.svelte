@@ -19,6 +19,18 @@ import { pushToast } from '$ui/toast';
 
 let { data, children } = $props();
 
+/**
+ * Hydration marker.
+ *
+ * The shell needs JavaScript: navigation, menus and dialogs are enhanced. Exposing
+ * that as an attribute lets a test (or anyone debugging) wait for the real thing
+ * instead of racing a pre-hydration click that silently does nothing.
+ */
+let hydrated = $state(false);
+$effect(() => {
+  hydrated = true;
+});
+
 let paletteOpen = $state(false);
 let userMenuOpen = $state(false);
 let mobileNavOpen = $state(false);
@@ -117,7 +129,7 @@ const icons: Record<string, string> = {
 
 <svelte:window onkeydown={onGlobalKey} />
 
-<div class="flex h-full min-h-screen bg-[var(--color-canvas)]">
+<div data-hydrated={hydrated} class="flex h-full min-h-screen bg-[var(--color-canvas)]">
   {#if mobileNavOpen}
     <button
       class="fixed inset-0 z-30 bg-[color-mix(in_oklch,var(--color-ink)_25%,transparent)] md:hidden"

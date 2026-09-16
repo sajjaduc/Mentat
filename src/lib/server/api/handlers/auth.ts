@@ -32,6 +32,7 @@ import {
   createWorkspaceWithOwner,
   ensureStarterWorkspace,
   findUserByEmail,
+  getTeamView,
   getUser,
   listMembers,
   listTeams,
@@ -369,8 +370,10 @@ export const authRoutes = [
     summary: 'Replace a team’s membership',
     body: z.object({ userIds: z.array(z.string()) }),
     handler: async ({ db, actor, params, body }) => {
-      setTeamMembers(db, actor, params.id as string, (body as { userIds: string[] }).userIds);
-      return { body: { ok: true } };
+      const teamId = params.id as string;
+      setTeamMembers(db, actor, teamId, (body as { userIds: string[] }).userIds);
+      // Return the updated representation so a client does not have to re-fetch it.
+      return { body: { team: getTeamView(db, actor, teamId) } };
     }
   })
 ];

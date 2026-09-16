@@ -85,29 +85,14 @@ export async function dispatchApi(input: DispatchInput): Promise<DispatchResult>
     );
   }
 
-  let body: unknown;
-  if (matchedRoute.body) {
-    const parsedJson = parseJsonBody(input.rawBody);
-    if (parsedJson === INVALID_JSON) {
-      return errorResult(errors.badRequest('Request body is not valid JSON'), requestId);
-    }
-    const result = matchedRoute.body.safeParse(parsedJson ?? {});
-    if (!result.success) {
-      return errorResult(validationError(result.error), requestId);
-    }
-    body = result.data;
-  } else if (input.rawBody && input.rawBody.length > 0) {
-    body = parseJsonBody(input.rawBody);
-  }
+  const parsedBody = resolveBody(matchedRoute, input.rawBody);
+  if ('failure' in parsedBody) return errorResult(parsedBody.failure, requestId);
 
-  let query: unknown = input.query;
-  if (matchedRoute.query) {
-    const result = matchedRoute.query.safeParse(input.query);
-    if (!result.success) {
-      return errorResult(validationError(result.error), requestId);
-    }
-    query = result.data;
-  }
+  const parsedQuery = resolveQuery(matchedRoute, input.query);
+  if ('failure' in parsedQuery) return errorResult(parsedQuery.failure, requestId);
+
+  const body = parsedBody.value;
+  const query = parsedQuery.value;
 
   try {
     const handler = matchedRoute.handler as unknown as (context: {
@@ -184,6 +169,36 @@ async function resolveDeep(value: unknown, depth = 0): Promise<unknown> {
     return Object.fromEntries(entries);
   }
   return value;
+}
+
+/** Validate the request body against the route's schema, if it declares one. */
+function resolveBody(
+  matchedRoute: ApiRoute,
+  rawBody: string | null | undefined
+): { value: unknown } | { failure: ReturnType<typeof toAppError> } {
+  const raw = rawBody ?? undefined;
+  if (matchedRoute.body) {
+    const parsedJson = parseJsonBody(raw);
+    if (parsedJson === INVALID_JSON) {
+      return { failure: errors.badRequest('Request body is not valid JSON') };
+    }
+    const result = matchedRoute.body.safeParse(parsedJson ?? {});
+    if (!result.success) return { failure: validationError(result.error) };
+    return { value: result.data };
+  }
+  if (raw && raw.length > 0) return { value: parseJsonBody(raw) };
+  return { value: undefined };
+}
+
+/** Validate the query against the route's schema, if it declares one. */
+function resolveQuery(
+  matchedRoute: ApiRoute,
+  query: unknown
+): { value: unknown } | { failure: ReturnType<typeof toAppError> } {
+  if (!matchedRoute.query) return { value: query };
+  const result = matchedRoute.query.safeParse(query);
+  if (!result.success) return { failure: validationError(result.error) };
+  return { value: result.data };
 }
 
 function errorResult(error: ReturnType<typeof toAppError>, requestId: string): DispatchResult {

@@ -585,8 +585,11 @@ const hasAnyFiles = $derived(files.length > 0 || pendingRows.length > 0);
             <Button
               size="sm"
               variant="ghost"
-              onclick={() =>
-                (filter = {
+              onclick={() => {
+                // Publishing through the parent is what writes ?filter=; setting the
+                // local value alone left the copy's promise ("serialized to ?filter=")
+                // unfulfilled and the URL unchanged.
+                const seeded: FilterAst = {
                   type: 'group',
                   op: 'and',
                   children: [
@@ -597,7 +600,10 @@ const hasAnyFiles = $derived(files.length > 0 || pendingRows.length > 0);
                       operator: 'is_not_empty'
                     }
                   ]
-                })}
+                };
+                filter = seeded;
+                onFilterChange(seeded);
+              }}
             >
               Start from file fields
             </Button>

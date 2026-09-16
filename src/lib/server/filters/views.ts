@@ -169,7 +169,7 @@ export async function createSavedView(
   db: Executor,
   actor: ActorContext,
   draft: SavedViewDraft
-): Promise<SavedView> {
+): Promise<SavedViewDetail> {
   const parsed = parseOrThrow(draftSchema, draft, 'Invalid saved view');
   const scope = parsed.scope ?? 'tickets';
   assertPermission(actor, permissionForScope(scope));
@@ -211,7 +211,8 @@ export async function createSavedView(
       summary: `Saved view "${view.name}" created`,
       data: { scope, shared: view.isShared }
     });
-    return view;
+    // Same shape as a listed view, so a client can append the response directly.
+    return toDetail(view);
   });
 }
 

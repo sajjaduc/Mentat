@@ -733,10 +733,23 @@ function compileCondition(condition: FilterCondition, ctx: CompileContext): SQL 
   }
 }
 
+/**
+ * Is this a row the user is still filling in?
+ *
+ * The filter builder keeps an incomplete row visible while it is being edited, and a
+ * hand-edited link can contain one too. Such a row has no field chosen yet, so it must
+ * be dropped from the query rather than compiled to `0 = 1` — otherwise opening a
+ * half-written filter silently shows an empty list, which reads as data loss.
+ */
+function isIncomplete(condition: FilterCondition): boolean {
+  return typeof condition.key !== 'string' || condition.key.trim().length === 0;
+}
+
 function compileNode(node: FilterNode, ctx: CompileContext): SQL {
   if (isGroup(node)) {
-    if (node.children.length === 0) return node.op === 'and' ? TRUE : FALSE;
-    const parts = node.children.map((child) => compileNode(child, ctx));
+    const children = node.children.filter((child) => isGroup(child) || !isIncomplete(child));
+    if (children.length === 0) return node.op === 'and' ? TRUE : FALSE;
+    const parts = children.map((child) => compileNode(child, ctx));
     const joiner = node.op === 'and' ? sql` AND ` : sql` OR `;
     return sql`(${sql.join(parts, joiner)})`;
   }

@@ -157,12 +157,23 @@ function draftFrom(widgetValue: DashboardWidget | null): WidgetDraft {
   };
 }
 
+/**
+ * Seed the draft when the editor opens, and only then.
+ *
+ * The previous version read `draft.workflowIds` and wrote `draft`, so the effect
+ * depended on the very value it replaced: every keystroke and every select change
+ * re-ran it and reset the draft back to the stored widget, silently discarding the
+ * edit. Keying on the editor's identity keeps the seed a one-time action.
+ */
+let seededFor: string | null = null;
 $effect(() => {
-  if (open) {
-    draft = draftFrom(widget);
-    error = null;
-    void ensureStates(draft.workflowIds);
-  }
+  const key = open ? (widget?.id ?? 'new') : null;
+  if (key === null || key === seededFor) return;
+  seededFor = key;
+  const seed = draftFrom(widget);
+  draft = seed;
+  error = null;
+  void ensureStates(seed.workflowIds);
 });
 
 const workflowOptions = $derived(
@@ -206,11 +217,12 @@ function toggleWorkflow(id: string) {
   void ensureStates(draft.workflowIds);
 }
 
+function blankStage(index: number): FunnelStageDefinition {
+  return { label: `Stage ${index + 1}`, stateIds: [] };
+}
+
 function addStage() {
-  draft.funnelStages = [
-    ...draft.funnelStages,
-    { label: `Stage ${draft.funnelStages.length + 1}`, stateIds: [] }
-  ];
+  draft.funnelStages = [...draft.funnelStages, blankStage(draft.funnelStages.length)];
 }
 
 function updateStage(index: number, patch: Partial<FunnelStageDefinition>) {
@@ -345,6 +357,12 @@ function toIso(epochMs: number): string {
 }
 
 const isFunnel = $derived(draft.type === 'funnel');
+
+$effect(() => {
+  if (draft.type === 'funnel' && draft.funnelStages.length === 0) {
+    draft.funnelStages = [blankStage(0), blankStage(1)];
+  }
+});
 const isAging = $derived(draft.type === 'aging');
 const needsField = $derived(['sum', 'avg', 'median', 'min', 'max'].includes(draft.aggregation));
 const fieldPickerOptions = $derived([

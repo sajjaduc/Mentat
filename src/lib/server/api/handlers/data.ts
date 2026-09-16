@@ -476,15 +476,25 @@ export const dataRoutes = [
       workflowId: z.string().nullish(),
       /** Serializable filter AST; `null` means "all items". */
       filter: z.unknown().nullish(),
+      /**
+       * The response calls this field `filterAst`, so a client round-tripping a saved
+       * view naturally sends it back under that name. Accepted as an alias.
+       */
+      filterAst: z.unknown().nullish(),
       sort: z.array(z.object({ field: z.string(), direction: z.enum(['asc', 'desc']) })).nullish(),
       columns: z.array(z.string()).nullish(),
       isShared: z.boolean().optional(),
       isPinned: z.boolean().optional()
     }),
-    handler: async ({ db, actor, body }) => ({
-      status: 201,
-      body: { view: await createSavedView(db, actor, body as never) }
-    })
+    handler: async ({ db, actor, body }) => {
+      const input = body as { filterAst?: unknown; filter?: unknown };
+      // One canonical field internally, whichever name the client used.
+      const draft = {
+        ...(body as Record<string, unknown>),
+        filter: input.filter ?? input.filterAst ?? null
+      };
+      return { status: 201, body: { view: await createSavedView(db, actor, draft as never) } };
+    }
   }),
 
   route({

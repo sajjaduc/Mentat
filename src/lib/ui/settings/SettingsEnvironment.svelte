@@ -10,6 +10,7 @@
  * Secret-backed variables are references, not values: the row shows the secret key
  * and its last four characters and never a plaintext, matching ADR-0020.
  */
+import { untrack } from 'svelte';
 import { api, describeApiError } from '$ui/api';
 import DataTable from '$ui/common/DataTable.svelte';
 import PageHeader from '$ui/common/PageHeader.svelte';
@@ -74,9 +75,11 @@ async function load() {
   }
 }
 
+// Depends on `workflowId` only: the loader reads and writes the reference lists, so
+// tracking them here would make the effect re-run on its own writes.
 $effect(() => {
   void workflowId;
-  void load();
+  untrack(() => void load());
 });
 
 function openSet(entry: EffectiveEnvironmentEntry | null) {

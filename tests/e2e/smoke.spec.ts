@@ -48,7 +48,7 @@ test.beforeAll(async ({ playwright }) => {
 
 test('1. a person can sign in through the form', async ({ page }) => {
   await signInThroughForm(page, account);
-  await expect(page.getByRole('heading', { name: 'Workflows' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Workflows', exact: true })).toBeVisible();
 });
 
 test('2. a workflow can be created from a template and lands on its board', async ({ page }) => {

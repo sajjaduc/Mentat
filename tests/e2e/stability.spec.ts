@@ -95,6 +95,7 @@ const surfaces: Array<{ path: () => string; name: string }> = [
   { name: 'files', path: () => '/files' },
   { name: 'models', path: () => '/models' },
   { name: 'dashboards', path: () => '/dashboards' },
+  { name: 'data', path: () => '/data' },
   { name: 'integrations', path: () => '/integrations' },
   { name: 'settings', path: () => '/settings' },
   { name: 'settings members', path: () => '/settings/members' },

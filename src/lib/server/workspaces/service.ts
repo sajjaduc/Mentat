@@ -467,7 +467,7 @@ export function createTeam(
   db: Executor,
   actor: ActorContext,
   input: { name: string; description?: string | null; color?: string | null; memberIds?: string[] }
-): Team {
+): TeamView {
   assertPermission(actor, Permissions.memberManage, 'Not permitted to manage teams');
   const name = input.name.trim();
   if (name.length === 0) throw errors.validation('Team name is required');
@@ -514,7 +514,25 @@ export function createTeam(
     summary: `Team ${name} created`
   });
 
-  return team;
+  // Same shape as a listed team, so a client can append the response directly.
+  return { ...team, memberIds: [...(input.memberIds ?? [])] };
+}
+
+/** One team in the same shape `listTeams` returns. */
+export function getTeamView(db: Executor, actor: ActorContext, teamId: string): TeamView {
+  const team = db
+    .select()
+    .from(teams)
+    .where(and(eq(teams.workspaceId, actor.workspaceId), eq(teams.id, teamId)))
+    .all()[0];
+  if (!team) throw errors.notFound('Team', teamId);
+  const memberIds = db
+    .select({ userId: teamMembers.userId })
+    .from(teamMembers)
+    .where(and(eq(teamMembers.workspaceId, actor.workspaceId), eq(teamMembers.teamId, teamId)))
+    .all()
+    .map((row) => row.userId);
+  return { ...team, memberIds };
 }
 
 export function listTeams(db: Executor, actor: ActorContext): TeamView[] {

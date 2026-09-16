@@ -7,8 +7,8 @@ coverage/
 test-results/
 playwright-report/
 blob-report/
-data/
-.test-data/
+/data/
+/.test-data/
 *.db
 *.db-shm
 *.db-wal

@@ -19,6 +19,7 @@ import { type APIRequestContext, expect, test } from '@playwright/test';
 import {
   apiCall,
   createWorkflow,
+  gotoApp,
   registerAndSignIn,
   signInBrowser,
   uniqueSuffix,
@@ -101,7 +102,7 @@ test('HTTP services: create a service, build an operation, run a test request', 
 }) => {
   const name = `E2E Service ${uniqueSuffix()}`;
 
-  await page.goto('/http-services');
+  await gotoApp(page, '/http-services');
   // Waiting on the empty state proves the client-side load (and hydration) finished.
   await expect(page.getByText('No HTTP services yet')).toBeVisible({ timeout: 15_000 });
   const origin = new URL(page.url()).origin;
@@ -159,7 +160,7 @@ test('Models & providers: fake provider, connection test, hand-registered model'
   const providerName = `E2E Fake ${uniqueSuffix()}`;
   const modelKey = `e2e-model-${uniqueSuffix()}:1b`;
 
-  await page.goto('/models');
+  await gotoApp(page, '/models');
   await expect(page.getByRole('heading', { name: 'Models & providers' })).toBeVisible();
   await expect(page.getByText('No models yet').first()).toBeVisible({ timeout: 15_000 });
   await page.getByRole('button', { name: 'Add provider' }).click();
@@ -194,8 +195,8 @@ test('Models & providers: fake provider, connection test, hand-registered model'
 test('Agents: create an agent and inspect its configuration tabs', async ({ page }) => {
   const name = `E2E Agent ${uniqueSuffix()}`;
 
-  await page.goto('/agents');
-  await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible();
+  await gotoApp(page, '/agents');
+  await expect(page.getByRole('heading', { name: 'Agents', exact: true })).toBeVisible();
   await expect(page.getByText('No agents yet')).toBeVisible({ timeout: 15_000 });
   await page.getByRole('button', { name: 'New agent' }).click();
 
@@ -229,8 +230,8 @@ test('Agents: create an agent and inspect its configuration tabs', async ({ page
 test('Skills: create a skill and save an instruction change', async ({ page }) => {
   const name = `E2E Skill ${uniqueSuffix()}`;
 
-  await page.goto('/skills');
-  await expect(page.getByRole('heading', { name: 'Skills' })).toBeVisible();
+  await gotoApp(page, '/skills');
+  await expect(page.getByRole('heading', { name: 'Skills', exact: true })).toBeVisible();
   await expect(page.getByText('No skills yet')).toBeVisible({ timeout: 15_000 });
   await page.getByRole('button', { name: 'New skill' }).click();
 
@@ -248,8 +249,8 @@ test('Skills: create a skill and save an instruction change', async ({ page }) =
 });
 
 test('Tools: the catalogue explains native capabilities and stored tools', async ({ page }) => {
-  await page.goto('/tools');
-  await expect(page.getByRole('heading', { name: 'Tools' })).toBeVisible();
+  await gotoApp(page, '/tools');
+  await expect(page.getByRole('heading', { name: 'Tools', exact: true })).toBeVisible();
   // The native registry always reports capabilities; waiting for one proves the load ran.
   await expect(page.getByText(/mentat\./).first()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText('Native capabilities').first()).toBeVisible();
@@ -263,8 +264,8 @@ test('Integrations: providers, HTTP services and a cron trigger', async ({ page,
   const workflowName = `E2E Workflow ${uniqueSuffix()}`;
   await createWorkflow(request, workflowName, 'basic');
 
-  await page.goto('/integrations');
-  await expect(page.getByRole('heading', { name: 'Integrations' })).toBeVisible();
+  await gotoApp(page, '/integrations');
+  await expect(page.getByRole('heading', { name: 'Integrations', exact: true })).toBeVisible();
   await expect(
     page.getByText('No providers yet').or(page.getByText(/healthy|unreachable|unknown/i).first())
   ).toBeVisible({ timeout: 15_000 });
@@ -293,7 +294,7 @@ test('An HTTP service can be archived from its page', async ({ page, request }) 
     data: { name, baseUrl: 'https://example.test' }
   });
 
-  await page.goto(`/http-services/${created.service.id}`);
+  await gotoApp(page, `/http-services/${created.service.id}`);
   await expect(page.getByRole('heading', { name })).toBeVisible();
   await page.getByRole('button', { name: 'Archive' }).click();
   await page.getByRole('button', { name: 'Confirm archive' }).click();

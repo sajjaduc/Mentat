@@ -12,6 +12,7 @@ import {
   createTicket,
   createWorkflow,
   DEMO_PASSWORD,
+  gotoApp,
   registerAndSignIn,
   signInBrowser,
   useSessionCookie
@@ -99,7 +100,7 @@ test.describe('workflow surfaces', () => {
   }) => {
     const seeded = await seed(request, []);
 
-    await page.goto('/workflows');
+    await gotoApp(page, '/workflows');
     const card = page.getByTestId('workflow-card').filter({ hasText: seeded.name });
     await expect(card).toBeVisible();
     await expect(card).toContainText('tickets');
@@ -126,7 +127,7 @@ test.describe('workflow surfaces', () => {
   }) => {
     const seeded = await seed(request, ['Alpha ticket', 'Beta ticket']);
 
-    await page.goto(`/workflows/${seeded.id}?tab=board`);
+    await gotoApp(page, `/workflows/${seeded.id}?tab=board`);
     const columns = page.getByTestId('board-column');
     await expect(columns.first()).toBeVisible();
     await expect(columns.nth(0)).toContainText(seeded.states[0]?.name ?? '');
@@ -153,7 +154,7 @@ test.describe('workflow surfaces', () => {
   }) => {
     const seeded = await seed(request, ['Movable ticket']);
 
-    await page.goto(`/workflows/${seeded.id}?tab=board`);
+    await gotoApp(page, `/workflows/${seeded.id}?tab=board`);
     const card = page.getByTestId('board-card').filter({ hasText: 'Movable ticket' });
     await expect(card).toBeVisible();
     await card.getByRole('button', { name: 'Card actions' }).click();
@@ -166,7 +167,7 @@ test.describe('workflow surfaces', () => {
   test('a card can be dragged between columns', async ({ page, request }) => {
     const seeded = await seed(request, ['Draggable ticket']);
 
-    await page.goto(`/workflows/${seeded.id}?tab=board`);
+    await gotoApp(page, `/workflows/${seeded.id}?tab=board`);
     const card = page.getByTestId('board-card').filter({ hasText: 'Draggable ticket' });
     await expect(
       page.getByTestId('board-column').nth(0).getByText('Draggable ticket')
@@ -185,7 +186,7 @@ test.describe('workflow surfaces', () => {
     const seeded = await seed(request, ['Drawer ticket']);
     const ticket = seeded.tickets[0];
 
-    await page.goto(`/workflows/${seeded.id}?tab=board&ticket=${ticket?.id}`);
+    await gotoApp(page, `/workflows/${seeded.id}?tab=board&ticket=${ticket?.id}`);
     const drawer = page.getByRole('dialog');
     await expect(drawer).toBeVisible();
     await expect(drawer.getByText(ticket?.key ?? '')).toBeVisible();
@@ -210,7 +211,7 @@ test.describe('workflow surfaces', () => {
     const seeded = await seed(request, ['Tabs ticket']);
     const ticket = seeded.tickets[0];
 
-    await page.goto(`/workflows/${seeded.id}?tab=board&ticket=${ticket?.id}`);
+    await gotoApp(page, `/workflows/${seeded.id}?tab=board&ticket=${ticket?.id}`);
     const drawer = page.getByRole('dialog');
     await expect(drawer).toBeVisible();
 
@@ -231,7 +232,7 @@ test.describe('workflow surfaces', () => {
   }) => {
     const seeded = await seed(request, ['Listed ticket']);
 
-    await page.goto(`/workflows/${seeded.id}?tab=board`);
+    await gotoApp(page, `/workflows/${seeded.id}?tab=board`);
     await page.getByRole('tab', { name: 'List' }).click();
     await expect(page).toHaveURL(/tab=list/);
     await expect(page.getByRole('table')).toBeVisible();
@@ -251,7 +252,7 @@ test.describe('workflow surfaces', () => {
     const first = seeded.states[0];
     expect(first).toBeTruthy();
 
-    await page.goto(`/workflows/${seeded.id}?tab=configuration`);
+    await gotoApp(page, `/workflows/${seeded.id}?tab=configuration`);
     const designer = page.getByTestId('state-designer');
     await expect(designer).toBeVisible();
 
@@ -271,7 +272,7 @@ test.describe('workflow surfaces', () => {
   test('list columns can be toggled from the column picker', async ({ page, request }) => {
     const seeded = await seed(request, ['Column ticket']);
 
-    await page.goto(`/workflows/${seeded.id}?tab=list`);
+    await gotoApp(page, `/workflows/${seeded.id}?tab=list`);
     await expect(page.getByRole('table')).toBeVisible();
     await expect(page.getByRole('columnheader', { name: 'Priority' })).toBeVisible();
 
@@ -283,8 +284,8 @@ test.describe('workflow surfaces', () => {
   test('my work buckets render counts and open the ticket drawer', async ({ page, request }) => {
     await seed(request, ['My work ticket']);
 
-    await page.goto('/my-work');
-    await expect(page.getByRole('heading', { name: 'My Work' })).toBeVisible();
+    await gotoApp(page, '/my-work');
+    await expect(page.getByRole('heading', { name: 'My Work', exact: true })).toBeVisible();
     await page.getByRole('tab', { name: /Waiting for me/ }).click();
     const row = page.getByRole('row').filter({ hasText: 'My work ticket' });
     await expect(row).toBeVisible();
@@ -297,8 +298,8 @@ test.describe('workflow surfaces', () => {
   test('approvals inbox renders its status filters and empty state', async ({ page, request }) => {
     await apiCall(request, 'GET', '/my-work');
 
-    await page.goto('/approvals');
-    await expect(page.getByRole('heading', { name: 'Approvals' })).toBeVisible();
+    await gotoApp(page, '/approvals');
+    await expect(page.getByRole('heading', { name: 'Approvals', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Pending' })).toBeVisible();
     await page.getByRole('button', { name: 'All' }).click();
     await expect(page).toHaveURL(/status=all/);

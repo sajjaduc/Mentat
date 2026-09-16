@@ -13,6 +13,7 @@
  * counts therefore describe bound resources, and an unbound resource is inherited
  * with no row to list. The panel says so instead of implying otherwise.
  */
+import { untrack } from 'svelte';
 import { page } from '$app/state';
 import { api, describeApiError } from '$ui/api';
 import DataTable from '$ui/common/DataTable.svelte';
@@ -91,9 +92,11 @@ async function load() {
   }
 }
 
+// Keyed on `workflowId` only; the loader also reads/writes `workflows` to pick a
+// default, which must not become a dependency.
 $effect(() => {
   void workflowId;
-  void load();
+  untrack(() => void load());
 });
 
 function openBind(resolution: BindingResolution | null) {

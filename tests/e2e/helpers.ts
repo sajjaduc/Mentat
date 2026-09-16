@@ -148,6 +148,21 @@ export async function signInBrowser(
 }
 
 /** Sign in through the form (used by the auth spec, which must test the real path). */
+/**
+ * Navigate to an in-app page and wait for hydration.
+ *
+ * The shell is progressively enhanced, so a click that lands before hydration does
+ * nothing at all — which shows up as a dialog that never opens. Waiting for the
+ * marker turns that into a deterministic start.
+ */
+export async function gotoApp(page: Page, path: string): Promise<void> {
+  await page.goto(path);
+  await page
+    .locator('[data-hydrated="true"]')
+    .first()
+    .waitFor({ state: 'attached', timeout: 20_000 });
+}
+
 export async function signInThroughForm(page: Page, id: TestIdentity): Promise<void> {
   await page.goto('/login');
   // The form is progressively enhanced, so wait for hydration before clicking:

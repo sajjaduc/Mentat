@@ -9,6 +9,7 @@
 
 import { sql } from 'drizzle-orm';
 import { z } from 'zod';
+import type { AgentView } from '../../agents/service';
 import {
   agentRunStats,
   archiveAgent,
@@ -25,6 +26,7 @@ import {
 } from '../../agents/service';
 import { env } from '../../config/env';
 import { Permissions } from '../../core/context';
+import type { Executor } from '../../db/client';
 import {
   deleteModel,
   listModels,
@@ -62,6 +64,25 @@ const agentBody = z.object({
   sourceAgentId: z.string().nullish()
 });
 
+/**
+ * Attach run statistics to an agent row.
+ *
+ * Every agent the API returns carries `stats`, because the agents list renders them
+ * and a client that appends a created or updated agent should not have to special-case
+ * the missing field.
+ */
+function withRunStats(
+  db: Executor,
+  workspaceId: string,
+  agent: AgentView
+): AgentView & { stats: { runs: number; failures: number; lastRunAt: number | null } } {
+  const stats = agentRunStats(db, workspaceId, [agent.id]);
+  return {
+    ...agent,
+    stats: stats.get(agent.id) ?? { runs: 0, failures: 0, lastRunAt: null }
+  };
+}
+
 export const agentRoutes = [
   route({
     method: 'GET',
@@ -73,18 +94,8 @@ export const agentRoutes = [
       const agents = listAgents(db, actor, {
         workflowId: workflowId === null ? undefined : workflowId
       });
-      const stats = agentRunStats(
-        db,
-        actor.workspaceId,
-        agents.map((agent) => agent.id)
-      );
       return {
-        body: {
-          agents: agents.map((agent) => ({
-            ...agent,
-            stats: stats.get(agent.id) ?? { runs: 0, failures: 0, lastRunAt: null }
-          }))
-        }
+        body: { agents: agents.map((agent) => withRunStats(db, actor.workspaceId, agent)) }
       };
     }
   }),
@@ -95,10 +106,10 @@ export const agentRoutes = [
     permission: Permissions.agentWrite,
     summary: 'Create an agent (version 1)',
     body: agentBody,
-    handler: ({ db, actor, body }) => ({
-      status: 201,
-      body: { agent: mutate(db, (tx) => createAgent(tx, actor, body as never)) }
-    })
+    handler: async ({ db, actor, body }) => {
+      const agent = await mutate(db, (tx) => createAgent(tx, actor, body as never));
+      return { status: 201, body: { agent: withRunStats(db, actor.workspaceId, agent) } };
+    }
   }),
 
   route({
@@ -107,7 +118,11 @@ export const agentRoutes = [
     permission: Permissions.agentRead,
     summary: 'Agent detail with the current version snapshot',
     handler: ({ db, actor, params }) => {
-      const agent = getAgentView(db, actor, params.id as string);
+      const agent = withRunStats(
+        db,
+        actor.workspaceId,
+        getAgentView(db, actor, params.id as string)
+      );
       const versions = listAgentVersions(db, actor, params.id as string);
       return { body: { agent, versions } };
     }
@@ -119,13 +134,12 @@ export const agentRoutes = [
     permission: Permissions.agentWrite,
     summary: 'Update an agent, producing a new immutable version',
     body: agentBody.partial().extend({ changeNote: z.string().max(500).optional() }),
-    handler: ({ db, actor, params, body }) => ({
-      body: {
-        agent: mutate(db, (tx) =>
-          updateAgent(tx, actor, { agentId: params.id as string, ...(body as object) } as never)
-        )
-      }
-    })
+    handler: async ({ db, actor, params, body }) => {
+      const agent = await mutate(db, (tx) =>
+        updateAgent(tx, actor, { agentId: params.id as string, ...(body as object) } as never)
+      );
+      return { body: { agent: withRunStats(db, actor.workspaceId, agent) } };
+    }
   }),
 
   route({
