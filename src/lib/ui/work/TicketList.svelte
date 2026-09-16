@@ -64,6 +64,7 @@ let {
   onColumnsChange
 }: Props = $props();
 
+let columnPickerOpen = $state(false);
 let rows = $state<TicketListRow[] | null>(null);
 let loading = $state(true);
 let error = $state<string | null>(null);
@@ -127,29 +128,39 @@ function toggleColumn(key: string) {
       {rows ? `${rows.length} ticket${rows.length === 1 ? '' : 's'}` : '—'}
       {#if rows && rows.length >= 200} (first 200){/if}
     </p>
-    <details class="relative">
-      <summary
-        class="flex h-8 cursor-pointer list-none items-center gap-1.5 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface)] px-2.5 text-xs text-[var(--color-ink-muted)] hover:border-[var(--color-border-strong)]"
+    <!-- A real button rather than a <details> disclosure: the column picker is a
+         menu of toggles, and a <summary> is not exposed as a button. -->
+    <div class="relative">
+      <button
+        type="button"
+        class="flex h-8 items-center gap-1.5 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface)] px-2.5 text-xs text-[var(--color-ink-muted)] hover:border-[var(--color-border-strong)]"
+        aria-haspopup="menu"
+        aria-expanded={columnPickerOpen}
+        onclick={() => (columnPickerOpen = !columnPickerOpen)}
       >
         Columns <span aria-hidden="true" class="text-[10px]">▾</span>
-      </summary>
-      <div
-        class="animate-pop-in absolute right-0 z-30 mt-1 max-h-72 w-60 overflow-y-auto rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface)] p-1.5 shadow-[var(--shadow-overlay)]"
-      >
-        {#each allColumns as column (column.key)}
-          <label
-            class="flex cursor-pointer items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-xs hover:bg-[var(--color-surface-muted)]"
-          >
-            <input
-              type="checkbox"
-              checked={columns.length === 0 || columns.includes(column.key)}
-              onchange={() => toggleColumn(column.key)}
-            />
-            <span class="truncate">{column.label}</span>
-          </label>
-        {/each}
-      </div>
-    </details>
+      </button>
+      {#if columnPickerOpen}
+        <div
+          role="menu"
+          aria-label="Choose columns"
+          class="animate-pop-in absolute right-0 z-30 mt-1 max-h-72 w-60 overflow-y-auto rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface)] p-1.5 shadow-[var(--shadow-overlay)]"
+        >
+          {#each allColumns as column (column.key)}
+            <label
+              class="flex cursor-pointer items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-xs hover:bg-[var(--color-surface-muted)]"
+            >
+              <input
+                type="checkbox"
+                checked={columns.length === 0 || columns.includes(column.key)}
+                onchange={() => toggleColumn(column.key)}
+              />
+              <span class="truncate">{column.label}</span>
+            </label>
+          {/each}
+        </div>
+      {/if}
+    </div>
   </div>
 
   <div class="min-h-0 flex-1 overflow-auto px-2 pb-4">

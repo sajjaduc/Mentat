@@ -56,6 +56,25 @@ Legend: **IT** = `tests/integration/**`, **UT** = `tests/unit/**`, **E2E** =
 | 19 | Delete/unlink Files safely without corrupting shared references | **IT** `acceptance` "19. deleting a file never destroys another ticket's content"; `files/lifecycle` shared-blob cases |
 | 20 | Pass the full TDD, security, supervisor and E2E review gates | `bun run verify` (913 tests, 0 failures), `security/sweep`, `hardening/fresh-install`, `hardening/scale`, `bun run test:e2e` |
 
+## End-to-end status
+
+`bun run test:e2e` runs four Playwright specs against a real dev server and its own
+database under `.e2e/`. Current state, stated plainly:
+
+| Spec | Result | Notes |
+| --- | --- | --- |
+| `tests/e2e/smoke.spec.ts` | **6/6 passing** | Sign-in through the form, create a workflow from a template, create a ticket inline on the board, move it from the card menu, open the ticket drawer and walk its four tabs, load every primary surface without an error state, and write a secret that is never rendered back. This is the spec the DoD references. |
+| `tests/e2e/work-surfaces.spec.ts` | 10/11 passing, 1 recorded defect | The board, list, drawer, approvals and My Work flows pass. The state-rename flow is marked `test.fixme` because the configuration surface re-creates its rows continuously, so Playwright can never reach a stable element. That is a real defect in the configuration surface, not a test artefact. |
+| `tests/e2e/configuration.spec.ts` | 4/11 passing | The remaining assertions were written against interface copy and control names that the shipped UI does not use. Fixing them means reconciling each locator with the shipped copy; the underlying flows work through the API and are covered by the integration suite. |
+| `tests/e2e/files-analytics-settings.spec.ts` | 11/22 passing | Same cause, concentrated in the dashboard authoring and workspace-settings sections. |
+
+In other words: the product works and the DoD path is verified in a browser, but the
+three broad per-surface specs are not yet a green gate. The workstreams that wrote
+them could not run them (the foundation was still broken at the time), so their
+locators and copy expectations were never validated against a live server. Making
+them green is the largest remaining item and is recorded here rather than papered
+over with forced clicks or generous timeouts.
+
 ## Additional gates
 
 | Gate | Command | Evidence |
