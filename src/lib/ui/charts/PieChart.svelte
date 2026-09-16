@@ -32,9 +32,8 @@ const CENTER = SIZE / 2;
 const RADIUS = 96;
 
 const data = $derived(series[0]?.data ?? []);
-/** Read once: the prop selects the geometry and does not change mid-render. */
-const isDonut = donut;
-const INNER = isDonut ? 58 : 0;
+const isDonut = $derived(donut);
+const INNER = $derived(isDonut ? 58 : 0);
 const total = $derived(totalOf(data.map((datum) => datum.value)));
 const totalLabel = $derived(formatValue(total));
 

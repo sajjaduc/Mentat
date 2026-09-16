@@ -124,17 +124,19 @@ let loading = $state(true);
 let loadingMore = $state(false);
 let error = $state<{ message: string; code: string | null } | null>(null);
 
-let search = $state(initialSearch);
-let mode = $state<'metadata' | 'content'>(initialMode);
-let filename = $state(initialFilename);
-let status = $state(initialStatus);
-let mimeType = $state(initialMimeType);
-let workflowId = $state(initialWorkflowId);
-let ticketId = $state(initialTicketId);
+// Seeded from the URL, then re-synced by the effect below when the query string
+// changes, so the initial reads are deliberate.
+let search = $state(untrack(() => initialSearch));
+let mode = $state<'metadata' | 'content'>(untrack(() => initialMode));
+let filename = $state(untrack(() => initialFilename));
+let status = $state(untrack(() => initialStatus));
+let mimeType = $state(untrack(() => initialMimeType));
+let workflowId = $state(untrack(() => initialWorkflowId));
+let ticketId = $state(untrack(() => initialTicketId));
 let view = $state<'table' | 'grid'>('table');
 let sortKey = $state<'createdAt' | 'updatedAt' | 'filename' | 'size'>('createdAt');
 let sortDirection = $state<'asc' | 'desc'>('desc');
-let filter = $state<FilterAst | null>(initialFilter);
+let filter = $state<FilterAst | null>(untrack(() => initialFilter));
 let columns = $state<ColumnKey[]>([...DEFAULT_COLUMNS]);
 let structuredOpen = $state(false);
 let columnsOpen = $state(false);
