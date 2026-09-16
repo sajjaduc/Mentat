@@ -207,6 +207,10 @@ export const dataRoutes = [
     permission: Permissions.fileRead,
     summary: 'Extracted content with page/span segments',
     handler: async ({ db, actor, params }) => {
+      // Resolve the file first so an unknown or foreign id is a 404 rather than an
+      // empty content payload.
+      if (!hasFileService()) throw errors.unsupported('File service is unavailable');
+      await fileService().requireFile(actor, params.id as string, db);
       const content = await db.all(
         sql`select id, content_kind, text, char_count, page_count, language, segments, truncated, created_at
             from file_extracted_content
@@ -1107,12 +1111,15 @@ export const dataRoutes = [
     path: '/jobs/:id/attempts',
     permission: Permissions.jobRead,
     summary: 'Attempt history for a job, including lease expiry',
-    handler: async ({ db, actor, params }) => ({
-      body: {
-        attempts: await getJobAttempts(db, params.id as string),
-        workspaceId: actor.workspaceId
-      }
-    })
+    handler: async ({ db, actor, params }) => {
+      // A job id from another workspace must not be confirmable, so the job is
+      // resolved workspace-scoped before its attempts are returned.
+      const rows = await db.all(
+        sql`select id from jobs where id = ${params.id} and workspace_id = ${actor.workspaceId}`
+      );
+      if (rows.length === 0) throw errors.notFound('Job', params.id as string);
+      return { body: { attempts: await getJobAttempts(db, params.id as string) } };
+    }
   }),
 
   route({

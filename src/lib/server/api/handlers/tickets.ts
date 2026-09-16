@@ -199,9 +199,10 @@ export const ticketRoutes = [
     path: '/tickets/:id/field-history',
     permission: Permissions.ticketRead,
     summary: 'Append-only field change history',
-    handler: async ({ db, actor, params }) => ({
-      body: { history: await ticketFieldChanges(db, actor, params.id as string) }
-    })
+    handler: async ({ db, actor, params }) => {
+      requireTicketSync(db, actor.workspaceId, params.id as string);
+      return { body: { history: await ticketFieldChanges(db, actor, params.id as string) } };
+    }
   }),
 
   // ------------------------------------------------------------------- notes
@@ -443,9 +444,10 @@ export const ticketRoutes = [
     path: '/tickets/:id/runs',
     permission: Permissions.runRead,
     summary: 'Agent runs for a ticket, oldest first',
-    handler: async ({ db, actor, params }) => ({
-      body: { runs: await listTicketRuns(db, actor.workspaceId, params.id as string) }
-    })
+    handler: async ({ db, actor, params }) => {
+      requireTicketSync(db, actor.workspaceId, params.id as string);
+      return { body: { runs: await listTicketRuns(db, actor.workspaceId, params.id as string) } };
+    }
   }),
 
   route({
@@ -514,6 +516,7 @@ export const ticketRoutes = [
     permission: Permissions.ticketRead,
     summary: 'Ticket-scoped run events for live-updating the drawer',
     handler: async ({ db, actor, params, query }) => {
+      requireTicketSync(db, actor.workspaceId, params.id as string);
       const since = queryInt({ query } as never, 'since', 0);
       return {
         body: {
@@ -570,8 +573,9 @@ export const ticketRoutes = [
     path: '/tickets/:id/file-values',
     permission: Permissions.ticketRead,
     summary: 'Typed field values only (used by the optimistic field editor)',
-    handler: ({ db, actor, params }) => ({
-      body: { fields: fieldValuesByKey(db, actor.workspaceId, params.id as string) }
-    })
+    handler: ({ db, actor, params }) => {
+      requireTicketSync(db, actor.workspaceId, params.id as string);
+      return { body: { fields: fieldValuesByKey(db, actor.workspaceId, params.id as string) } };
+    }
   })
 ];
