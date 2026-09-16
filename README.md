@@ -36,6 +36,18 @@ The first visit shows **Create the first account**: that account becomes the own
 of a starter workspace. If you ran the seed, sign in with
 `owner@mentat.local` / `mentat-local-dev`.
 
+### Docker
+
+Everything Mentat needs is in one service — server, worker and database:
+
+```bash
+export MENTAT_MASTER_KEY="$(openssl rand -base64 32)"
+docker compose up -d          # http://localhost:5273
+```
+
+State lives in the `mentat-data` volume (database, blobs and master key). Ollama runs
+on the host; the compose file points Mentat at `host.docker.internal:11434`.
+
 ### Connect a local model
 
 1. `ollama serve` (defaults to `http://localhost:11434`) and `ollama pull llama3.1:8b`.

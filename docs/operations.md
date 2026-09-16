@@ -36,6 +36,28 @@ Run the published server with `bun ./build/index.js` (or `bun run start`), not w
 whether the master key came from the environment, and whether an in-process worker
 is enabled. It is unauthenticated because it exposes no tenant data.
 
+### Docker
+
+```bash
+export MENTAT_MASTER_KEY="$(openssl rand -base64 32)"
+docker compose up -d
+docker compose logs -f mentat
+docker compose exec mentat wget -q -O- http://127.0.0.1:3000/api/health
+```
+
+The image is built from the same `bun run build` output described above and runs
+`bun ./build/index.js`. `MENTAT_DB_PATH`, `MENTAT_BLOB_ROOT` and `MENTAT_DATA_DIR` all
+point inside `/data`, which is the single volume to back up:
+
+```bash
+docker run --rm -v mentat-data:/data -v "$PWD/backup:/backup" alpine \
+  tar czf /backup/mentat-$(date +%F).tgz -C /data .
+```
+
+Because the master key is inside that volume, a backup of the volume is a complete
+backup. Store it encrypted, or keep the key out of the volume by setting
+`MENTAT_MASTER_KEY` from your secret manager and backing up `/data` alone.
+
 ## Data on disk
 
 | Path | Contents | Back up? |
