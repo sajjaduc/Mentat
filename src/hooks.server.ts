@@ -54,7 +54,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   }
 };
 
-export const handleError: HandleServerError = ({ error, event, status, message }) => {
+export const handleError: HandleServerError = ({ error, event, status }) => {
   const appError = isAppError(error) ? error : toAppError(error);
   log.error('unhandled error', { url: event.url.pathname, status, error });
   return {

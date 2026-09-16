@@ -18,11 +18,11 @@ import {
   systemActor
 } from '../../../src/lib/server/core/context';
 import { uuidv7 } from '../../../src/lib/server/core/ids';
-import { users, workflowStates, workspaces } from '../../../src/lib/server/db/schema';
+import { users, workflowStates } from '../../../src/lib/server/db/schema';
 import { clearProviderOverrides } from '../../../src/lib/server/providers/registry';
-import { getDefaultToolRegistry, resetToolRegistry } from '../../../src/lib/server/tools/registry';
+import { resetToolRegistry } from '../../../src/lib/server/tools/registry';
 import { createTestDatabase, type TestDatabase } from '../../helpers/db';
-import { addMember, createWorkflow, createWorkspace } from '../../helpers/factories';
+import { addMember, createWorkspace } from '../../helpers/factories';
 
 let handle: TestDatabase;
 let workspaceId: string;
@@ -540,6 +540,5 @@ describe('operational endpoints', () => {
     });
     expect(result.status).toBe(403);
     void systemActor;
-    void workspaces;
   });
 });
