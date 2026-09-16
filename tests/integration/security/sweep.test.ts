@@ -29,7 +29,7 @@ import { allSchema, users } from '../../../src/lib/server/db/schema';
 import { clearProviderOverrides } from '../../../src/lib/server/providers/registry';
 import { assertSafeKey, blobKeyFor } from '../../../src/lib/server/storage/blob-store';
 import { LocalBlobStore } from '../../../src/lib/server/storage/local-blob-store';
-import { getDefaultToolRegistry, resetToolRegistry } from '../../../src/lib/server/tools/registry';
+import { resetToolRegistry } from '../../../src/lib/server/tools/registry';
 import { createTestDatabase, type TestDatabase } from '../../helpers/db';
 import { addMember, createWorkflow, createWorkspace } from '../../helpers/factories';
 import { jsonResponse, type MockHttpServer, startMockServer } from '../../helpers/mock-http';
