@@ -47,8 +47,20 @@ export class ApiError extends Error {
 
 type QueryValue = string | number | boolean | null | undefined;
 
+/**
+ * Every API route lives under `/api`, so the client adds that prefix itself. Doing
+ * it here means a caller cannot accidentally request a *page* path (which would
+ * render the SvelteKit 404 instead of returning JSON), and absolute URLs pass
+ * through untouched for the rare case that needs one.
+ */
+function apiPath(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  if (path === '/api' || path.startsWith('/api/')) return path;
+  return path.startsWith('/') ? `/api${path}` : `/api/${path}`;
+}
+
 function buildUrl(path: string, query?: Record<string, QueryValue>): string {
-  const url = new URL(path, globalThis.location?.origin ?? 'http://localhost');
+  const url = new URL(apiPath(path), globalThis.location?.origin ?? 'http://localhost');
   if (query) {
     for (const [key, value] of Object.entries(query)) {
       if (value === undefined || value === null || value === '') continue;

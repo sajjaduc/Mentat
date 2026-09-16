@@ -207,19 +207,35 @@ export const authRoutes = [
   route({
     method: 'POST',
     path: '/workspaces',
-    permission: Permissions.workspaceRead,
     summary: 'Create a workspace owned by the current user',
     body: z.object({
       name: z.string().trim().min(1).max(120),
       description: z.string().max(2000).nullish()
     }),
     handler: async ({ db, actor, body }) => {
+      // Deliberately not gated on `workspace:read`: a signed-in account with no
+      // workspace has no permissions in any workspace, so requiring one would leave
+      // a newly registered user permanently unable to create their first workspace.
+      // The actor type check is the real gate.
+      if (actor.actorType !== 'user' || !actor.actorId) {
+        throw errors.forbidden('Only a signed-in user can create a workspace', {
+          actorType: actor.actorType
+        });
+      }
       const input = body as { name: string; description?: string | null };
       const workspace = createWorkspaceWithOwner(db, {
         name: input.name,
         description: input.description ?? null,
-        ownerUserId: actor.actorId as string
+        ownerUserId: actor.actorId
       });
+
+      // Creating a workspace should make it the active one, otherwise a user who
+      // registers on an instance that already has workspaces would create one and
+      // still be acting without a workspace on their next request.
+      if (actor.sessionId) {
+        switchWorkspace(db, actor.sessionId, actor.actorId, workspace.id);
+      }
+
       return { status: 201, body: { workspace } };
     }
   }),

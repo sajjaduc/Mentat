@@ -53,7 +53,10 @@ function writeSharedSession(value: SharedSession): void {
 async function sessionIsValid(request: APIRequestContext, cookie: string): Promise<boolean> {
   try {
     const response = await request.get('/api/auth/me', { headers: { cookie } });
-    return response.ok();
+    if (!response.ok()) return false;
+    const body = (await response.json()) as { workspace?: { id?: string } | null };
+    // A session without a workspace cannot act on anything, so it is not reusable.
+    return Boolean(body.workspace?.id);
   } catch {
     return false;
   }
@@ -94,7 +97,7 @@ test('HTTP services: create a service, build an operation, run a test request', 
   await expect(page.getByText('No HTTP services yet')).toBeVisible({ timeout: 15_000 });
   const origin = new URL(page.url()).origin;
   await page.getByRole('button', { name: 'New service' }).click();
-  const dialog = page.getByRole('dialog');
+  const dialog = page.getByRole('dialog').last();
   await dialog.getByLabel('Name').fill(name);
   await dialog.getByLabel('Base URL').fill(origin);
   await dialog.getByRole('button', { name: 'Create service' }).click();
@@ -150,7 +153,7 @@ test('Models & providers: fake provider, connection test, hand-registered model'
   await expect(page.getByText('No models yet').first()).toBeVisible({ timeout: 15_000 });
   await page.getByRole('button', { name: 'Add provider' }).click();
 
-  const dialog = page.getByRole('dialog');
+  const dialog = page.getByRole('dialog').last();
   await dialog.getByLabel('Type').selectOption('fake');
   await dialog.getByLabel('Name').fill(providerName);
   await dialog.getByRole('button', { name: 'Create provider' }).click();
@@ -185,7 +188,7 @@ test('Agents: create an agent and inspect its configuration tabs', async ({ page
   await expect(page.getByText('No agents yet')).toBeVisible({ timeout: 15_000 });
   await page.getByRole('button', { name: 'New agent' }).click();
 
-  const dialog = page.getByRole('dialog');
+  const dialog = page.getByRole('dialog').last();
   await dialog.getByLabel('Name').fill(name);
   await dialog.getByRole('button', { name: 'Create agent' }).click();
   await page.waitForURL(/\/agents\/[^/]+$/, { timeout: 20_000 });
@@ -220,7 +223,7 @@ test('Skills: create a skill and save an instruction change', async ({ page }) =
   await expect(page.getByText('No skills yet')).toBeVisible({ timeout: 15_000 });
   await page.getByRole('button', { name: 'New skill' }).click();
 
-  const dialog = page.getByRole('dialog');
+  const dialog = page.getByRole('dialog').last();
   await dialog.getByLabel('Name').fill(name);
   await dialog.getByRole('button', { name: 'Create skill' }).click();
   await page.waitForURL(/\/skills\/[^/]+$/, { timeout: 20_000 });
@@ -238,7 +241,7 @@ test('Tools: the catalogue explains native capabilities and stored tools', async
   await expect(page.getByRole('heading', { name: 'Tools' })).toBeVisible();
   // The native registry always reports capabilities; waiting for one proves the load ran.
   await expect(page.getByText(/mentat\./).first()).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText('Native capabilities')).toBeVisible();
+  await expect(page.getByText('Native capabilities').first()).toBeVisible();
   await expect(page.getByText('Stored tools')).toBeVisible();
   // A native tool key and the enforcement note are shown so an operator can grant them.
   await expect(page.getByText(/mentat\.ticket|ticket:read/).first()).toBeVisible();

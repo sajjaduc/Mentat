@@ -89,12 +89,21 @@ export async function registerAndSignIn(
   const cookie = setCookie.split(';')[0] ?? '';
   const body = (await response.json()) as { workspaceId: string | null };
 
+  // Registration only creates a starter workspace on an empty instance. A second
+  // account (or a rerun against a warm database) must create its own, which a
+  // signed-in user with no workspace is allowed to do.
   let workspaceId = body.workspaceId;
   if (!workspaceId) {
     const created = await apiCall<{ workspace: { id: string } }>(request, 'POST', '/workspaces', {
       data: { name: id.workspaceName }
     });
     workspaceId = created.workspace.id;
+    // The route activates the new workspace for this session; assert it took effect
+    // so a spec never runs against a workspace-less actor.
+    await apiCall(request, 'POST', '/auth/switch-workspace', { data: { workspaceId } });
+  }
+  if (!workspaceId) {
+    throw new Error('Registered account has no workspace and could not create one');
   }
 
   return { identity: id, cookie, workspaceId };
