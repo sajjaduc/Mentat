@@ -8,7 +8,7 @@
  * Every factory is workspace-scoped, so tenant-isolation tests can build two
  * complete tenants in one database.
  */
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import {
   type ActorContext,
   createActorContext,
@@ -19,10 +19,19 @@ import type { Executor } from '../../src/lib/server/db/client';
 import {
   type ActorType,
   type ApprovalPolicy,
+  agentRuns,
+  approvalRequests,
+  blobs,
   type CachePolicy,
   type CronTriggerConfig,
+  dashboards,
+  dashboardWidgets,
   type FieldType,
   fieldDefinitions,
+  fieldValueHistory,
+  fileFieldValues,
+  fileSources,
+  files,
   type HttpAuthConfig,
   type HttpAuthType,
   type HttpBodyMapping,
@@ -51,10 +60,18 @@ import {
   teamMembers,
   teams,
   ticketFieldValues,
+  ticketFiles,
+  ticketLabels,
+  ticketStateHistory,
   tickets,
   triggers,
   users,
   type WebhookTriggerConfig,
+  type WidgetDataSource,
+  type WidgetGrouping,
+  type WidgetMeasure,
+  type WidgetTimeRange,
+  type WidgetType,
   type WorkspaceRole,
   workflowStates,
   workflows,
@@ -888,4 +905,486 @@ export function createFakeFileService(): FakeFileService {
   };
 
   return { service, ingestCalls, linkCalls, workflowContextCalls };
+}
+
+export async function updateTicketRow(
+  db: Executor,
+  ticketId: string,
+  values: Partial<typeof tickets.$inferInsert>
+): Promise<void> {
+  await db.update(tickets).set(values).where(eq(tickets.id, ticketId)).run();
+}
+
+/**
+ * Persist a typed ticket field value in the *correct* typed column. The original
+ * `setTicketFieldValue` only writes `valueJson`, which is not what filtering and
+ * analytics read.
+ */
+export async function setTypedFieldValue(
+  db: Executor,
+  options: {
+    workspaceId: string;
+    ticketId: string;
+    fieldDefinitionId: string;
+    type: FieldType;
+    value: unknown;
+    updatedAt?: number;
+  }
+): Promise<void> {
+  const columns = typedValueColumns(options.type, options.value);
+  await db
+    .delete(ticketFieldValues)
+    .where(
+      and(
+        eq(ticketFieldValues.ticketId, options.ticketId),
+        eq(ticketFieldValues.fieldDefinitionId, options.fieldDefinitionId)
+      )
+    )
+    .run();
+  await db
+    .insert(ticketFieldValues)
+    .values({
+      id: uuidv7(),
+      workspaceId: options.workspaceId,
+      ticketId: options.ticketId,
+      fieldDefinitionId: options.fieldDefinitionId,
+      ...columns,
+      updatedAt: options.updatedAt ?? Date.now()
+    } as never)
+    .run();
+}
+
+export async function setFileFieldValueTyped(
+  db: Executor,
+  options: {
+    workspaceId: string;
+    fileId: string;
+    workflowId?: string | null;
+    fieldDefinitionId: string;
+    type: FieldType;
+    value: unknown;
+  }
+): Promise<void> {
+  const columns = typedValueColumns(options.type, options.value);
+  await db
+    .insert(fileFieldValues)
+    .values({
+      id: uuidv7(),
+      workspaceId: options.workspaceId,
+      fileId: options.fileId,
+      workflowId: options.workflowId ?? null,
+      fieldDefinitionId: options.fieldDefinitionId,
+      ...columns,
+      updatedAt: Date.now()
+    } as never)
+    .run();
+}
+
+function typedValueColumns(type: FieldType, value: unknown): Record<string, unknown> {
+  if (value === null || value === undefined) {
+    return {
+      valueText: null,
+      valueNumber: null,
+      valueDate: null,
+      valueBool: null,
+      valueJson: null,
+      searchText: null
+    };
+  }
+  switch (type) {
+    case 'number':
+    case 'currency': {
+      const numeric = typeof value === 'number' ? value : Number(value);
+      return { valueNumber: numeric, valueJson: value, searchText: String(value).toLowerCase() };
+    }
+    case 'date':
+    case 'datetime': {
+      const stamp = typeof value === 'number' ? value : Date.parse(String(value));
+      return { valueDate: stamp, valueJson: value };
+    }
+    case 'boolean':
+      return { valueBool: Boolean(value), valueJson: value };
+    case 'multi_select': {
+      const list = Array.isArray(value) ? value : [value];
+      return {
+        valueJson: list,
+        searchText: list
+          .map((entry) => String(entry))
+          .join(' ')
+          .toLowerCase()
+      };
+    }
+    case 'json':
+      return {
+        valueJson: value,
+        searchText:
+          typeof value === 'string' ? value.toLowerCase() : JSON.stringify(value).toLowerCase()
+      };
+    default:
+      return {
+        valueText: String(value),
+        searchText: String(value).toLowerCase(),
+        valueJson: value
+      };
+  }
+}
+
+export async function addTicketLabel(
+  db: Executor,
+  options: { workspaceId: string; ticketId: string; labelId: string }
+): Promise<string> {
+  const id = uuidv7();
+  await db
+    .insert(ticketLabels)
+    .values({
+      id,
+      workspaceId: options.workspaceId,
+      ticketId: options.ticketId,
+      labelId: options.labelId,
+      createdAt: Date.now()
+    })
+    .run();
+  return id;
+}
+
+export async function createTicketStateInterval(
+  db: Executor,
+  options: {
+    workspaceId: string;
+    ticketId: string;
+    workflowId: string;
+    stateId: string;
+    stateName: string;
+    stateKind?: string;
+    previousStateId?: string | null;
+    enteredAt: number;
+    exitedAt?: number | null;
+    durationMs?: number | null;
+    enteredByType?: ActorType;
+    runId?: string | null;
+  }
+): Promise<string> {
+  const id = uuidv7(options.enteredAt);
+  const exitedAt = options.exitedAt ?? null;
+  await db
+    .insert(ticketStateHistory)
+    .values({
+      id,
+      workspaceId: options.workspaceId,
+      ticketId: options.ticketId,
+      workflowId: options.workflowId,
+      stateId: options.stateId,
+      stateName: options.stateName,
+      stateKind: options.stateKind ?? 'manual',
+      previousStateId: options.previousStateId ?? null,
+      enteredAt: options.enteredAt,
+      exitedAt,
+      durationMs: options.durationMs ?? (exitedAt === null ? null : exitedAt - options.enteredAt),
+      enteredByType: options.enteredByType ?? 'user',
+      runId: options.runId ?? null
+    })
+    .run();
+  return id;
+}
+
+export async function createFieldValueHistory(
+  db: Executor,
+  options: {
+    workspaceId: string;
+    ownerId: string;
+    fieldDefinitionId: string;
+    ownerType?: 'ticket' | 'file';
+    previousValue?: unknown;
+    newValue?: unknown;
+    createdAt?: number;
+    actorType?: ActorType;
+  }
+): Promise<string> {
+  const id = uuidv7(options.createdAt ?? Date.now());
+  await db
+    .insert(fieldValueHistory)
+    .values({
+      id,
+      workspaceId: options.workspaceId,
+      ownerType: options.ownerType ?? 'ticket',
+      ownerId: options.ownerId,
+      fieldDefinitionId: options.fieldDefinitionId,
+      previousValue: (options.previousValue ?? null) as never,
+      newValue: (options.newValue ?? null) as never,
+      actorType: options.actorType ?? 'user',
+      createdAt: options.createdAt ?? Date.now()
+    })
+    .run();
+  return id;
+}
+
+export async function createAgentRun(
+  db: Executor,
+  options: {
+    workspaceId: string;
+    ticketId: string;
+    workflowId: string;
+    stateId: string;
+    status?:
+      | 'queued'
+      | 'running'
+      | 'succeeded'
+      | 'failed'
+      | 'cancelled'
+      | 'awaiting_approval'
+      | 'skipped';
+    agentId?: string;
+    createdAt?: number;
+  }
+): Promise<string> {
+  const id = uuidv7(options.createdAt ?? Date.now());
+  const createdAt = options.createdAt ?? Date.now();
+  await db
+    .insert(agentRuns)
+    .values({
+      id,
+      workspaceId: options.workspaceId,
+      ticketId: options.ticketId,
+      workflowId: options.workflowId,
+      stateId: options.stateId,
+      agentId: options.agentId ?? 'agent-1',
+      agentVersionId: 'agent-version-1',
+      status: options.status ?? 'queued',
+      createdAt,
+      updatedAt: createdAt
+    })
+    .run();
+  return id;
+}
+
+export async function createApprovalRequest(
+  db: Executor,
+  options: {
+    workspaceId: string;
+    ticketId: string;
+    status?: 'pending' | 'approved' | 'rejected' | 'cancelled' | 'expired';
+    kind?: 'state_transition' | 'tool_call' | 'transfer' | 'ticket_creation';
+    createdAt?: number;
+  }
+): Promise<string> {
+  const createdAt = options.createdAt ?? Date.now();
+  const id = uuidv7(createdAt);
+  await db
+    .insert(approvalRequests)
+    .values({
+      id,
+      workspaceId: options.workspaceId,
+      ticketId: options.ticketId,
+      kind: options.kind ?? 'state_transition',
+      title: 'Approval',
+      requestedAction: { type: 'transition' } as never,
+      requestedByType: 'agent',
+      status: options.status ?? 'pending',
+      createdAt
+    })
+    .run();
+  return id;
+}
+
+export async function createBlobRecord(
+  db: Executor,
+  options: {
+    workspaceId: string;
+    contentHash?: string;
+    size?: number;
+    mimeType?: string;
+  }
+): Promise<string> {
+  const id = uuidv7();
+  const contentHash = options.contentHash ?? unique('hash');
+  await db
+    .insert(blobs)
+    .values({
+      id,
+      workspaceId: options.workspaceId,
+      contentHash,
+      size: options.size ?? 128,
+      mimeType: options.mimeType ?? 'application/pdf',
+      storageProvider: 'local',
+      storageKey: `blobs/${contentHash}`,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    })
+    .run();
+  return id;
+}
+
+export async function createFileRecord(
+  db: Executor,
+  options: {
+    workspaceId: string;
+    blobId?: string;
+    originalFilename?: string;
+    mimeType?: string;
+    size?: number;
+    kind?: 'upload' | 'generated' | 'external';
+    status?: 'pending' | 'processing' | 'ready' | 'failed' | 'quarantined';
+    summary?: string | null;
+    primaryWorkflowId?: string | null;
+    metadata?: Record<string, unknown> | null;
+    createdAt?: number;
+    updatedAt?: number;
+  }
+): Promise<string> {
+  const blobId =
+    options.blobId ?? (await createBlobRecord(db, { workspaceId: options.workspaceId }));
+  const id = uuidv7(options.createdAt ?? Date.now());
+  const createdAt = options.createdAt ?? Date.now();
+  await db
+    .insert(files)
+    .values({
+      id,
+      workspaceId: options.workspaceId,
+      blobId,
+      originalFilename: options.originalFilename ?? unique('file.pdf'),
+      mimeType: options.mimeType ?? 'application/pdf',
+      size: options.size ?? 128,
+      kind: options.kind ?? 'upload',
+      status: options.status ?? 'ready',
+      summary: options.summary ?? null,
+      primaryWorkflowId: options.primaryWorkflowId ?? null,
+      metadata: (options.metadata ?? null) as never,
+      createdAt,
+      updatedAt: options.updatedAt ?? createdAt
+    })
+    .run();
+  return id;
+}
+
+export async function linkTicketFile(
+  db: Executor,
+  options: {
+    workspaceId: string;
+    ticketId: string;
+    fileId: string;
+    relationship?: 'attachment' | 'reference' | 'output' | 'evidence';
+    createdAt?: number;
+  }
+): Promise<string> {
+  const id = uuidv7(options.createdAt ?? Date.now());
+  await db
+    .insert(ticketFiles)
+    .values({
+      id,
+      workspaceId: options.workspaceId,
+      ticketId: options.ticketId,
+      fileId: options.fileId,
+      relationship: options.relationship ?? 'attachment',
+      createdAt: options.createdAt ?? Date.now()
+    })
+    .run();
+  return id;
+}
+
+export async function addFileSource(
+  db: Executor,
+  options: {
+    workspaceId: string;
+    fileId: string;
+    sourceType:
+      | 'human_upload'
+      | 'incoming_email'
+      | 'incoming_message'
+      | 'webhook'
+      | 'agent_run'
+      | 'http_connector'
+      | 'api'
+      | 'system';
+    ticketId?: string | null;
+    occurredAt?: number;
+  }
+): Promise<string> {
+  const id = uuidv7();
+  await db
+    .insert(fileSources)
+    .values({
+      id,
+      workspaceId: options.workspaceId,
+      fileId: options.fileId,
+      sourceType: options.sourceType,
+      ticketId: options.ticketId ?? null,
+      occurredAt: options.occurredAt ?? Date.now(),
+      createdAt: Date.now()
+    })
+    .run();
+  return id;
+}
+
+export async function createDashboardRecord(
+  db: Executor,
+  options: {
+    workspaceId: string;
+    name?: string;
+    description?: string | null;
+    globalFilters?: unknown;
+    layout?: Array<{ widgetId: string; x: number; y: number; w: number; h: number }> | null;
+    isShared?: boolean;
+    isDefault?: boolean;
+    createdByUserId?: string | null;
+  }
+): Promise<string> {
+  const id = uuidv7();
+  const now = Date.now();
+  await db
+    .insert(dashboards)
+    .values({
+      id,
+      workspaceId: options.workspaceId,
+      name: options.name ?? unique('Dashboard'),
+      description: options.description ?? null,
+      globalFilters: (options.globalFilters ?? null) as never,
+      layout: (options.layout ?? null) as never,
+      isShared: options.isShared ?? true,
+      isDefault: options.isDefault ?? false,
+      createdByUserId: options.createdByUserId ?? null,
+      createdAt: now,
+      updatedAt: now
+    })
+    .run();
+  return id;
+}
+
+export async function createWidgetRecord(
+  db: Executor,
+  options: {
+    workspaceId: string;
+    dashboardId: string;
+    type: WidgetType;
+    dataSource: WidgetDataSource;
+    measure: WidgetMeasure;
+    grouping?: WidgetGrouping | null;
+    timeRange?: WidgetTimeRange | null;
+    filter?: unknown;
+    title?: string;
+    position?: number;
+    savedViewId?: string | null;
+  }
+): Promise<string> {
+  const id = uuidv7();
+  const now = Date.now();
+  await db
+    .insert(dashboardWidgets)
+    .values({
+      id,
+      workspaceId: options.workspaceId,
+      dashboardId: options.dashboardId,
+      title: options.title ?? 'Widget',
+      type: options.type,
+      position: options.position ?? 0,
+      dataSource: options.dataSource as never,
+      filter: (options.filter ?? null) as never,
+      measure: options.measure as never,
+      grouping: (options.grouping ?? null) as never,
+      timeRange: (options.timeRange ?? null) as never,
+      savedViewId: options.savedViewId ?? null,
+      createdAt: now,
+      updatedAt: now
+    })
+    .run();
+  return id;
 }
