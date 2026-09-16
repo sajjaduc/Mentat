@@ -1,6 +1,7 @@
 <script lang="ts">
 /** Input: labelled text field with inline error and hint text. */
 import type { HTMLInputAttributes } from 'svelte/elements';
+import { nextControlId } from './ids';
 
 interface Props extends HTMLInputAttributes {
   label?: string;
@@ -15,9 +16,12 @@ let {
   size = 'md',
   class: className = '',
   id,
+  // `value` must be declared bindable, otherwise `bind:value` on this component is
+  // one-way: the parent's setter is never called.
+  value = $bindable(),
   ...rest
 }: Props = $props();
-const inputId = id ?? `input-${Math.random().toString(36).slice(2, 9)}`;
+const inputId = $derived(id ?? `input-${nextControlId()}`);
 const sizes = { sm: 'h-7 text-xs', md: 'h-9 text-sm' } as const;
 </script>
 
@@ -27,6 +31,7 @@ const sizes = { sm: 'h-7 text-xs', md: 'h-9 text-sm' } as const;
   {/if}
   <input
     {...rest}
+    bind:value
     id={inputId}
     aria-invalid={error ? 'true' : undefined}
     aria-describedby={hint || error ? `${inputId}-help` : undefined}

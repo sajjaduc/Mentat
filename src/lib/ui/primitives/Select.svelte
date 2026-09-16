@@ -1,6 +1,7 @@
 <script lang="ts">
 /** Select: native select styled to match Input, with grouped options support. */
 import type { HTMLSelectAttributes } from 'svelte/elements';
+import { nextControlId } from './ids';
 
 interface Props extends HTMLSelectAttributes {
   label?: string;
@@ -17,9 +18,11 @@ let {
   placeholder,
   class: className = '',
   id,
+  // `value` must be declared bindable, otherwise `bind:value` is one-way.
+  value = $bindable(),
   ...rest
 }: Props = $props();
-const inputId = id ?? `select-${Math.random().toString(36).slice(2, 9)}`;
+const inputId = $derived(id ?? `select-${nextControlId()}`);
 </script>
 
 <div class="flex flex-col gap-1.5">
@@ -28,6 +31,7 @@ const inputId = id ?? `select-${Math.random().toString(36).slice(2, 9)}`;
   {/if}
   <select
     {...rest}
+    bind:value
     id={inputId}
     class="h-9 w-full rounded-[var(--radius-md)] border bg-[var(--color-surface)] px-2 text-sm
       {error ? 'border-[var(--color-danger)]' : 'border-[var(--color-border-subtle)]'}

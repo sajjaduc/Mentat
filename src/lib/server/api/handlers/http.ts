@@ -404,8 +404,10 @@ export const publicWebhookRoutes = [
     path: '/webhooks/:token',
     public: true,
     summary: 'Receive a webhook delivery for a trigger',
-    handler: async ({ db, params, request }) => {
-      const rawBody = await request.text();
+    handler: async ({ db, params, request, rawBody: dispatchedBody }) => {
+      // The dispatcher already read the body; re-reading the stream here would
+      // return an empty string for a request whose body was consumed.
+      const rawBody = dispatchedBody ?? (await request.text());
       const headers: Record<string, string> = {};
       request.headers.forEach((value, key) => {
         headers[key.toLowerCase()] = value;

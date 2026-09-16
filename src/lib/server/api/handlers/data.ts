@@ -63,6 +63,7 @@ import {
   unlinkFromTicket
 } from '../../files/lifecycle';
 import { findFiles, searchFileContent } from '../../files/retrieval';
+import { andOf, combineFilters, type FilterCondition } from '../../filters/ast';
 import {
   applySavedView,
   createSavedView,
@@ -73,6 +74,7 @@ import {
 import { getJobAttempts, listJobs } from '../../jobs/queue';
 import { createSecret, deleteSecret, listSecrets, rotateSecret } from '../../secrets/service';
 import { deleteStateValue, getStateValue, listState, setStateValue } from '../../state/service';
+import { parseFilterInput } from '../../tickets/query';
 import { mutate, queryBool, queryInt, queryString } from '../helpers';
 import { route } from '../types';
 
@@ -84,22 +86,47 @@ export const dataRoutes = [
     method: 'GET',
     path: '/files',
     permission: Permissions.fileRead,
-    summary: 'Find files by metadata and typed file fields',
+    summary: 'Find files by metadata and typed file fields, expressed as a filter AST',
     handler: async ({ db, actor, query, request }) => {
       const params = new URL(request.url).searchParams;
+      // Metadata shortcuts are translated into the same filter AST the ticket list
+      // uses, rather than being passed as ad-hoc query fields the retrieval layer
+      // would silently ignore (ADR-0012).
+      const conditions: FilterCondition[] = [];
+      const text = (name: string, key: string) => {
+        const value = params.get(name);
+        if (value)
+          conditions.push({ type: 'condition', kind: 'system', key, operator: 'contains', value });
+      };
+      const exact = (name: string, key: string) => {
+        const value = params.get(name);
+        if (value)
+          conditions.push({ type: 'condition', kind: 'system', key, operator: 'eq', value });
+      };
+
+      text('filename', 'filename');
+      exact('mimeType', 'mimeType');
+      exact('status', 'status');
+      exact('workflowId', 'workflowId');
+      exact('ticketId', 'ticketId');
+      exact('sourceType', 'sourceType');
+      exact('language', 'language');
+      exact('contentHash', 'contentHash');
+
+      const explicit = parseFilterInput(params.get('filter'));
+      const filter = combineFilters(explicit, conditions.length > 0 ? andOf(conditions) : null);
+
       return {
         body: await findFiles(
           actor,
           {
-            filenameContains: params.get('filename') ?? undefined,
-            mimeType: params.get('mimeType') ?? undefined,
-            status: (params.get('status') as never) ?? undefined,
-            workflowId: params.get('workflowId') ?? undefined,
-            ticketId: params.get('ticketId') ?? undefined,
-            contentQuery: params.get('content') ?? undefined,
+            filter,
+            sort: params.get('sort')
+              ? (JSON.parse(params.get('sort') as string) as never)
+              : undefined,
             limit: queryInt({ query } as never, 'limit', 50, { min: 1, max: 200 }),
-            cursor: params.get('cursor') ?? null
-          } as never,
+            cursor: params.get('cursor')
+          },
           db
         )
       };
@@ -443,7 +470,8 @@ export const dataRoutes = [
       description: z.string().max(2000).nullish(),
       scope: z.enum(['tickets', 'files']).optional(),
       workflowId: z.string().nullish(),
-      filterAst: z.unknown().nullish(),
+      /** Serializable filter AST; `null` means "all items". */
+      filter: z.unknown().nullish(),
       sort: z.array(z.object({ field: z.string(), direction: z.enum(['asc', 'desc']) })).nullish(),
       columns: z.array(z.string()).nullish(),
       isShared: z.boolean().optional(),

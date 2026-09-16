@@ -81,7 +81,7 @@ async function submit(event: SubmitEvent) {
           type="button"
           class="w-full text-center text-xs text-[var(--color-ink-subtle)] hover:text-[var(--color-ink)]"
           onclick={() => {
-            mode = mode === 'login' ? 'register' : 'login';
+            modeOverride = mode === 'login' ? 'register' : 'login';
             error = null;
           }}
         >

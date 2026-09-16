@@ -15,7 +15,7 @@ const tones = {
 </script>
 
 <div class="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-80 flex-col gap-2" aria-live="polite" role="status">
-  {#each toasts.current as toast (toast.id)}
+  {#each $toasts as toast (toast.id)}
     <div class="animate-pop-in pointer-events-auto rounded-[var(--radius-md)] border bg-[var(--color-surface)] p-3 shadow-[var(--shadow-overlay)] {tones[toast.tone]}">
       <div class="flex items-start justify-between gap-2">
         <div class="space-y-0.5">

@@ -583,11 +583,18 @@ export function cancelAgentRunSync(db: Executor, actor: ActorContext, runId: str
 // ---------------------------------------------------------------------------
 
 export function registerExecutionJobHandlers(): void {
-  // Registration is idempotent: bootstrap runs once per process, but tests and a
-  // future hot-reload path may call it again, and duplicate registration is fatal
-  // by design — so skip rather than throw when the handler is already present.
-  if (getJobHandler('state.enter')) return;
+  // Registration is idempotent *per handler*: bootstrap runs once per process, but
+  // tests and a future hot-reload path may call it again, and duplicate registration
+  // is fatal by design. Checking each type individually means one handler already
+  // being present (for example after a test installed its own) cannot block the rest.
+  if (!getJobHandler('state.enter')) registerStateEntryHandler();
+  if (!getJobHandler('approval.resume')) registerApprovalResumeHandler();
+  if (!getJobHandler('maintenance.reap')) registerMaintenanceHandler();
 
+  log.debug('execution job handlers registered');
+}
+
+function registerStateEntryHandler(): void {
   registerJobHandler('state.enter', async (context: JobHandlerContext) => {
     const payload = context.job.payload as unknown as StateEntryPayload;
     if (!payload?.ticketId || !payload.stateId) {
@@ -624,7 +631,9 @@ export function registerExecutionJobHandlers(): void {
       }
     };
   });
+}
 
+function registerApprovalResumeHandler(): void {
   registerJobHandler('approval.resume', async (context: JobHandlerContext) => {
     const payload = context.job.payload as { approvalId?: string };
     if (!payload?.approvalId) {
@@ -638,7 +647,9 @@ export function registerExecutionJobHandlers(): void {
     });
     return { result };
   });
+}
 
+function registerMaintenanceHandler(): void {
   registerJobHandler('maintenance.reap', async (context: JobHandlerContext) => {
     const { SqliteJobQueue } = await import('../jobs/queue');
     const queue = new SqliteJobQueue(context.db);
@@ -649,8 +660,6 @@ export function registerExecutionJobHandlers(): void {
     const sessions = await purgeExpiredSessions(context.db);
     return { result: { reaped, expired, sessions } };
   });
-
-  log.debug('execution job handlers registered');
 }
 
 /** Enqueue an approval-resume job inside the caller's transaction. */

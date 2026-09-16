@@ -117,6 +117,7 @@ export async function dispatchApi(input: DispatchInput): Promise<DispatchResult>
       query: unknown;
       body: unknown;
       request: Request;
+      rawBody: string | null;
       method: string;
       pathname: string;
     }) => unknown;
@@ -127,6 +128,7 @@ export async function dispatchApi(input: DispatchInput): Promise<DispatchResult>
       query,
       body,
       request: input.request,
+      rawBody: input.rawBody ?? null,
       method: input.method,
       pathname
     })) as ApiResponse | Response | undefined;
@@ -243,16 +245,38 @@ export function matchPath(pattern: string, pathname: string): Record<string, str
   return params;
 }
 
+/**
+ * Resolve a request to a route.
+ *
+ * When several patterns match the same shape, the most *literal* one wins: a static
+ * segment beats a parameter, so `/files/search` reaches the search handler rather
+ * than being swallowed by `/files/:id`. Ties keep declaration order.
+ */
 export function matchRoute(
   method: string,
   pathname: string
 ): { route: ApiRoute; params: Record<string, string> } | null {
+  const upperMethod = method.toUpperCase();
+  let best: { route: ApiRoute; params: Record<string, string>; score: number } | null = null;
+
   for (const candidate of apiRoutes) {
-    if (candidate.method !== method.toUpperCase()) continue;
+    if (candidate.method !== upperMethod) continue;
     const params = matchPath(candidate.path, pathname);
-    if (params) return { route: candidate, params };
+    if (!params) continue;
+    const score = literalSegmentCount(candidate.path);
+    if (!best || score > best.score) {
+      best = { route: candidate, params, score };
+    }
   }
-  return null;
+
+  return best ? { route: best.route, params: best.params } : null;
+}
+
+/** Number of non-parameter segments; higher means a more specific pattern. */
+function literalSegmentCount(pattern: string): number {
+  return normalizePath(pattern)
+    .split('/')
+    .filter((segment) => segment.length > 0 && !segment.startsWith(':')).length;
 }
 
 /** Human-readable API index, used by the health endpoint and the docs page. */
