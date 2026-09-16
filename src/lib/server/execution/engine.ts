@@ -19,22 +19,18 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { requireApproval } from '../approvals/service';
 import { AuditActions, writeAudit } from '../audit/ledger';
-import { type ActorContext, systemActor, withRun } from '../core/context';
+import { type ActorContext, systemActor } from '../core/context';
 import { errors, toAppError } from '../core/errors';
-import { uuidv7 } from '../core/ids';
 import { moduleLogger } from '../core/logger';
 import { createRedactor } from '../core/redaction';
 import type { Executor } from '../db/client';
 import {
   agentRuns,
   approvalRequests,
-  type Job,
   type StateConfig,
-  type SystemAction,
   type Ticket,
   tickets,
-  type WorkflowState,
-  workflowStates
+  type WorkflowState
 } from '../db/schema';
 import { type JobHandlerContext, registerJobHandler } from '../jobs/handlers';
 import { enqueueJobSync } from '../jobs/queue';
@@ -114,7 +110,7 @@ export async function handleStateEntry(
     }
     // Count this execution within the current entry.
     const runCount = incrementStateRunCount(db, ticket.id);
-    const now = Date.now();
+    const _now = Date.now();
     const run = createAgentRunSync(db, {
       workspaceId: ticket.workspaceId,
       ticket,

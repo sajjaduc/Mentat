@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { and, eq } from 'drizzle-orm';
-import { createAgent, updateAgent } from '../../../src/lib/server/agents/service';
+import { createAgent } from '../../../src/lib/server/agents/service';
 import { decideApprovalSync, listApprovals } from '../../../src/lib/server/approvals/service';
 import type { ActorContext } from '../../../src/lib/server/core/context';
 import { uuidv7 } from '../../../src/lib/server/core/ids';
@@ -11,7 +11,6 @@ import {
 import {
   agentRunSteps,
   agentRuns,
-  agents,
   approvalRequests,
   jobs,
   runEvents,
@@ -805,9 +804,8 @@ describe('tool-call approvals', () => {
     expect(approvals).toHaveLength(1);
     expect(approvals[0]?.status).toBe('pending');
     expect(approvals[0]?.kind).toBe('tool_call');
-    expect((approvals[0]?.requestedAction as unknown as { toolKey: string }).toolKey).toBe(
-      'mentat.ticket.fields.set'
-    );
+    const requestedAction = approvals[0]?.requestedAction as unknown as { toolKey: string };
+    expect(requestedAction.toolKey).toBe('mentat.ticket.fields.set');
 
     // The gated side effect must not have happened.
     const values = handle.db

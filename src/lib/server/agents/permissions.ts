@@ -38,7 +38,9 @@ export function normalizeCapabilityKey(key: string): string {
   return key.startsWith('mentat.') ? key.slice('mentat.'.length) : key;
 }
 
-export function agentPermissionsToSet(permissions: AgentPermissions | null | undefined): Set<string> {
+export function agentPermissionsToSet(
+  permissions: AgentPermissions | null | undefined
+): Set<string> {
   const set = new Set<string>(READ_ONLY_BASELINE);
   if (!permissions) return set;
 

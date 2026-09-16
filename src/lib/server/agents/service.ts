@@ -10,7 +10,7 @@
  * examples and references — never executable plugins.
  */
 import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
-import { AuditActions, writeAudit } from '../audit/ledger';
+import { writeAudit } from '../audit/ledger';
 import { type ActorContext, assertPermission, Permissions } from '../core/context';
 import { errors } from '../core/errors';
 import { uuidv7 } from '../core/ids';
