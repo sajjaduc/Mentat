@@ -194,7 +194,9 @@ export function operationPayload(draft: OperationDraft): Record<string, unknown>
     method: draft.method,
     path: draft.path,
     parameters: draft.parameters,
-    headers: Object.keys(draft.headers).length > 0 ? draft.headers : null,
+    // Omitted rather than null when empty: the field is optional, and sending null
+    // for an optional collection is a needless way to fail validation.
+    headers: Object.keys(draft.headers).length > 0 ? draft.headers : undefined,
     body: draft.body,
     inputSchema: inputSchema.ok ? inputSchema.value : null,
     outputSchema: outputSchema.ok ? outputSchema.value : null,

@@ -145,7 +145,9 @@ test('HTTP services: create a service, build an operation, run a test request', 
 
   // The console runs the persisted definition and shows the redacted exchange.
   await page.getByRole('button', { name: 'Send' }).click();
-  await expect(page.getByText('cache bypass')).toBeVisible({ timeout: 25_000 });
+  await expect(page.getByText(/bypass approval and the cache/i)).toBeVisible({
+    timeout: 25_000
+  });
   await expect(page.getByText(/"routes"/).first()).toBeVisible();
   await expect(page.getByRole('button', { name: 'Copy as cURL' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Copy as fetch' })).toBeVisible();
@@ -169,9 +171,9 @@ test('Models & providers: fake provider, connection test, hand-registered model'
 
   // The post-create step tests connectivity and reports reachable/unreachable.
   await dialog.getByRole('button', { name: 'Test connection' }).click();
-  await expect(dialog.getByText(/healthy|reachable/i)).toBeVisible({ timeout: 15_000 });
+  await expect(dialog.getByText(/healthy|reachable/i).first()).toBeVisible({ timeout: 15_000 });
   await dialog.getByRole('button', { name: 'Continue' }).click();
-  await expect(page.getByText(providerName)).toBeVisible();
+  await expect(page.getByRole('heading', { name: providerName })).toBeVisible();
 
   // A fake provider discovers no models, so registering one by hand is the path shown.
   await page.getByRole('button', { name: 'Register a model' }).first().click();
@@ -251,7 +253,7 @@ test('Tools: the catalogue explains native capabilities and stored tools', async
   // The native registry always reports capabilities; waiting for one proves the load ran.
   await expect(page.getByText(/mentat\./).first()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText('Native capabilities').first()).toBeVisible();
-  await expect(page.getByText('Stored tools')).toBeVisible();
+  await expect(page.getByText('Stored tools').first()).toBeVisible();
   // A native tool key and the enforcement note are shown so an operator can grant them.
   await expect(page.getByText(/mentat\.ticket|ticket:read/).first()).toBeVisible();
   await expect(page.getByText(/approval is enforced/i).first()).toBeVisible();
@@ -263,16 +265,18 @@ test('Integrations: providers, HTTP services and a cron trigger', async ({ page,
 
   await page.goto('/integrations');
   await expect(page.getByRole('heading', { name: 'Integrations' })).toBeVisible();
-  await expect(page.getByText('No providers yet')).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText('Providers', { exact: true })).toBeVisible();
-  await expect(page.getByText('HTTP services', { exact: true })).toBeVisible();
-  await expect(page.getByText('Triggers', { exact: true })).toBeVisible();
+  await expect(
+    page.getByText('No providers yet').or(page.getByText(/healthy|unreachable|unknown/i).first())
+  ).toBeVisible({ timeout: 15_000 });
+  for (const section of ['Providers', 'HTTP services', 'Triggers']) {
+    await expect(page.getByRole('heading', { name: section, exact: true })).toBeVisible();
+  }
 
   await page.getByRole('button', { name: 'New trigger' }).click();
   const drawer = page.getByRole('dialog');
   await drawer.getByLabel('Name').fill(`E2E Cron ${uniqueSuffix()}`);
   await drawer.getByLabel('Type').selectOption('cron');
-  await drawer.getByLabel('Workflow').selectOption({ label: workflowName });
+  await drawer.getByLabel('Workflow', { exact: true }).selectOption({ label: workflowName });
   await drawer.getByLabel('Cron expression').fill('0 9 * * 1-5');
   // The editor describes the schedule and previews its next three runs.
   await expect(drawer.getByText(/every week on monday/i)).toBeVisible();

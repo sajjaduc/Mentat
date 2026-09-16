@@ -56,7 +56,7 @@ const operationBody = z.object({
   method: z.enum(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']).optional(),
   path: z.string().min(1).max(500),
   parameters: z.array(parameterSchema).optional(),
-  headers: z.record(z.string(), z.string()).optional(),
+  headers: z.record(z.string(), z.string()).nullish(),
   body: z.record(z.string(), z.unknown()).nullish(),
   inputSchema: z.unknown().optional(),
   outputSchema: z.unknown().optional(),
