@@ -20,7 +20,7 @@
  *   bun run seed            # idempotent: skips anything that already exists
  *   bun run seed --reset    # wipes the database first
  */
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { createAgent } from '../src/lib/server/agents/service';
 import { addWidget, createDashboard } from '../src/lib/server/analytics/dashboards';
 import { env, resolveMasterKey } from '../src/lib/server/config/env';
@@ -189,8 +189,18 @@ async function main() {
       { key: 'reviewer_notes', name: 'Reviewer Notes', type: 'long_text' as const, card: false },
       // Intake and Claims name the same idea differently, which is exactly the case
       // the transfer field-mapping feature exists for.
-      { key: 'external_reference', name: 'External Reference', type: 'short_text' as const, card: false },
-      { key: 'source_reference', name: 'Source Reference', type: 'short_text' as const, card: false }
+      {
+        key: 'external_reference',
+        name: 'External Reference',
+        type: 'short_text' as const,
+        card: false
+      },
+      {
+        key: 'source_reference',
+        name: 'Source Reference',
+        type: 'short_text' as const,
+        card: false
+      }
     ];
     const fieldIds = new Map<string, string>();
     for (const spec of fieldSpecs) {

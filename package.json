@@ -1,6 +1,7 @@
 {
   "name": "mentat",
   "version": "0.1.0",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "description": "Mentat — self-hostable work-orchestration platform where humans and AI agents participate in durable workflows.",
