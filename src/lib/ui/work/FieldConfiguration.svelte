@@ -6,6 +6,7 @@
  * how it behaves here. Flag changes are applied optimistically and rolled back
  * together, because the API replaces the whole set in one write.
  */
+import { untrack } from 'svelte';
 import { api, describeApiError } from '$ui/api';
 import Badge from '$ui/primitives/Badge.svelte';
 import Button from '$ui/primitives/Button.svelte';
@@ -44,7 +45,8 @@ const FIELD_TYPES: FieldType[] = [
   'json'
 ];
 
-let rows = $state<WorkflowFieldView[]>([...fields]);
+// Seeded once, then re-synced by the effect below.
+let rows = $state<WorkflowFieldView[]>(untrack(() => [...fields]));
 let error = $state<string | null>(null);
 let attaching = $state('');
 let createOpen = $state(false);

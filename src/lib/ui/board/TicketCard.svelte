@@ -59,6 +59,8 @@ const moveTargets = $derived(
 </script>
 
 <div
+  role="listitem"
+  aria-label="{row.ticket.key} {row.ticket.title}"
   class="group relative rounded-[var(--radius-md)] border bg-[var(--color-surface)] p-2.5 shadow-[var(--shadow-card)] transition-[border-color,box-shadow,opacity] duration-150
     {dragging ? 'opacity-50' : ''}
     {errorMessage

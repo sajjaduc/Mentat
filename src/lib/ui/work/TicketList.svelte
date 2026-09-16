@@ -169,7 +169,7 @@ function toggleColumn(key: string) {
             field: key,
             direction: sort.field === key && sort.direction === 'asc' ? 'desc' : 'asc'
           })}
-        {onRowClick}
+        onRowClick={onOpenTicket}
         {members}
         {teams}
         emptyTitle="No tickets match this view"

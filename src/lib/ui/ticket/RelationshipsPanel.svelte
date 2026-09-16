@@ -18,7 +18,11 @@ import type { TicketRelationshipView } from '$ui/work/types';
 interface Props {
   ticketId: string;
   relationships: TicketRelationshipView[];
-  onAdd: (toTicketId: string, type: string, note?: string) => Promise<boolean>;
+  /**
+   * Applies the link. Resolves with `false` when the caller decided not to link (for
+   * example because the API refused); the caller reports the reason.
+   */
+  onAdd: (toTicketId: string, type: string, note?: string) => Promise<unknown>;
   onRemove: (relationshipId: string) => Promise<void>;
   onOpenTicket: (ticketId: string) => void;
 }
@@ -65,9 +69,9 @@ async function search() {
 
 async function link(targetId: string) {
   saving = true;
-  const ok = await onAdd(targetId, type);
+  const applied = (await onAdd(targetId, type)) !== false;
   saving = false;
-  if (ok) {
+  if (applied) {
     linking = false;
     query = '';
     results = [];

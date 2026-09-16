@@ -90,7 +90,10 @@ async function submit() {
 }
 </script>
 
+<!-- A column is a list of cards and a drop target; the role tells assistive tech
+     what the drop zone is for. -->
 <section
+  aria-label="{column.state.name} column"
   class="flex w-72 shrink-0 flex-col rounded-[var(--radius-lg)] border bg-[var(--color-surface-muted)]/40 transition-colors
     {dropActive
     ? 'border-[var(--color-accent)] bg-[var(--color-accent-soft)]/40'
@@ -172,7 +175,11 @@ async function submit() {
     </form>
   {/if}
 
-  <div class="scrollbar-thin flex max-h-[calc(100vh-16rem)] min-h-16 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-3">
+  <div
+    role="list"
+    aria-label="Tickets in {column.state.name}"
+    class="scrollbar-thin flex max-h-[calc(100vh-16rem)] min-h-16 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-3"
+  >
     {#each column.tickets as row (row.ticket.id)}
       <TicketCard
         {row}

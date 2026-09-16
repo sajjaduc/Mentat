@@ -7,6 +7,7 @@
  * The parent owns persistence, which is what lets a write be applied optimistically
  * and rolled back with the server's validation message shown next to the field.
  */
+import { untrack } from 'svelte';
 import { formatDateTime } from '$shared/format';
 import Badge from '$ui/primitives/Badge.svelte';
 import Input from '$ui/primitives/Input.svelte';
@@ -43,7 +44,8 @@ function textOf(input: unknown): string {
   return String(input);
 }
 
-let draft = $state(textOf(value));
+// Seeded once from the prop; the effect below re-syncs when the value changes.
+let draft = $state(untrack(() => textOf(value)));
 let localError = $state<string | null>(null);
 
 $effect(() => {

@@ -7,6 +7,7 @@
  * the typed field editor. Field and label writes are optimistic; the gate panel and
  * relationships are delegated so this panel stays readable.
  */
+import { untrack } from 'svelte';
 import { formatDate, formatDateTime, formatRelative } from '$shared/format';
 import Badge from '$ui/primitives/Badge.svelte';
 import Button from '$ui/primitives/Button.svelte';
@@ -57,8 +58,10 @@ let {
   onOpenTransfer
 }: Props = $props();
 
-let titleDraft = $state(detail.ticket.title);
-let descriptionDraft = $state(detail.ticket.description ?? '');
+// Drafts are seeded from the ticket and re-synced by the effect below, so the
+// initial read is deliberate.
+let titleDraft = $state(untrack(() => detail.ticket.title));
+let descriptionDraft = $state(untrack(() => detail.ticket.description ?? ''));
 let noteDraft = $state('');
 let noteSaving = $state(false);
 let labelChoice = $state('');

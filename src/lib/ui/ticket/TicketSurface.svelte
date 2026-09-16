@@ -288,17 +288,16 @@ const actions: TicketActions = {
   async linkRelationship(toTicketId, type, note) {
     const current = detail;
     if (!current) return;
+    void note;
     try {
       await api.post(`/api/tickets/${current.ticket.id}/relationships`, { toTicketId, type, note });
       await refresh();
-      return true;
     } catch (failure) {
       pushToast({
         tone: 'error',
         title: 'Could not link the ticket',
         description: describeApiError(failure)
       });
-      return false;
     }
   },
 

@@ -7,6 +7,7 @@
  * context is assembled for the model. The form exposes all of it because a hidden
  * default is indistinguishable from a bug when a ticket behaves unexpectedly.
  */
+import { untrack } from 'svelte';
 import Badge from '$ui/primitives/Badge.svelte';
 import Button from '$ui/primitives/Button.svelte';
 import Input from '$ui/primitives/Input.svelte';
@@ -53,6 +54,8 @@ let {
   fields,
   agents,
   teams,
+  members,
+  workflows,
   saving,
   error,
   onclose,
@@ -197,7 +200,8 @@ function formOf(source: WorkflowState | null): Form {
   };
 }
 
-let form = $state<Form>(formOf(existing));
+// Seeded once from the state being edited; the effect below re-seeds on change.
+let form = $state<Form>(untrack(() => formOf(existing)));
 let localError = $state<string | null>(null);
 
 $effect(() => {
@@ -520,7 +524,7 @@ function save() {
           onchange={(event) =>
             (form.actionWorkflowId = (event.currentTarget as HTMLSelectElement).value)}
         />
-        <Input value={form.actionTitleTemplate} oninput={(event) => (form.actionTitleTemplate = (event.currentTarget as HTMLInputElement).value)} label="Title template" placeholder="{{title}}" />
+        <Input value={form.actionTitleTemplate} oninput={(event) => (form.actionTitleTemplate = (event.currentTarget as HTMLInputElement).value)} label="Title template" placeholder={'{{title}}'} />
       {:else if form.actionType === 'http'}
         <Input value={form.actionOperationId} oninput={(event) => (form.actionOperationId = (event.currentTarget as HTMLInputElement).value)} label="HTTP operation id" />
       {:else if form.actionType === 'wait'}
