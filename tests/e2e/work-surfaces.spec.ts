@@ -246,11 +246,7 @@ test.describe('workflow surfaces', () => {
     await expect(page.getByTestId('state-designer')).toBeVisible();
   });
 
-  // KNOWN DEFECT: the configuration surface re-renders its state rows continuously
-  // (Playwright reports "element is not attached to the DOM" and never reaches a
-  // stable element), so this flow cannot be driven until that churn is fixed. The
-  // rename itself works through the API; see the supervisor report.
-  test.fixme('configuration can rename a state', async ({ page, request }) => {
+  test('configuration can rename a state', async ({ page, request }) => {
     const seeded = await seed(request, []);
     const first = seeded.states[0];
     expect(first).toBeTruthy();
@@ -269,7 +265,7 @@ test.describe('workflow surfaces', () => {
     const renamed = `${first?.name} reviewed`;
     await dialog.getByLabel('Name').fill(renamed);
     await dialog.getByRole('button', { name: 'Save state' }).click();
-    await expect(designer.getByText(renamed)).toBeVisible();
+    await expect(designer.getByText(renamed, { exact: true })).toBeVisible();
   });
 
   test('list columns can be toggled from the column picker', async ({ page, request }) => {

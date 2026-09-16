@@ -6,6 +6,7 @@
  * policy — sharing one loader so a change in any of them refreshes the others.
  * Nothing here navigates; mutations re-read only what they changed.
  */
+import { onMount } from 'svelte';
 import { api, describeApiError } from '$ui/api';
 import ErrorState from '$ui/primitives/ErrorState.svelte';
 import Skeleton from '$ui/primitives/Skeleton.svelte';
@@ -52,14 +53,14 @@ const tabs = [
   { id: 'transfer', label: 'Transfer rules' }
 ];
 
-async function load() {
+async function load(id: string) {
   loading = true;
   error = null;
   try {
     const [detail, fieldResponse, workspaceFieldResponse, agentResponse, workflowResponse] =
       await Promise.all([
-        api.get<WorkflowDetailResponse>(`/api/workflows/${workflowId}`),
-        api.get<{ fields: WorkflowFieldView[] }>(`/api/workflows/${workflowId}/fields`),
+        api.get<WorkflowDetailResponse>(`/api/workflows/${id}`),
+        api.get<{ fields: WorkflowFieldView[] }>(`/api/workflows/${id}/fields`),
         api.get<{ fields: FieldDefinition[] }>('/api/fields', { scope: 'ticket' }),
         api.get<{ agents: AgentOption[] }>('/api/agents'),
         api.get<{ workflows: WorkflowListItem[] }>('/api/workflows')
@@ -78,26 +79,29 @@ async function load() {
   }
 }
 
-async function loadResources() {
-  if (teams.length === 0) {
-    void api
-      .get<{ teams: TeamOption[] }>('/api/teams')
-      .then((response) => (teams = response.teams))
-      .catch(() => undefined);
-  }
-  if (members.length === 0 && workspaceId !== '') {
+/**
+ * Teams and members are reference data, not workflow data: they are fetched once
+ * rather than on every workflow change.
+ */
+onMount(() => {
+  void api
+    .get<{ teams: TeamOption[] }>('/api/teams')
+    .then((response) => (teams = response.teams))
+    .catch(() => undefined);
+  if (workspaceId !== '') {
     void api
       .get<{ members: MemberOption[] }>(`/api/workspaces/${workspaceId}/members`)
       .then((response) => (members = response.members))
       .catch(() => undefined);
   }
-}
+});
 
+// Depends on `workflowId` and nothing else. The previous version called a resource
+// loader synchronously here, which made the effect read `teams`/`members` and re-run
+// when those settled — replacing every state row a moment after mount, which detached
+// controls from under the user (and from under a test).
 $effect(() => {
-  const id = workflowId;
-  void id;
-  void load();
-  void loadResources();
+  void load(workflowId);
 });
 </script>
 
@@ -108,7 +112,7 @@ $effect(() => {
       <Skeleton lines={6} height="1.75rem" />
     </div>
   {:else if error}
-    <ErrorState message={error} onRetry={load} />
+    <ErrorState message={error} onRetry={() => load(workflowId)} />
   {:else}
     <Tabs {tabs} active={section} onselect={(id) => (section = id)} class="mb-4" />
     {#if section === 'states'}
@@ -121,7 +125,7 @@ $effect(() => {
         {teams}
         {members}
         {workflows}
-        onReload={load}
+        onReload={() => load(workflowId)}
       />
     {:else if section === 'fields'}
       <FieldConfiguration
@@ -129,10 +133,10 @@ $effect(() => {
         {fields}
         {workspaceFields}
         {states}
-        onReload={load}
+        onReload={() => load(workflowId)}
       />
     {:else}
-      <TransferRules {workflowId} rules={rules} {workflows} onReload={load} />
+      <TransferRules {workflowId} rules={rules} {workflows} onReload={() => load(workflowId)} />
     {/if}
   {/if}
 </div>
