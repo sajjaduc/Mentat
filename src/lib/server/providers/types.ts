@@ -6,6 +6,7 @@
  * runner can refuse to send tools to a model that cannot call them instead of
  * silently degrading.
  */
+import type { ReasoningEffort } from './reasoning';
 
 export interface ModelDescriptor {
   /** Provider-native identifier, e.g. `llama3.1:8b`. */
@@ -26,7 +27,13 @@ export interface ProviderModelCapabilities {
   jsonMode: boolean;
   vision: boolean;
   embeddings: boolean;
+  /** True when the model exposes controllable reasoning/thinking. */
   reasoning?: boolean;
+  /**
+   * Portable reasoning levels the model accepts. Absent means "derive from the
+   * provider type" (see `supportedReasoningEfforts`); an empty array means none.
+   */
+  reasoningEfforts?: ReasoningEffort[];
 }
 
 export interface ProviderHealth {
@@ -78,6 +85,14 @@ export interface GenerateRequest {
   maxOutputTokens?: number;
   stop?: string[];
   seed?: number;
+  /** Portable reasoning level; unsupported levels are dropped before this point. */
+  reasoningEffort?: ReasoningEffort;
+  /**
+   * Provider-native reasoning keys merged into the request body after the level is
+   * translated, so an override wins. Structural fields (`model`, `messages`,
+   * `stream`, `tools`) are always set afterwards and cannot be overridden.
+   */
+  reasoningOptions?: Record<string, unknown>;
   /** Provider-specific options passed through verbatim (e.g. Ollama `num_ctx`). */
   options?: Record<string, unknown>;
   /** Abort a long-running generation when the run is cancelled. */

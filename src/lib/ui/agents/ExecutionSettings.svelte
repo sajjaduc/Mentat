@@ -6,9 +6,17 @@
  * message and whether Save is enabled; this component only renders the fields and
  * the messages it is handed.
  */
+
+import {
+  REASONING_EFFORT_LABELS,
+  REASONING_EFFORT_OPTIONS,
+  type ReasoningEffort
+} from '$ui/agents/types';
+import JsonTextarea from '$ui/http/controls/JsonTextarea.svelte';
 import Section from '$ui/http/controls/Section.svelte';
 import Toggle from '$ui/http/controls/Toggle.svelte';
 import Input from '$ui/primitives/Input.svelte';
+import Select from '$ui/primitives/Select.svelte';
 
 interface ExecutionErrors {
   maxSteps?: string | null;
@@ -16,6 +24,7 @@ interface ExecutionErrors {
   temperature?: string | null;
   topP?: string | null;
   timeoutSeconds?: string | null;
+  reasoningOptions?: string | null;
 }
 
 interface Props {
@@ -24,6 +33,13 @@ interface Props {
   temperature?: number | null;
   topP?: number | null;
   timeoutSeconds?: number | null;
+  reasoningEffort?: ReasoningEffort | null;
+  reasoningOptionsText?: string;
+  /**
+   * Levels the selected model accepts. `null` means the model is unknown (the run
+   * validates at execution time); an empty array means reasoning is unavailable.
+   */
+  supportedReasoningEfforts?: ReasoningEffort[] | null;
   continueOnToolError?: boolean;
   retryOnProviderError?: boolean;
   requireApprovalForMutations?: boolean;
@@ -36,11 +52,46 @@ let {
   temperature = $bindable<number | null>(null),
   topP = $bindable<number | null>(null),
   timeoutSeconds = $bindable<number | null>(null),
+  reasoningEffort = $bindable<ReasoningEffort | null>(null),
+  reasoningOptionsText = $bindable(''),
+  supportedReasoningEfforts = null,
   continueOnToolError = $bindable(false),
   retryOnProviderError = $bindable(false),
   requireApprovalForMutations = $bindable(false),
   errors = {}
 }: Props = $props();
+
+const reasoningAvailable = $derived(
+  supportedReasoningEfforts === null || supportedReasoningEfforts.length > 0
+);
+
+const reasoningHint = $derived.by(() => {
+  if (supportedReasoningEfforts === null) {
+    return 'The selected model has no declared reasoning capability, so this is validated when the run starts.';
+  }
+  if (supportedReasoningEfforts.length === 0) {
+    return 'This model does not declare reasoning support. Set the Reasoning capability on its model row first.';
+  }
+  return `Accepted by this model: ${supportedReasoningEfforts
+    .map((effort) => REASONING_EFFORT_LABELS[effort])
+    .join(', ')}.`;
+});
+
+const effortOptions = $derived.by(() => {
+  const allowed =
+    supportedReasoningEfforts === null
+      ? [...REASONING_EFFORT_OPTIONS]
+      : REASONING_EFFORT_OPTIONS.filter((option) =>
+          supportedReasoningEfforts.includes(option.value)
+        );
+  if (reasoningEffort !== null && !allowed.some((option) => option.value === reasoningEffort)) {
+    allowed.push({
+      value: reasoningEffort,
+      label: `${REASONING_EFFORT_LABELS[reasoningEffort]} (not supported by this model)`
+    });
+  }
+  return allowed;
+});
 
 function numberFrom(event: Event): number | null {
   const target = event.currentTarget as HTMLInputElement | null;
@@ -116,6 +167,35 @@ function numberFrom(event: Event): number | null {
         timeoutSeconds = numberFrom(event);
       }}
     />
+  </div>
+
+  <div class="space-y-3 border-t border-[var(--color-border-subtle)] pt-4">
+    <div class="grid gap-4 md:grid-cols-2">
+      <Select
+        label="Reasoning effort"
+        placeholder="Model default"
+        options={effortOptions}
+        value={reasoningEffort ?? ''}
+        disabled={!reasoningAvailable}
+        hint={reasoningHint}
+        onchange={(event) => {
+          const value = event.currentTarget.value;
+          reasoningEffort = value.length === 0 ? null : (value as ReasoningEffort);
+        }}
+      />
+    </div>
+    {#if reasoningAvailable}
+      <JsonTextarea
+        bind:value={reasoningOptionsText}
+        label="Provider-native reasoning override (optional)"
+        hint={`Merged into the provider request after the level is mapped, e.g. Anthropic { "thinking": { "budget_tokens": 4000 } }. An agent override wins over the model default.`}
+        rows={4}
+        placeholder={'{\n  "thinking": { "budget_tokens": 4000 }\n}'}
+      />
+      {#if errors.reasoningOptions}
+        <p class="text-xs text-[var(--color-danger)]" role="alert">{errors.reasoningOptions}</p>
+      {/if}
+    {/if}
   </div>
 
   <div class="space-y-3 border-t border-[var(--color-border-subtle)] pt-4">

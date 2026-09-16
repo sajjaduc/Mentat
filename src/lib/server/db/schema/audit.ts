@@ -117,6 +117,13 @@ export const AuditActions = {
   httpRequestFailed: 'http.request.failed',
   httpRequestTested: 'http.request.tested',
 
+  mcpServerCreated: 'mcp.server.created',
+  mcpServerUpdated: 'mcp.server.updated',
+  mcpServerRemoved: 'mcp.server.removed',
+  mcpToolsDiscovered: 'mcp.tools.discovered',
+  toolEnabledChanged: 'tool.enabled.changed',
+  toolsImported: 'tool.imported',
+
   providerCreated: 'provider.created',
   providerUpdated: 'provider.updated',
   providerHealthChecked: 'provider.health.checked',

@@ -7,6 +7,7 @@
  * never on Ollama directly (ADR-0015).
  */
 import { index, integer, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import type { ReasoningEffort } from '../../../shared/reasoning';
 import { bool, createdAt, epochMs, json, primaryId, updatedAt } from './_helpers';
 import { users, workspaces } from './tenancy';
 
@@ -18,8 +19,10 @@ export interface ModelCapabilities {
   jsonMode?: boolean;
   vision?: boolean;
   embeddings?: boolean;
-  /** Supports the `think`/reasoning toggle. */
+  /** Supports controllable reasoning/thinking. */
   reasoning?: boolean;
+  /** Portable levels the model accepts; absent means "derive from the provider". */
+  reasoningEfforts?: ReasoningEffort[];
 }
 
 export interface ProviderConfig {
@@ -75,6 +78,10 @@ export interface ModelInferenceDefaults {
   stop?: string[];
   seed?: number;
   repeatPenalty?: number;
+  /** Default reasoning level for this model; an agent can override it. */
+  reasoningEffort?: ReasoningEffort;
+  /** Provider-native reasoning keys applied after the level is mapped. */
+  reasoningOptions?: Record<string, unknown>;
 }
 
 export const models = sqliteTable(

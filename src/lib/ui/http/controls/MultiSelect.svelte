@@ -4,8 +4,12 @@
  *
  * Skills, tools and HTTP operations are all "pick several from a long list", and a
  * native `<select multiple>` hides the descriptions that make the choice meaningful.
- * This keeps the list visible, filterable and keyboard-operable.
+ * This keeps the list visible, filterable and keyboard-operable. When `groupToggle` is
+ * set, each group header carries a tri-state checkbox so an entire namespace can be
+ * selected or cleared at once.
  */
+import { groupSelectionState, toggleGroupSelection } from '$ui/agents/tools/group-selection';
+
 interface MultiSelectOption {
   value: string;
   label: string;
@@ -23,6 +27,8 @@ interface Props {
   emptyLabel?: string;
   noMatchLabel?: string;
   disabled?: boolean;
+  /** Show a select-all control on each group header. */
+  groupToggle?: boolean;
   onchange?: (selected: string[]) => void;
 }
 
@@ -35,6 +41,7 @@ let {
   emptyLabel = 'Nothing available to select.',
   noMatchLabel = 'No matches.',
   disabled = false,
+  groupToggle = false,
   onchange
 }: Props = $props();
 
@@ -73,6 +80,24 @@ function clear() {
   selected = [];
   onchange?.(selected);
 }
+
+/** Keep a group checkbox's indeterminate state in sync with the selection. */
+function triState(node: HTMLInputElement, state: 'all' | 'some' | 'none') {
+  node.indeterminate = state === 'some';
+  return {
+    update(next: 'all' | 'some' | 'none') {
+      node.indeterminate = next === 'some';
+    }
+  };
+}
+
+function toggleGroup(groupOptions: MultiSelectOption[]) {
+  selected = toggleGroupSelection(
+    selected,
+    groupOptions.map((option) => option.value)
+  );
+  onchange?.(selected);
+}
 </script>
 
 <div class="space-y-2">
@@ -108,9 +133,30 @@ function clear() {
       {#each groups as [groupName, groupOptions] (groupName || 'ungrouped')}
         <div class="space-y-1">
           {#if groupName}
-            <p class="px-1 text-[10px] font-semibold tracking-wider text-[var(--color-ink-subtle)] uppercase">
-              {groupName}
-            </p>
+            {@const state = groupSelectionState(
+              selected,
+              groupOptions.map((option) => option.value)
+            )}
+            <div class="flex items-center justify-between gap-2 px-1">
+              <p class="text-[10px] font-semibold tracking-wider text-[var(--color-ink-subtle)] uppercase">
+                {groupName}
+              </p>
+              {#if groupToggle && !disabled}
+                <label
+                  class="flex cursor-pointer items-center gap-1 text-[10px] text-[var(--color-ink-subtle)] hover:text-[var(--color-ink-muted)]"
+                >
+                  <input
+                    type="checkbox"
+                    class="h-3 w-3 accent-[var(--color-accent)]"
+                    checked={state === 'all'}
+                    use:triState={state}
+                    aria-label={`Select all ${groupName} options`}
+                    onchange={() => toggleGroup(groupOptions)}
+                  />
+                  All
+                </label>
+              {/if}
+            </div>
           {/if}
           {#each groupOptions as option (option.value)}
             <label

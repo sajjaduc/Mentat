@@ -15,6 +15,13 @@
       "when": 1789536464116,
       "tag": "0001_left_sage",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1789590323857,
+      "tag": "0002_petite_skin",
+      "breakpoints": true
     }
   ]
 }

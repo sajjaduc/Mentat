@@ -104,4 +104,21 @@ describe('detectModelCapabilities', () => {
     expect(isVisionModel('llama3.2-vision:11b')).toBe(true);
     expect(isVisionModel('llama3.1:8b')).toBe(false);
   });
+
+  test('reasoning models also declare the levels they accept', () => {
+    expect(detectModelCapabilities('qwen3:8b').reasoningEfforts).toEqual([
+      'off',
+      'low',
+      'medium',
+      'high',
+      'max'
+    ]);
+    // GPT-OSS cannot fully disable its trace, so `off` is not offered.
+    expect(detectModelCapabilities('gpt-oss:20b').reasoningEfforts).toEqual([
+      'low',
+      'medium',
+      'high'
+    ]);
+    expect(detectModelCapabilities('llama3.1:8b').reasoningEfforts).toBeUndefined();
+  });
 });

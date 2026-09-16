@@ -11,6 +11,7 @@
  * when the family is known to support it, because the runner relies on
  * capabilities to refuse a tool call rather than silently degrade (ADR-0015).
  */
+import { detectReasoningSupport } from './reasoning';
 import type { ProviderModelCapabilities } from './types';
 
 export interface CapabilityHints {
@@ -42,16 +43,6 @@ const VISION_PATTERNS: RegExp[] = [
   /moondream/,
   /bakllava/,
   /gemma3/
-];
-
-/** Models that expose a separate thinking/reasoning channel. */
-const REASONING_PATTERNS: RegExp[] = [
-  /deepseek-r1/,
-  /qwen3/,
-  /qwq/,
-  /magistral/,
-  /reasoning/,
-  /phi4-reasoning/
 ];
 
 /** Embedding models have no chat surface at all. */
@@ -106,12 +97,19 @@ export function detectModelCapabilities(
     };
   }
 
+  const reasoning = detectReasoningSupport(
+    typeof hints === 'string'
+      ? { providerType: 'ollama', key: hints }
+      : { providerType: 'ollama', ...hints }
+  );
+
   return {
     streaming: true,
     toolCalling: matches(TOOL_CALLING_PATTERNS, text),
     jsonMode: !matches(BASE_COMPLETION_PATTERNS, text),
     vision: matches(VISION_PATTERNS, text),
     embeddings: false,
-    reasoning: matches(REASONING_PATTERNS, text)
+    reasoning: reasoning.reasoning,
+    ...(reasoning.reasoningEfforts ? { reasoningEfforts: reasoning.reasoningEfforts } : {})
   };
 }

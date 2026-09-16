@@ -14,6 +14,7 @@ import {
   sanitizeProviderMessage,
   truncateSnippet
 } from './http';
+import { applyReasoning, detectReasoningSupport } from './reasoning';
 import {
   type ChatMessage,
   type GenerateRequest,
@@ -258,10 +259,16 @@ export class AnthropicProvider implements ModelProvider {
     for (const entry of entries) {
       const key = readString(entry.id);
       if (!key) continue;
+      const detected = detectReasoningSupport({ providerType: 'anthropic', key });
       descriptors.push({
         key,
         displayName: readString(entry.display_name) ?? key,
-        capabilities: { ...DEFAULT_CAPABILITIES, ...(this.capabilitiesFor?.(key) ?? {}) },
+        capabilities: {
+          ...DEFAULT_CAPABILITIES,
+          reasoning: detected.reasoning,
+          ...(detected.reasoningEfforts ? { reasoningEfforts: detected.reasoningEfforts } : {}),
+          ...(this.capabilitiesFor?.(key) ?? {})
+        },
         raw: entry as Record<string, unknown>
       });
     }
@@ -281,11 +288,14 @@ export class AnthropicProvider implements ModelProvider {
       systemPrompt = systemPrompt ? `${systemPrompt}\n\n${instruction}` : instruction;
     }
 
-    const body: Record<string, unknown> = {
-      model: request.model,
-      max_tokens: request.maxOutputTokens ?? this.maxTokens,
-      messages
-    };
+    const body: Record<string, unknown> = {};
+    applyReasoning(body, 'anthropic', {
+      effort: request.reasoningEffort,
+      options: request.reasoningOptions
+    });
+    body.model = request.model;
+    body.max_tokens = request.maxOutputTokens ?? this.maxTokens;
+    body.messages = messages;
     if (systemPrompt) body.system = systemPrompt;
     if (request.tools && request.tools.length > 0) {
       body.tools = request.tools.map((tool) => ({

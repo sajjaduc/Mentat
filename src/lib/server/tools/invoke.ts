@@ -16,17 +16,18 @@
  */
 
 import { hasNativeCapability } from '../agents/permissions';
-import { type ActorContext, hasPermission } from '../core/context';
+import { type ActorContext, hasPermission, Permissions } from '../core/context';
 import { errors, toAppError } from '../core/errors';
 import type { Executor } from '../db/client';
 import type { ToolImplementation } from '../db/schema';
 import { httpToolInvoker } from './http-locator';
+import { callMcpTool, serverForTool } from './mcp';
 import type { NativeToolHandler, ToolRegistry } from './types';
 
 export interface InvokeToolInput {
   key: string;
   toolId?: string | null;
-  kind: 'native' | 'http';
+  kind: 'native' | 'http' | 'mcp';
   implementation: ToolImplementation;
   input: Record<string, unknown>;
   actor: ActorContext;
@@ -38,6 +39,8 @@ export interface InvokeToolInput {
   timeoutSeconds?: number;
   /** Permission keys declared on the tool row. */
   permissions?: string[];
+  /** The schema the arguments were already validated against, when the caller has it. */
+  inputSchema?: Record<string, unknown> | null;
   registry: ToolRegistry;
   signal?: AbortSignal;
 }
@@ -54,6 +57,9 @@ export interface InvokeToolResult {
 export async function invokeTool(db: Executor, input: InvokeToolInput): Promise<InvokeToolResult> {
   if (input.kind === 'native') {
     return invokeNative(db, input);
+  }
+  if (input.kind === 'mcp') {
+    return invokeMcp(db, input);
   }
   return invokeHttp(db, input);
 }
@@ -133,10 +139,7 @@ async function invokeHttp(db: Executor, input: InvokeToolInput): Promise<InvokeT
     }
   }
 
-  const issues = validateJsonSchema(
-    (input as { inputSchema?: Record<string, unknown> }).inputSchema ?? { type: 'object' },
-    input.input
-  );
+  const issues = validateJsonSchema(input.inputSchema ?? { type: 'object' }, input.input);
   if (issues.length > 0) {
     return failure('validation_failed', 'Operation arguments failed validation', { issues });
   }
@@ -161,6 +164,55 @@ async function invokeHttp(db: Executor, input: InvokeToolInput): Promise<InvokeT
     const appError = toAppError(error);
     return failure(appError.code, appError.message, appError.details);
   }
+}
+
+/**
+ * MCP execution.
+ *
+ * An agent reaches an MCP tool only through the tool row the runner resolved from its
+ * `toolIds`, so the coarse `mcp:invoke` scope is satisfied either by an explicit human
+ * grant or by the tool row's own declared permission — the same trust boundary the
+ * HTTP branch uses. A missing or archived server is a configuration failure, not a
+ * permission failure, so the model gets an actionable message.
+ */
+async function invokeMcp(db: Executor, input: InvokeToolInput): Promise<InvokeToolResult> {
+  const implementation = input.implementation;
+  if (implementation.kind !== 'mcp') {
+    return failure('tool_misconfigured', 'This tool has no MCP implementation');
+  }
+
+  const permits =
+    hasPermission(input.actor, Permissions.mcpInvoke) ||
+    hasPermission(input.actor, Permissions.mcpWrite) ||
+    input.permissions?.includes(Permissions.mcpInvoke) === true ||
+    (input.actor.actorType === 'agent' &&
+      hasNativeCapability(input.actor.permissions, `mcp.${implementation.serverId}`));
+  if (!permits) {
+    return failure('policy_denied', 'This agent is not permitted to call that MCP tool');
+  }
+
+  const server = serverForTool(db, input.workspaceId, implementation.serverId);
+  if (!server) {
+    return failure('tool_misconfigured', 'The MCP server for this tool is missing or archived');
+  }
+
+  const issues = validateJsonSchema(input.inputSchema ?? { type: 'object' }, input.input);
+  if (issues.length > 0) {
+    return failure('validation_failed', 'MCP arguments failed validation', { issues });
+  }
+
+  const result = await callMcpTool(db, {
+    server,
+    toolName: implementation.toolName,
+    input: input.input,
+    signal: input.signal
+  });
+  return {
+    ok: result.ok,
+    output: result.output,
+    error: result.error,
+    durationMs: result.durationMs
+  };
 }
 
 function assertAllowed(actor: ActorContext, handler: NativeToolHandler): InvokeToolResult | null {

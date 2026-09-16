@@ -175,7 +175,7 @@ $effect(() => {
 
     <div class="space-y-2">
       <p class="text-xs font-medium text-[var(--color-ink-muted)]">Inference defaults</p>
-      <InferenceDefaultsFields bind:value={defaults} disabled={saving} />
+      <InferenceDefaultsFields bind:value={defaults} {capabilities} disabled={saving} />
     </div>
 
     {#if error}

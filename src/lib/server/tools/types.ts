@@ -71,7 +71,7 @@ export interface ToolDescriptor {
   key: string;
   name: string;
   description: string;
-  kind: 'native' | 'http';
+  kind: 'native' | 'http' | 'mcp';
   inputSchema: JsonSchema;
   outputSchema?: JsonSchema;
   permissions?: string[];

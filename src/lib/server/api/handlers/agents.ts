@@ -33,7 +33,7 @@ import {
   registerModel,
   setEnabled,
   setFavorite,
-  updateModelDefaults
+  updateModel
 } from '../../providers/models';
 import {
   checkHealth,
@@ -43,8 +43,6 @@ import {
   registerProvider,
   updateProvider
 } from '../../providers/service';
-import { ensureNativeToolRows, listToolRows } from '../../tools/catalog';
-import { getDefaultToolRegistry } from '../../tools/registry';
 import { mutate, queryInt, queryString } from '../helpers';
 import { route } from '../types';
 
@@ -237,30 +235,8 @@ export const agentRoutes = [
   }),
 
   // -------------------------------------------------------------------- tools
-  route({
-    method: 'GET',
-    path: '/tools',
-    permission: Permissions.agentRead,
-    summary: 'Every tool an agent can be granted: native registry plus HTTP operations',
-    handler: ({ db, actor }) => {
-      // Materialise the rows an agent can actually be granted before listing, so the
-      // tool picker never shows a capability that cannot be bound.
-      ensureNativeToolRows(db, actor.workspaceId);
-      const native = getDefaultToolRegistry()
-        .list()
-        .map((tool) => ({
-          id: null,
-          key: tool.key,
-          name: tool.name,
-          description: tool.description,
-          kind: 'native' as const,
-          inputSchema: tool.inputSchema,
-          permission: tool.permission ?? null,
-          enabled: true
-        }));
-      return { body: { native, stored: listToolRows(db, actor) } };
-    }
-  }),
+  // The tool catalogue and its write paths live in `./tools`, because management
+  // (enable/disable, OpenAPI import, MCP registration) is a surface of its own.
 
   // ---------------------------------------------------------------- providers
   route({
@@ -375,7 +351,7 @@ export const agentRoutes = [
       providerId: z.string(),
       modelKey: z.string().trim().min(1).max(200),
       displayName: z.string().trim().min(1).max(200).optional(),
-      capabilities: z.record(z.string(), z.boolean()).optional(),
+      capabilities: z.record(z.string(), z.unknown()).optional(),
       contextWindow: z.number().int().min(0).nullish(),
       maxOutputTokens: z.number().int().min(0).nullish(),
       inferenceDefaults: z.record(z.string(), z.unknown()).nullish()
@@ -393,7 +369,7 @@ export const agentRoutes = [
     summary: 'Update model defaults, capabilities or enabled state',
     body: z.object({
       displayName: z.string().trim().max(200).optional(),
-      capabilities: z.record(z.string(), z.boolean()).optional(),
+      capabilities: z.record(z.string(), z.unknown()).optional(),
       contextWindow: z.number().int().min(0).nullish(),
       maxOutputTokens: z.number().int().min(0).nullish(),
       inferenceDefaults: z.record(z.string(), z.unknown()).nullish(),
@@ -402,14 +378,13 @@ export const agentRoutes = [
     }),
     handler: async ({ db, actor, params, body }) => {
       const input = body as Record<string, unknown>;
-      void mutate;
       if (input.enabled !== undefined) {
         await setEnabled(db, actor, params.id as string, input.enabled as boolean);
       }
       if (input.isFavorite !== undefined) {
         await setFavorite(db, actor, params.id as string, input.isFavorite as boolean);
       }
-      const defaults: Record<string, unknown> = {};
+      const patch: Record<string, unknown> = {};
       for (const key of [
         'displayName',
         'capabilities',
@@ -417,10 +392,10 @@ export const agentRoutes = [
         'maxOutputTokens',
         'inferenceDefaults'
       ]) {
-        if (input[key] !== undefined) defaults[key] = input[key];
+        if (input[key] !== undefined) patch[key] = input[key];
       }
-      if (Object.keys(defaults).length > 0) {
-        await updateModelDefaults(db, actor, params.id as string, defaults as never);
+      if (Object.keys(patch).length > 0) {
+        await updateModel(db, actor, params.id as string, patch as never);
       }
       return { body: { ok: true } };
     }

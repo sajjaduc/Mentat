@@ -259,6 +259,28 @@ test('Tools: the catalogue explains native capabilities and stored tools', async
   // A native tool key and the enforcement note are shown so an operator can grant them.
   await expect(page.getByText(/mentat\.ticket|ticket:read/).first()).toBeVisible();
   await expect(page.getByText(/approval is enforced/i).first()).toBeVisible();
+
+  // Groups are collapsible and carry a whole-namespace availability toggle.
+  const groupToggle = page.getByLabel(/Toggle all tools in/).first();
+  await expect(groupToggle).toBeVisible();
+  const groupHeader = page.locator('section button[aria-controls$="-body"]').first();
+  await expect(groupHeader).toHaveAttribute('aria-expanded', 'true');
+  await groupHeader.click();
+  await expect(groupHeader).toHaveAttribute('aria-expanded', 'false');
+  await groupHeader.click();
+
+  // The guided creation flow exposes the four honest sources.
+  await page.getByRole('button', { name: 'Add a tool' }).first().click();
+  const wizard = page.getByRole('dialog', { name: 'Add a tool' });
+  await expect(wizard).toBeVisible();
+  for (const source of ['Platform capability', 'HTTP API call', 'OpenAPI document', 'MCP server']) {
+    await expect(wizard.getByRole('button', { name: new RegExp(source) })).toBeVisible();
+  }
+  // The platform path is browse-only and says so.
+  await wizard.getByRole('button', { name: /Platform capability/ }).click();
+  await expect(wizard.getByText(/built into Mentat/i)).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(wizard).toHaveCount(0);
 });
 
 test('Integrations: providers, HTTP services and a cron trigger', async ({ page, request }) => {

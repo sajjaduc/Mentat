@@ -552,4 +552,67 @@ describe('operational endpoints', () => {
     expect(result.status).toBe(403);
     void systemActor;
   });
+
+  test('model PATCH applies capabilities and reasoning defaults together', async () => {
+    const provider = await call('POST', '/providers', {
+      body: { name: 'Local', type: 'ollama', baseUrl: 'http://localhost:11434' }
+    });
+    expect(provider.status).toBe(201);
+    const providerId = (provider.body as { provider: { id: string } }).provider.id;
+
+    const created = await call('POST', '/models', {
+      body: {
+        providerId,
+        modelKey: 'qwen3:8b',
+        capabilities: { reasoning: true, reasoningEfforts: ['off', 'low'] }
+      }
+    });
+    expect(created.status).toBe(201);
+    const modelId = (created.body as { model: { id: string } }).model.id;
+
+    const patched = await call('PATCH', `/models/${modelId}`, {
+      body: {
+        capabilities: { reasoning: true, reasoningEfforts: ['off', 'low', 'medium'] },
+        inferenceDefaults: { reasoningEffort: 'medium', reasoningOptions: { think: 'medium' } }
+      }
+    });
+    expect(patched.status).toBe(200);
+
+    const listed = await call('GET', '/models');
+    const model = (
+      listed.body as {
+        models: Array<{ id: string; capabilities: unknown; inferenceDefaults: unknown }>;
+      }
+    ).models.find((entry) => entry.id === modelId);
+    expect(model?.capabilities).toEqual({
+      reasoning: true,
+      reasoningEfforts: ['off', 'low', 'medium']
+    });
+    expect(model?.inferenceDefaults).toEqual({
+      reasoningEffort: 'medium',
+      reasoningOptions: { think: 'medium' }
+    });
+  });
+
+  test('agent execution config accepts a level and rejects an unknown one', async () => {
+    const created = await call('POST', '/agents', { body: { name: 'Thinker' } });
+    expect(created.status).toBe(201);
+    const agentId = (created.body as { agent: { id: string } }).agent.id;
+
+    const bad = await call('PATCH', `/agents/${agentId}`, {
+      body: { executionConfig: { reasoningEffort: 'turbo' } }
+    });
+    expect(bad.status).toBe(422);
+
+    const good = await call('PATCH', `/agents/${agentId}`, {
+      body: {
+        executionConfig: { reasoningEffort: 'high', reasoningOptions: { think: 'high' } }
+      }
+    });
+    expect(good.status).toBe(200);
+    expect(
+      (good.body as { agent: { executionConfig: { reasoningEffort?: string } } }).agent
+        .executionConfig.reasoningEffort
+    ).toBe('high');
+  });
 });

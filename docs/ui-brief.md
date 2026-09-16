@@ -201,7 +201,7 @@ GET      /api/audit?ticketId=&action=&limit=&cursor=
 GET /api/events?runId=&ticketId=&since=<seq>
 ```
 Replays from `since` then streams live. Event types: `run.queued run.started
-run.output.delta run.reasoning.delta step.started step.completed tool.started
+run.output.delta run.reasoning.delta run.warning step.started step.completed tool.started
 tool.completed tool.failed approval.requested approval.decided retry.scheduled
 state.transition ticket.field.changed ticket.note.added ticket.file.attached
 run.paused run.resumed run.completed run.failed run.cancelled ticket.updated

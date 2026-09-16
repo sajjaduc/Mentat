@@ -90,6 +90,7 @@ export function agentPermissionsToSet(
       set.add(Permissions.fileWrite);
     }
     if (key.startsWith('http.')) set.add(Permissions.httpInvoke);
+    if (key.startsWith('mcp.')) set.add(Permissions.mcpInvoke);
   }
 
   return set;

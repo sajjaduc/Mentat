@@ -346,3 +346,26 @@ describe('OllamaProvider.stream', () => {
     );
   });
 });
+
+describe('OllamaProvider reasoning', () => {
+  test('maps a reasoning level onto the top-level think field', async () => {
+    const server = serve();
+    await providerFor(server).generate(request({ reasoningEffort: 'high' }));
+    const body = server.requestsFor('/api/chat')[0]!.body as Record<string, unknown>;
+    expect(body.think).toBe('high');
+  });
+
+  test('turns thinking off with think=false and lets an override win', async () => {
+    const off = serve();
+    await providerFor(off).generate(request({ reasoningEffort: 'off' }));
+    expect((off.requestsFor('/api/chat')[0]!.body as Record<string, unknown>).think).toBe(false);
+
+    const overridden = serve();
+    await providerFor(overridden).generate(
+      request({ reasoningEffort: 'low', reasoningOptions: { think: 'max' } })
+    );
+    expect((overridden.requestsFor('/api/chat')[0]!.body as Record<string, unknown>).think).toBe(
+      'max'
+    );
+  });
+});

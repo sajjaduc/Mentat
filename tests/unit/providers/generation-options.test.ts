@@ -88,4 +88,30 @@ describe('resolveGenerationOptions', () => {
     expect(resolved.maxOutputTokens).toBeUndefined();
     expect(resolved.options).toEqual({});
   });
+
+  test('resolves reasoning with the same precedence and merges native overrides', () => {
+    const model = {
+      inferenceDefaults: {
+        reasoningEffort: 'low' as const,
+        reasoningOptions: { budget: 1000, keep: 'model' }
+      },
+      maxOutputTokens: null
+    };
+    const agent = { reasoningEffort: 'high' as const, reasoningOptions: { budget: 4000 } };
+
+    const resolved = resolveGenerationOptions(model, agent, {});
+    expect(resolved.reasoningEffort).toBe('high');
+    expect(resolved.reasoningOptions).toEqual({ budget: 4000, keep: 'model' });
+
+    const explicit = resolveGenerationOptions(model, agent, {
+      reasoningEffort: 'off',
+      reasoningOptions: { budget: 250 }
+    });
+    expect(explicit.reasoningEffort).toBe('off');
+    expect(explicit.reasoningOptions).toEqual({ budget: 250, keep: 'model' });
+
+    const modelOnly = resolveGenerationOptions(model, null, {});
+    expect(modelOnly.reasoningEffort).toBe('low');
+    expect(modelOnly.reasoningOptions).toEqual({ budget: 1000, keep: 'model' });
+  });
 });

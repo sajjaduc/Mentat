@@ -8,18 +8,44 @@
  * single owner of the saved shape without every input repeating the same call.
  */
 
-import type { ModelInferenceDefaults } from '$ui/agents/types';
+import type { ModelCapabilities, ModelInferenceDefaults, ReasoningEffort } from '$ui/agents/types';
+import {
+  REASONING_EFFORT_LABELS,
+  REASONING_EFFORT_OPTIONS,
+  supportedReasoningEffortsFor
+} from '$ui/agents/types';
+import JsonTextarea from '$ui/http/controls/JsonTextarea.svelte';
 import TagsInput from '$ui/http/controls/TagsInput.svelte';
+import { parseJsonObject } from '$ui/http/json';
 import Input from '$ui/primitives/Input.svelte';
+import Select from '$ui/primitives/Select.svelte';
 
 interface Props {
   value?: ModelInferenceDefaults;
+  /** The model's capability draft; drives which reasoning levels are offered. */
+  capabilities?: ModelCapabilities;
   disabled?: boolean;
 }
 
-let { value = $bindable<ModelInferenceDefaults>({}), disabled = false }: Props = $props();
+let {
+  value = $bindable<ModelInferenceDefaults>({}),
+  capabilities = {},
+  disabled = false
+}: Props = $props();
 
 const initial = { ...value };
+
+const supportedReasoningEfforts = $derived(supportedReasoningEffortsFor(capabilities));
+const reasoningHint = $derived(
+  supportedReasoningEfforts.length > 0
+    ? `Accepted by this model: ${supportedReasoningEfforts
+        .map((effort) => REASONING_EFFORT_LABELS[effort])
+        .join(', ')}.`
+    : 'Enable the Reasoning capability above to set a default level.'
+);
+const effortOptions = $derived([
+  ...REASONING_EFFORT_OPTIONS.filter((option) => supportedReasoningEfforts.includes(option.value))
+]);
 
 function numberText(input: number | undefined): string {
   return input === undefined ? '' : String(input);
@@ -40,6 +66,12 @@ let numPredict = $state(numberText(initial.numPredict));
 let seed = $state(numberText(initial.seed));
 let repeatPenalty = $state(numberText(initial.repeatPenalty));
 let stop = $state<string[]>([...(initial.stop ?? [])]);
+let reasoningEffort = $state<ReasoningEffort | ''>(initial.reasoningEffort ?? '');
+let reasoningOptionsText = $state(
+  initial.reasoningOptions && Object.keys(initial.reasoningOptions).length > 0
+    ? `${JSON.stringify(initial.reasoningOptions, null, 2)}\n`
+    : ''
+);
 
 function build(): ModelInferenceDefaults {
   const built: ModelInferenceDefaults = {};
@@ -58,6 +90,11 @@ function build(): ModelInferenceDefaults {
   const repeatPenaltyValue = toNumber(repeatPenalty);
   if (repeatPenaltyValue !== undefined) built.repeatPenalty = repeatPenaltyValue;
   if (stop.length > 0) built.stop = [...stop];
+  if (reasoningEffort !== '') built.reasoningEffort = reasoningEffort;
+  const reasoningOptions = parseJsonObject(reasoningOptionsText);
+  if (reasoningOptionsText.trim().length > 0 && reasoningOptions.ok) {
+    built.reasoningOptions = reasoningOptions.value;
+  }
   return built;
 }
 
@@ -113,4 +150,28 @@ function setRepeatPenalty(raw: string) {
     emptyLabel="None."
     {disabled}
   />
+
+  <div class="space-y-3 border-t border-[var(--color-border-subtle)] pt-3">
+    <Select
+      label="Default reasoning effort"
+      placeholder="Unset"
+      options={effortOptions}
+      value={reasoningEffort}
+      disabled={disabled || supportedReasoningEfforts.length === 0}
+      hint={reasoningHint}
+      onchange={(event) => {
+        reasoningEffort = event.currentTarget.value as ReasoningEffort | '';
+      }}
+    />
+    {#if supportedReasoningEfforts.length > 0}
+      <JsonTextarea
+        bind:value={reasoningOptionsText}
+        label="Provider-native reasoning override (optional)"
+        hint={`Merged into the provider request after the level is mapped, e.g. Anthropic { "thinking": { "budget_tokens": 4000 } }.`}
+        rows={4}
+        placeholder={'{\n  "thinking": { "budget_tokens": 4000 }\n}'}
+        {disabled}
+      />
+    {/if}
+  </div>
 </div>

@@ -21,6 +21,7 @@ import {
   registerModel,
   setEnabled,
   setFavorite,
+  updateModel,
   updateModelDefaults
 } from '../../../src/lib/server/providers/models';
 import {
@@ -413,6 +414,52 @@ describe('model service', () => {
 
     expect(await listModels(handle.db, ownerA, { includeDisabled: false })).toHaveLength(0);
     expect(await listModels(handle.db, ownerA, { includeDisabled: true })).toHaveLength(1);
+  });
+
+  test('updateModel persists capabilities and reasoning defaults together', async () => {
+    const { ownerA, provider } = await seedProvider();
+    const model = await registerModel(handle.db, ownerA, {
+      providerId: provider.id,
+      modelKey: 'thinker',
+      displayName: 'Thinker'
+    });
+
+    const updated = await updateModel(handle.db, ownerA, model.id, {
+      displayName: 'Thinker v2',
+      capabilities: { reasoning: true, reasoningEfforts: ['off', 'low', 'high'] },
+      inferenceDefaults: {
+        reasoningEffort: 'medium',
+        reasoningOptions: { budget_tokens: 4000 }
+      }
+    });
+    expect(updated.displayName).toBe('Thinker v2');
+    expect(updated.capabilities).toEqual({
+      reasoning: true,
+      reasoningEfforts: ['off', 'low', 'high']
+    });
+    expect(updated.inferenceDefaults).toEqual({
+      reasoningEffort: 'medium',
+      reasoningOptions: { budget_tokens: 4000 }
+    });
+  });
+
+  test('updateModel rejects an unknown reasoning level', async () => {
+    const { ownerA, provider } = await seedProvider();
+    const model = await registerModel(handle.db, ownerA, {
+      providerId: provider.id,
+      modelKey: 'strict',
+      displayName: 'Strict'
+    });
+    let thrown: unknown;
+    try {
+      await updateModel(handle.db, ownerA, model.id, {
+        inferenceDefaults: { reasoningEffort: 'turbo' as never }
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(isAppError(thrown)).toBe(true);
+    if (isAppError(thrown)) expect(thrown.code).toBe('validation_failed');
   });
 
   test('deleteModel refuses when an agent run references the model', async () => {

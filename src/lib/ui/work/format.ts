@@ -124,6 +124,7 @@ const EVENT_LABELS: Record<string, string> = {
   'run.started': 'Run started',
   'run.output.delta': 'Agent output',
   'run.reasoning.delta': 'Agent reasoning',
+  'run.warning': 'Warning',
   'step.started': 'Step started',
   'step.completed': 'Step completed',
   'tool.started': 'Tool called',

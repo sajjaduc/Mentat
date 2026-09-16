@@ -22,6 +22,8 @@ export const RunEventTypes = {
   runStarted: 'run.started',
   runDelta: 'run.output.delta',
   runReasoning: 'run.reasoning.delta',
+  /** A configuration value was ignored rather than failing the run. */
+  runWarning: 'run.warning',
   stepStarted: 'step.started',
   stepCompleted: 'step.completed',
   toolStarted: 'tool.started',

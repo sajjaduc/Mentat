@@ -6,6 +6,7 @@
  * agent never rewrites the history of work that already happened (ADR-0008).
  */
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import type { ReasoningEffort } from '../../../shared/reasoning';
 import {
   bool,
   createdAt,
@@ -23,6 +24,10 @@ export interface AgentExecutionConfig {
   temperature?: number;
   topP?: number;
   timeoutSeconds?: number;
+  /** Reasoning level for thinking models; unsupported levels are dropped at run time. */
+  reasoningEffort?: ReasoningEffort;
+  /** Provider-native reasoning keys that win over the portable level. */
+  reasoningOptions?: Record<string, unknown>;
   /** Stop the run instead of failing when a tool errors. */
   continueOnToolError?: boolean;
   retryOnProviderError?: boolean;
@@ -186,7 +191,7 @@ export const skillVersions = sqliteTable(
   (table) => [uniqueIndex('skill_versions_unique').on(table.skillId, table.version)]
 );
 
-export type ToolKind = 'native' | 'http';
+export type ToolKind = 'native' | 'http' | 'mcp';
 
 export interface NativeToolImplementation {
   kind: 'native';
@@ -200,7 +205,21 @@ export interface HttpToolImplementation {
   serviceId: string;
 }
 
-export type ToolImplementation = NativeToolImplementation | HttpToolImplementation;
+/**
+ * An MCP tool discovered from a server. Execution is a JSON-RPC `tools/call` against
+ * the referenced `mcp_servers` row, so the schema lives with the server and Mentat
+ * only stores the pointer plus the tool name.
+ */
+export interface McpToolImplementation {
+  kind: 'mcp';
+  serverId: string;
+  toolName: string;
+}
+
+export type ToolImplementation =
+  | NativeToolImplementation
+  | HttpToolImplementation
+  | McpToolImplementation;
 
 export interface RetryPolicy {
   maxAttempts: number;

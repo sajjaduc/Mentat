@@ -8,6 +8,14 @@
  * (ADR-0008 keeps the run's pinned version separate from the editable head).
  */
 
+import {
+  isReasoningEffort,
+  normalizeReasoningEfforts,
+  REASONING_EFFORT_LABELS,
+  REASONING_EFFORT_OPTIONS,
+  REASONING_EFFORTS,
+  type ReasoningEffort
+} from '$shared/reasoning';
 import type { ApprovalPolicy, CachePolicy, HttpService, RetryPolicy } from '../http/types';
 
 export interface ModelCapabilities {
@@ -16,7 +24,10 @@ export interface ModelCapabilities {
   jsonMode?: boolean;
   vision?: boolean;
   embeddings?: boolean;
+  /** Supports controllable reasoning/thinking. */
   reasoning?: boolean;
+  /** Portable levels the model accepts; absent means "derive from the provider". */
+  reasoningEfforts?: ReasoningEffort[];
 }
 
 export interface ModelInferenceDefaults {
@@ -28,6 +39,10 @@ export interface ModelInferenceDefaults {
   stop?: string[];
   seed?: number;
   repeatPenalty?: number;
+  /** Default reasoning level for this model; an agent can override it. */
+  reasoningEffort?: ReasoningEffort;
+  /** Provider-native reasoning keys applied after the level is mapped. */
+  reasoningOptions?: Record<string, unknown>;
 }
 
 export type ProviderType = 'ollama' | 'openai' | 'openai_compatible' | 'anthropic' | 'fake';
@@ -108,6 +123,10 @@ export interface AgentExecutionConfig {
   temperature?: number;
   topP?: number;
   timeoutSeconds?: number;
+  /** Reasoning level for thinking models; unsupported levels are dropped at run time. */
+  reasoningEffort?: ReasoningEffort;
+  /** Provider-native reasoning keys that win over the portable level. */
+  reasoningOptions?: Record<string, unknown>;
   continueOnToolError?: boolean;
   retryOnProviderError?: boolean;
   requireApprovalForMutations?: boolean;
@@ -211,6 +230,8 @@ export interface SkillView extends Skill {
 
 export interface NativeToolDescriptor {
   id: null;
+  /** The materialised `tools` row, when the native handler has one. */
+  rowId: string | null;
   key: string;
   name: string;
   description: string;
@@ -221,10 +242,12 @@ export interface NativeToolDescriptor {
 }
 
 export interface ToolImplementation {
-  kind: 'native' | 'http';
+  kind: 'native' | 'http' | 'mcp';
   key?: string;
   operationId?: string;
   serviceId?: string;
+  serverId?: string;
+  toolName?: string;
 }
 
 export interface Tool {
@@ -233,7 +256,7 @@ export interface Tool {
   key: string;
   name: string;
   description: string;
-  kind: 'native' | 'http';
+  kind: 'native' | 'http' | 'mcp';
   implementation: ToolImplementation;
   inputSchema: unknown;
   outputSchema: unknown;
@@ -247,6 +270,67 @@ export interface Tool {
   createdAt: number;
   updatedAt: number;
   archivedAt: number | null;
+}
+
+export type McpAuthType = 'none' | 'bearer' | 'custom_header';
+
+export interface McpAuthConfig {
+  /** Secret reference only; the value is never returned. */
+  secretId?: string;
+  headerName?: string;
+  template?: string;
+}
+
+export interface McpServer {
+  id: string;
+  workspaceId: string;
+  name: string;
+  description: string | null;
+  url: string;
+  transport: 'http' | 'sse';
+  authType: McpAuthType;
+  authConfig: McpAuthConfig | null;
+  defaultHeaders: Record<string, string> | null;
+  timeoutMs: number;
+  enabled: boolean;
+  lastDiscoveredAt: number | null;
+  lastError: string | null;
+  createdByUserId: string | null;
+  createdAt: number;
+  updatedAt: number;
+  archivedAt: number | null;
+}
+
+export interface McpDiscoveredTool {
+  name: string;
+  description: string;
+  inputSchema: unknown;
+}
+
+/** One operation an OpenAPI import would create. */
+export interface OpenApiOperationDraft {
+  key: string;
+  method: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  path: string;
+  name: string;
+  description: string;
+  parameters: Array<{
+    name: string;
+    location: 'path' | 'query' | 'header' | 'body';
+    required?: boolean;
+    description?: string;
+    type?: 'string' | 'number' | 'boolean' | 'object' | 'array';
+  }>;
+  body: unknown;
+  outputSchema: unknown;
+}
+
+export interface OpenApiPreview {
+  title: string;
+  version: string | null;
+  baseUrl: string | null;
+  namespace: string;
+  operations: OpenApiOperationDraft[];
 }
 
 export interface RunSummary {
@@ -271,6 +355,29 @@ export const CAPABILITY_KEYS: ReadonlyArray<{
   { key: 'reasoning', label: 'Reasoning', hint: 'Exposes a thinking channel' },
   { key: 'embeddings', label: 'Embeddings', hint: 'Produces vectors, not chat' }
 ];
+
+export {
+  isReasoningEffort,
+  REASONING_EFFORT_LABELS,
+  REASONING_EFFORT_OPTIONS,
+  REASONING_EFFORTS,
+  type ReasoningEffort
+};
+
+/**
+ * Levels a model declares it accepts, from the client's point of view.
+ *
+ * The provider type is not known here, so a model that declares reasoning without
+ * an explicit effort set is offered every level and the runner drops anything the
+ * model turns out not to accept.
+ */
+export function supportedReasoningEffortsFor(
+  capabilities: ModelCapabilities | null | undefined
+): ReasoningEffort[] {
+  if (capabilities?.reasoning !== true) return [];
+  const declared = normalizeReasoningEfforts(capabilities.reasoningEfforts);
+  return declared ?? [...REASONING_EFFORTS];
+}
 
 export const PROVIDER_TYPE_LABELS: Record<ProviderType, string> = {
   ollama: 'Ollama',

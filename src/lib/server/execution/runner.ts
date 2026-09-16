@@ -42,6 +42,12 @@ import {
   type WorkflowState,
   workflowStates
 } from '../db/schema';
+import {
+  type ReasoningEffort,
+  reasoningSettingFrom,
+  resolveReasoning,
+  supportedReasoningEfforts
+} from '../providers/reasoning';
 import type {
   ChatMessage,
   GenerateRequest,
@@ -207,6 +213,8 @@ export async function executeAgentRun(
     temperature?: number;
     topP?: number;
     maxOutputTokens?: number;
+    reasoningEffort?: ReasoningEffort;
+    reasoningOptions?: Record<string, unknown>;
     continueOnToolError?: boolean;
     retryOnProviderError?: boolean;
     requireApprovalForMutations?: boolean;
@@ -243,8 +251,28 @@ export async function executeAgentRun(
     jsonMode: declared.jsonMode ?? false,
     vision: declared.vision ?? false,
     embeddings: declared.embeddings ?? false,
-    reasoning: declared.reasoning
+    reasoning: declared.reasoning,
+    reasoningEfforts: declared.reasoningEfforts
   };
+
+  // Reasoning is opt-in per model capability. A configured level the model does not
+  // accept is dropped (falling back to the next source that is accepted) and
+  // reported on the run rather than failing it.
+  const reasoning = resolveReasoning({
+    supported: supportedReasoningEfforts(capabilities, resolved.provider.type),
+    agent: reasoningSettingFrom(executionConfig),
+    model: reasoningSettingFrom(resolved.model.inferenceDefaults)
+  });
+  if (reasoning.warning) {
+    log.warn('reasoning setting ignored', { runId, warning: reasoning.warning });
+    publishRunEvent(db, {
+      workspaceId,
+      runId,
+      ticketId: run.ticketId,
+      type: RunEventTypes.runWarning,
+      data: { kind: 'reasoning', message: reasoning.warning }
+    });
+  }
 
   // Rebuild the conversation from persisted steps. This is the recovery path *and*
   // the resume path: both are just "look at what is already durable".
@@ -337,6 +365,9 @@ export async function executeAgentRun(
           temperature: executionConfig.temperature,
           topP: executionConfig.topP,
           maxOutputTokens: executionConfig.maxOutputTokens,
+          reasoningEffort: reasoning.effort,
+          reasoningOptions:
+            Object.keys(reasoning.options).length > 0 ? reasoning.options : undefined,
           signal: context.signal,
           timeoutMs: (executionConfig.timeoutSeconds ?? 300) * 1000
         },
@@ -745,7 +776,7 @@ interface ToolDescriptor {
   key: string;
   name: string;
   description: string;
-  kind: 'native' | 'http';
+  kind: 'native' | 'http' | 'mcp';
   inputSchema: Record<string, unknown>;
   implementation: Tool['implementation'];
   approvalPolicy: Tool['approvalPolicy'];
@@ -822,10 +853,10 @@ function evaluateApprovalPolicy(
 }
 
 function isMutatingCall(descriptor: ToolDescriptor, toolCall: ToolCallRequest): boolean {
-  if (descriptor.kind === 'http') {
+  if (descriptor.kind === 'http' || descriptor.kind === 'mcp') {
     const method = (toolCall.arguments as { method?: unknown }).method;
-    // The HTTP runtime derives the method from the operation, not the arguments,
-    // so treat every HTTP tool as potentially mutating unless it is a known read.
+    // The HTTP runtime derives the method from the operation and MCP decides mutation
+    // on the server; treat both as potentially mutating unless proven read-only.
     void method;
     return true;
   }
@@ -884,6 +915,7 @@ async function runTool(
     stepId: options.stepId,
     timeoutSeconds: options.descriptor.timeoutSeconds,
     permissions: options.descriptor.permissions,
+    inputSchema: options.descriptor.inputSchema,
     registry: defaultToolRegistry()
   });
   return { ...result, durationMs: result.durationMs ?? Date.now() - startedAt };

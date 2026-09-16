@@ -11,6 +11,7 @@ import { authRoutes } from './handlers/auth';
 import { dataRoutes } from './handlers/data';
 import { httpRoutes, publicWebhookRoutes } from './handlers/http';
 import { ticketRoutes } from './handlers/tickets';
+import { toolRoutes } from './handlers/tools';
 import { workflowRoutes } from './handlers/workflows';
 import type { ApiRoute } from './types';
 
@@ -19,6 +20,7 @@ export const apiRoutes: ApiRoute[] = [
   ...workflowRoutes,
   ...ticketRoutes,
   ...agentRoutes,
+  ...toolRoutes,
   ...httpRoutes,
   ...dataRoutes,
   ...publicWebhookRoutes
@@ -31,5 +33,6 @@ export {
   httpRoutes,
   publicWebhookRoutes,
   ticketRoutes,
+  toolRoutes,
   workflowRoutes
 };

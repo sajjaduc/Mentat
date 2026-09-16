@@ -9,6 +9,7 @@
  */
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
+import { REASONING_EFFORTS, type ReasoningEffort } from '../../shared/reasoning';
 import { AuditActions, writeAudit } from '../audit/ledger';
 import { type ActorContext, assertPermission, Permissions } from '../core/context';
 import { errors } from '../core/errors';
@@ -32,7 +33,8 @@ const capabilitySchema = z
     jsonMode: z.boolean().optional(),
     vision: z.boolean().optional(),
     embeddings: z.boolean().optional(),
-    reasoning: z.boolean().optional()
+    reasoning: z.boolean().optional(),
+    reasoningEfforts: z.array(z.enum(REASONING_EFFORTS)).optional()
   })
   .strict();
 
@@ -45,7 +47,9 @@ const inferenceDefaultsSchema = z
     numPredict: z.number().int().positive().optional(),
     stop: z.array(z.string()).optional(),
     seed: z.number().int().optional(),
-    repeatPenalty: z.number().optional()
+    repeatPenalty: z.number().optional(),
+    reasoningEffort: z.enum(REASONING_EFFORTS).optional(),
+    reasoningOptions: z.record(z.string(), z.unknown()).optional()
   })
   .strict();
 
@@ -271,6 +275,55 @@ export async function updateModelDefaults(
   );
 }
 
+const modelPatchSchema = z
+  .object({
+    displayName: z.string().trim().min(1).max(200).optional(),
+    capabilities: capabilitySchema.nullable().optional(),
+    contextWindow: z.number().int().positive().nullable().optional(),
+    maxOutputTokens: z.number().int().positive().nullable().optional(),
+    inferenceDefaults: inferenceDefaultsSchema.nullable().optional()
+  })
+  .strict();
+
+export type UpdateModelInput = z.input<typeof modelPatchSchema>;
+
+/**
+ * Apply a metadata/capability/defaults patch to a model.
+ *
+ * The API's PATCH surface edits several fields at once, so it validates them
+ * together rather than routing capability edits through the defaults-only schema
+ * (which correctly rejects them).
+ */
+export async function updateModel(
+  db: Executor,
+  actor: ActorContext,
+  modelId: string,
+  patch: UpdateModelInput
+): Promise<Model> {
+  const parsed = parseOrThrow(modelPatchSchema, patch, 'model update');
+  return mutateModel(db, actor, modelId, 'Not permitted to update models', (tx, model, now) => {
+    tx.update(models)
+      .set({
+        ...(parsed.displayName !== undefined ? { displayName: parsed.displayName } : {}),
+        ...(parsed.capabilities !== undefined ? { capabilities: parsed.capabilities } : {}),
+        ...(parsed.contextWindow !== undefined ? { contextWindow: parsed.contextWindow } : {}),
+        ...(parsed.maxOutputTokens !== undefined
+          ? { maxOutputTokens: parsed.maxOutputTokens }
+          : {}),
+        ...(parsed.inferenceDefaults !== undefined
+          ? { inferenceDefaults: parsed.inferenceDefaults }
+          : {}),
+        updatedAt: now
+      })
+      .where(eq(models.id, model.id))
+      .run();
+    return {
+      summary: `Model "${model.displayName}" updated`,
+      data: { modelKey: model.modelKey, changed: Object.keys(parsed) }
+    };
+  });
+}
+
 export async function setEnabled(
   db: Executor,
   actor: ActorContext,
@@ -341,6 +394,10 @@ export interface ResolvedGenerationOptions {
   maxOutputTokens?: number;
   stop?: string[];
   seed?: number;
+  /** Effective portable reasoning level, before capability filtering. */
+  reasoningEffort?: ReasoningEffort;
+  /** Merged provider-native reasoning overrides; later sources win. */
+  reasoningOptions?: Record<string, unknown>;
   /** Provider-specific options, e.g. Ollama's `num_ctx` / `repeat_penalty`. */
   options: Record<string, unknown>;
 }
@@ -359,7 +416,15 @@ export function resolveGenerationOptions(
   request: Partial<
     Pick<
       GenerateRequest,
-      'temperature' | 'topP' | 'topK' | 'maxOutputTokens' | 'stop' | 'seed' | 'options'
+      | 'temperature'
+      | 'topP'
+      | 'topK'
+      | 'maxOutputTokens'
+      | 'stop'
+      | 'seed'
+      | 'options'
+      | 'reasoningEffort'
+      | 'reasoningOptions'
     >
   >
 ): ResolvedGenerationOptions {
@@ -389,6 +454,15 @@ export function resolveGenerationOptions(
   if (stop !== undefined) resolved.stop = stop;
   const seed = request.seed ?? defaults.seed;
   if (seed !== undefined) resolved.seed = seed;
+  const reasoningEffort =
+    request.reasoningEffort ?? agent.reasoningEffort ?? defaults.reasoningEffort;
+  if (reasoningEffort !== undefined) resolved.reasoningEffort = reasoningEffort;
+  const reasoningOptions = {
+    ...(defaults.reasoningOptions ?? {}),
+    ...(agent.reasoningOptions ?? {}),
+    ...(request.reasoningOptions ?? {})
+  };
+  if (Object.keys(reasoningOptions).length > 0) resolved.reasoningOptions = reasoningOptions;
   return resolved;
 }
 

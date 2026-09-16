@@ -50,11 +50,11 @@ let handle: TestDatabase;
 let workspaceId: string;
 let owner: ActorContext;
 
-function installProvider(turns: FakeTurn[]) {
+function installProvider(turns: FakeTurn[], modelOverrides: Record<string, unknown> = {}) {
   const provider = new ScriptedProvider({ turns });
   setProviderLookup(async () => ({
     provider,
-    model: fakeModelRow(workspaceId)
+    model: fakeModelRow(workspaceId, modelOverrides)
   }));
   return provider;
 }
@@ -1096,3 +1096,119 @@ describe('secret hygiene', () => {
 });
 
 void workflowStates;
+
+describe('reasoning configuration', () => {
+  const REASONING_CAPABILITIES = {
+    streaming: true,
+    toolCalling: true,
+    jsonMode: false,
+    vision: false,
+    embeddings: false
+  };
+
+  async function runAgent(options: {
+    executionConfig?: Record<string, unknown>;
+    modelOverrides?: Record<string, unknown>;
+  }): Promise<{ runId: string; provider: ScriptedProvider }> {
+    const workflow = await createWorkflow(handle.db, workspaceId, {
+      name: `Reasoning ${Math.random().toString(36).slice(2, 6)}`
+    });
+    const agentId = await seedAgent({
+      workflowId: workflow.id,
+      executionConfig: options.executionConfig
+    });
+    const state = createState(handle.db, owner, workflow.id, {
+      name: 'Thinking',
+      kind: 'agent',
+      agentId
+    });
+    const ticket = createTicketSync(handle.db, owner, {
+      workflowId: workflow.id,
+      stateId: state.id,
+      title: 'Think carefully'
+    });
+    const provider = installProvider([{ content: 'done' }], options.modelOverrides);
+    const ticketRow = handle.db.select().from(tickets).where(eq(tickets.id, ticket.id)).all()[0]!;
+    await handleStateEntry(handle.db, {
+      ticketId: ticket.id,
+      stateId: state.id,
+      workflowId: workflow.id,
+      enteredAt: ticketRow.enteredStateAt
+    });
+    const run = handle.db
+      .select()
+      .from(agentRuns)
+      .where(eq(agentRuns.ticketId, ticket.id))
+      .all()[0]!;
+    return { runId: run.id, provider };
+  }
+
+  test('passes the agent reasoning level to the provider', async () => {
+    const { runId, provider } = await runAgent({
+      executionConfig: { reasoningEffort: 'high' },
+      modelOverrides: {
+        capabilities: {
+          ...REASONING_CAPABILITIES,
+          reasoning: true,
+          reasoningEfforts: ['off', 'low', 'medium', 'high']
+        }
+      }
+    });
+    expect(provider.calls[0]?.reasoningEffort).toBe('high');
+    const warnings = handle.db
+      .select()
+      .from(runEvents)
+      .where(and(eq(runEvents.runId, runId), eq(runEvents.type, 'run.warning')))
+      .all();
+    expect(warnings).toHaveLength(0);
+  });
+
+  test('drops a level the model does not accept and records a run warning', async () => {
+    const { runId, provider } = await runAgent({
+      executionConfig: { reasoningEffort: 'off' },
+      modelOverrides: {
+        capabilities: {
+          ...REASONING_CAPABILITIES,
+          reasoning: true,
+          reasoningEfforts: ['low', 'medium', 'high']
+        }
+      }
+    });
+    expect(provider.calls[0]?.reasoningEffort).toBeUndefined();
+    const warnings = handle.db
+      .select()
+      .from(runEvents)
+      .where(and(eq(runEvents.runId, runId), eq(runEvents.type, 'run.warning')))
+      .all();
+    expect(warnings).toHaveLength(1);
+    expect((warnings[0]!.data as { kind?: string }).kind).toBe('reasoning');
+  });
+
+  test('falls back to the model default when the agent level is unsupported', async () => {
+    const { provider } = await runAgent({
+      executionConfig: { reasoningEffort: 'off' },
+      modelOverrides: {
+        capabilities: {
+          ...REASONING_CAPABILITIES,
+          reasoning: true,
+          reasoningEfforts: ['low', 'medium', 'high']
+        },
+        inferenceDefaults: { reasoningEffort: 'medium' }
+      }
+    });
+    expect(provider.calls[0]?.reasoningEffort).toBe('medium');
+  });
+
+  test('sends no reasoning when the model does not declare the capability', async () => {
+    const { runId, provider } = await runAgent({
+      executionConfig: { reasoningEffort: 'high' }
+    });
+    expect(provider.calls[0]?.reasoningEffort).toBeUndefined();
+    const warnings = handle.db
+      .select()
+      .from(runEvents)
+      .where(and(eq(runEvents.runId, runId), eq(runEvents.type, 'run.warning')))
+      .all();
+    expect(warnings).toHaveLength(1);
+  });
+});

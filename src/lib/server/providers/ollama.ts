@@ -15,6 +15,7 @@ import {
   sanitizeProviderMessage,
   truncateSnippet
 } from './http';
+import { applyReasoning } from './reasoning';
 import {
   type ChatMessage,
   type GenerateRequest,
@@ -277,11 +278,16 @@ export class OllamaProvider implements ModelProvider {
   }
 
   private buildChatBody(request: GenerateRequest, stream: boolean): Record<string, unknown> {
-    const body: Record<string, unknown> = {
-      model: request.model,
-      messages: request.messages.map(toOllamaMessage),
-      stream
-    };
+    // Reasoning and its native overrides are applied first so the structural fields
+    // below can never be clobbered by an override.
+    const body: Record<string, unknown> = {};
+    applyReasoning(body, 'ollama', {
+      effort: request.reasoningEffort,
+      options: request.reasoningOptions
+    });
+    body.model = request.model;
+    body.messages = request.messages.map(toOllamaMessage);
+    body.stream = stream;
     const options = buildOllamaOptions(request);
     if (Object.keys(options).length > 0) body.options = options;
     if (request.tools && request.tools.length > 0) {

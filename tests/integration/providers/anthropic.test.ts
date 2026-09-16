@@ -306,3 +306,46 @@ describe('AnthropicProvider', () => {
     );
   });
 });
+
+describe('AnthropicProvider reasoning', () => {
+  const messagesRoute = () =>
+    jsonReply({
+      id: 'msg_1',
+      model: 'claude-sonnet-4-6',
+      content: [{ type: 'text', text: 'ok' }],
+      stop_reason: 'end_turn'
+    });
+
+  function providerFor(server: MockOllamaServer) {
+    return new AnthropicProvider({ baseUrl: server.url, apiKey: 'sk-ant-test' });
+  }
+
+  test('maps a level onto output_config.effort', async () => {
+    const server = serve({ routes: { '/v1/messages': messagesRoute } });
+    await providerFor(server).generate(request({ reasoningEffort: 'medium' }));
+    const body = server.requestsFor('/v1/messages')[0]!.body as Record<string, unknown>;
+    expect(body.output_config).toEqual({ effort: 'medium' });
+    expect(body.thinking).toBeUndefined();
+  });
+
+  test('off disables thinking instead of setting an effort', async () => {
+    const server = serve({ routes: { '/v1/messages': messagesRoute } });
+    await providerFor(server).generate(request({ reasoningEffort: 'off' }));
+    const body = server.requestsFor('/v1/messages')[0]!.body as Record<string, unknown>;
+    expect(body.thinking).toEqual({ type: 'disabled' });
+    expect(body.output_config).toBeUndefined();
+  });
+
+  test('a native override wins over the mapped level', async () => {
+    const server = serve({ routes: { '/v1/messages': messagesRoute } });
+    await providerFor(server).generate(
+      request({
+        reasoningEffort: 'low',
+        reasoningOptions: { thinking: { type: 'enabled', budget_tokens: 4000 } }
+      })
+    );
+    const body = server.requestsFor('/v1/messages')[0]!.body as Record<string, unknown>;
+    expect(body.thinking).toEqual({ type: 'enabled', budget_tokens: 4000 });
+    expect(body.output_config).toEqual({ effort: 'low' });
+  });
+});

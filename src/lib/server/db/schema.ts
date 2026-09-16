@@ -20,6 +20,7 @@ export * from './schema/execution';
 export * from './schema/fields';
 export * from './schema/files';
 export * from './schema/http';
+export * from './schema/mcp';
 export * from './schema/providers';
 export * from './schema/tenancy';
 export * from './schema/tickets';
@@ -36,6 +37,7 @@ import * as execution from './schema/execution';
 import * as fields from './schema/fields';
 import * as files from './schema/files';
 import * as http from './schema/http';
+import * as mcp from './schema/mcp';
 import * as providers from './schema/providers';
 import * as tenancy from './schema/tenancy';
 import * as tickets from './schema/tickets';
@@ -52,6 +54,7 @@ export const allSchema = {
   ...execution,
   ...agents,
   ...http,
+  ...mcp,
   ...providers,
   ...config,
   ...cache,

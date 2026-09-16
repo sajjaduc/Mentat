@@ -3,8 +3,10 @@
  *
  * This covers OpenAI itself plus the many servers that speak the same protocol
  * (vLLM, LM Studio, OpenRouter, llama.cpp's server). Capabilities are *not*
- * guessed from the model name: the caller supplies them per model row (or via
- * `capabilitiesFor`), because an OpenAI-compatible endpoint may host anything.
+ * guessed from the model name for a generic compatible endpoint — the caller
+ * supplies them per model row (or via `capabilitiesFor`), because such an endpoint
+ * may host anything. The one exception is `type: 'openai'` (the real OpenAI API),
+ * where the model taxonomy is known well enough to seed reasoning capability.
  */
 import {
   openProviderStream,
@@ -14,6 +16,7 @@ import {
   sanitizeProviderMessage,
   truncateSnippet
 } from './http';
+import { applyReasoning, detectReasoningSupport } from './reasoning';
 import {
   type ChatMessage,
   type GenerateRequest,
@@ -230,10 +233,19 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     for (const entry of entries) {
       const key = readString(entry.id);
       if (!key) continue;
+      const detected =
+        this.type === 'openai'
+          ? detectReasoningSupport({ providerType: 'openai', key })
+          : { reasoning: false as const };
       descriptors.push({
         key,
         displayName: key,
-        capabilities: { ...DEFAULT_CAPABILITIES, ...(this.capabilitiesFor?.(key) ?? {}) },
+        capabilities: {
+          ...DEFAULT_CAPABILITIES,
+          reasoning: detected.reasoning,
+          ...(detected.reasoningEfforts ? { reasoningEfforts: detected.reasoningEfforts } : {}),
+          ...(this.capabilitiesFor?.(key) ?? {})
+        },
         raw: entry as Record<string, unknown>
       });
     }
@@ -241,11 +253,16 @@ export class OpenAiCompatibleProvider implements ModelProvider {
   }
 
   private buildChatBody(request: GenerateRequest, stream: boolean): Record<string, unknown> {
-    const body: Record<string, unknown> = {
-      model: request.model,
-      messages: request.messages.map(toOpenAiMessage),
-      stream
-    };
+    // Apply reasoning first, then structural fields, so a native override cannot
+    // corrupt the conversation.
+    const body: Record<string, unknown> = {};
+    applyReasoning(body, this.type, {
+      effort: request.reasoningEffort,
+      options: request.reasoningOptions
+    });
+    body.model = request.model;
+    body.messages = request.messages.map(toOpenAiMessage);
+    body.stream = stream;
     if (request.tools && request.tools.length > 0) {
       body.tools = request.tools.map((tool) => ({
         type: 'function',

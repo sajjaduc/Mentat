@@ -121,6 +121,22 @@ export function parseJson(text: string): JsonParseResult {
   }
 }
 
+export type JsonObjectParseResult =
+  | { ok: true; value: Record<string, unknown> }
+  | { ok: false; error: string };
+
+/**
+ * Parse a JSON document that must be an object. Fields the server validates as
+ * records (provider-native options, for example) use this so an array or scalar
+ * is rejected here rather than as a 422 after a save.
+ */
+export function parseJsonObject(text: string): JsonObjectParseResult {
+  const parsed = parseJson(text);
+  if (!parsed.ok) return parsed;
+  if (!isRecord(parsed.value)) return { ok: false, error: 'Expected a JSON object' };
+  return { ok: true, value: parsed.value };
+}
+
 export function formatJson(value: unknown): string {
   if (value === undefined) return '';
   if (typeof value === 'string') return value;

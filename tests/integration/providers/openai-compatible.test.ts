@@ -284,3 +284,60 @@ describe('OpenAiCompatibleProvider', () => {
     );
   });
 });
+
+describe('OpenAiCompatibleProvider reasoning', () => {
+  const chatRoute = () =>
+    jsonReply({
+      id: 'chatcmpl-r',
+      object: 'chat.completion',
+      model: 'o3-mini',
+      choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }]
+    });
+
+  test('maps a level onto reasoning_effort and off to none', async () => {
+    const server = serve({ routes: { '/v1/chat/completions': chatRoute } });
+    const provider = new OpenAiCompatibleProvider({ baseUrl: server.url, apiKey: 'sk-test' });
+    await provider.generate(request({ reasoningEffort: 'minimal' }));
+    expect(
+      (server.requestsFor('/v1/chat/completions')[0]!.body as Record<string, unknown>)
+        .reasoning_effort
+    ).toBe('minimal');
+
+    const off = serve({ routes: { '/v1/chat/completions': chatRoute } });
+    await new OpenAiCompatibleProvider({ baseUrl: off.url, apiKey: 'sk-test' }).generate(
+      request({ reasoningEffort: 'off' })
+    );
+    expect(
+      (off.requestsFor('/v1/chat/completions')[0]!.body as Record<string, unknown>).reasoning_effort
+    ).toBe('none');
+  });
+
+  test('a native override wins over the mapped level', async () => {
+    const server = serve({ routes: { '/v1/chat/completions': chatRoute } });
+    const provider = new OpenAiCompatibleProvider({ baseUrl: server.url, apiKey: 'sk-test' });
+    await provider.generate(
+      request({ reasoningEffort: 'low', reasoningOptions: { reasoning_effort: 'high' } })
+    );
+    expect(
+      (server.requestsFor('/v1/chat/completions')[0]!.body as Record<string, unknown>)
+        .reasoning_effort
+    ).toBe('high');
+  });
+
+  test('seeds reasoning capability for the real OpenAI type only', async () => {
+    const routes = {
+      '/v1/models': () => jsonReply({ object: 'list', data: [{ id: 'o3-mini' }, { id: 'gpt-4o' }] })
+    };
+    const openai = new OpenAiCompatibleProvider({ baseUrl: serve({ routes }).url, type: 'openai' });
+    const curated = await openai.listModels();
+    expect(curated.find((model) => model.key === 'o3-mini')?.capabilities.reasoning).toBe(true);
+    expect(curated.find((model) => model.key === 'gpt-4o')?.capabilities.reasoning).toBe(false);
+
+    const generic = new OpenAiCompatibleProvider({
+      baseUrl: serve({ routes }).url,
+      type: 'openai_compatible'
+    });
+    const unguessed = await generic.listModels();
+    expect(unguessed.find((model) => model.key === 'o3-mini')?.capabilities.reasoning).toBe(false);
+  });
+});

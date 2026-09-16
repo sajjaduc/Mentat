@@ -9,7 +9,14 @@
  * default" — the runner resolves that when the run starts.
  */
 import { formatNumber } from '$shared/format';
-import { CAPABILITY_KEYS, type Model, PROVIDER_TYPE_LABELS, type Provider } from '$ui/agents/types';
+import {
+  CAPABILITY_KEYS,
+  type Model,
+  PROVIDER_TYPE_LABELS,
+  type Provider,
+  REASONING_EFFORT_LABELS,
+  supportedReasoningEffortsFor
+} from '$ui/agents/types';
 import { api, describeApiError } from '$ui/api';
 import Section from '$ui/http/controls/Section.svelte';
 import Badge from '$ui/primitives/Badge.svelte';
@@ -151,6 +158,13 @@ function onModelChange(event: Event) {
             selectedModel.maxOutputTokens
           )}
         </p>
+        {#if selectedModel.capabilities?.reasoning === true}
+          <p class="text-[11px] text-[var(--color-ink-subtle)]">
+            Reasoning levels: {supportedReasoningEffortsFor(selectedModel.capabilities)
+              .map((effort) => REASONING_EFFORT_LABELS[effort])
+              .join(', ')}
+          </p>
+        {/if}
       </div>
     {:else if providerId !== null && providerModels.length > 0}
       <p class="text-xs text-[var(--color-ink-subtle)]">

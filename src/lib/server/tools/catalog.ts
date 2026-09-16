@@ -13,7 +13,9 @@
  * the first time someone looks.
  */
 import { and, asc, eq, inArray } from 'drizzle-orm';
+import { AuditActions, writeAudit } from '../audit/ledger';
 import { type ActorContext, assertPermission, Permissions } from '../core/context';
+import { errors } from '../core/errors';
 import { uuidv7 } from '../core/ids';
 import type { Executor } from '../db/client';
 import { type Tool, tools } from '../db/schema';
@@ -27,6 +29,103 @@ export function listToolRows(db: Executor, actor: ActorContext): Tool[] {
     .where(and(eq(tools.workspaceId, actor.workspaceId), eq(tools.enabled, true)))
     .orderBy(asc(tools.key))
     .all();
+}
+
+/**
+ * Every tool row for the catalogue, including disabled ones.
+ *
+ * The management surface must show a disabled tool so it can be switched back on;
+ * `listToolRows` deliberately hides it from the pickers, where a disabled tool is
+ * not grantable.
+ */
+export function catalogToolRows(db: Executor, actor: ActorContext): Tool[] {
+  assertPermission(actor, Permissions.agentRead);
+  return allToolRows(db, actor.workspaceId);
+}
+
+/** Workspace-scoped rows without a permission check; callers assert at their boundary. */
+export function allToolRows(db: Executor, workspaceId: string): Tool[] {
+  return db
+    .select()
+    .from(tools)
+    .where(eq(tools.workspaceId, workspaceId))
+    .orderBy(asc(tools.key))
+    .all();
+}
+
+/** Enable or disable one tool row. Native rows are toggled like any other. */
+export function setToolEnabled(
+  db: Executor,
+  actor: ActorContext,
+  toolId: string,
+  enabled: boolean
+): Tool {
+  assertPermission(actor, Permissions.agentWrite, 'Not permitted to change tool availability');
+  const current =
+    db
+      .select()
+      .from(tools)
+      .where(and(eq(tools.workspaceId, actor.workspaceId), eq(tools.id, toolId)))
+      .limit(1)
+      .all()[0] ?? null;
+  if (!current) throw errors.notFound('Tool', toolId);
+
+  const now = Date.now();
+  db.update(tools)
+    .set({ enabled, updatedAt: now })
+    .where(and(eq(tools.workspaceId, actor.workspaceId), eq(tools.id, toolId)))
+    .run();
+
+  writeAudit(db, {
+    workspaceId: actor.workspaceId,
+    action: AuditActions.toolEnabledChanged,
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    actorLabel: actor.actorLabel,
+    entityType: 'tool',
+    entityId: toolId,
+    summary: `Tool "${current.key}" ${enabled ? 'enabled' : 'disabled'}`,
+    data: { key: current.key, enabled }
+  });
+
+  return { ...current, enabled, updatedAt: now };
+}
+
+/** Enable or disable a set of tool rows together (a whole group, from the UI). */
+export function setToolsEnabled(
+  db: Executor,
+  actor: ActorContext,
+  toolIds: string[],
+  enabled: boolean
+): Tool[] {
+  assertPermission(actor, Permissions.agentWrite, 'Not permitted to change tool availability');
+  const unique = [...new Set(toolIds)];
+  if (unique.length === 0) return [];
+
+  const rows = db
+    .select()
+    .from(tools)
+    .where(and(eq(tools.workspaceId, actor.workspaceId), inArray(tools.id, unique)))
+    .all();
+  const now = Date.now();
+  db.update(tools)
+    .set({ enabled, updatedAt: now })
+    .where(and(eq(tools.workspaceId, actor.workspaceId), inArray(tools.id, unique)))
+    .run();
+
+  writeAudit(db, {
+    workspaceId: actor.workspaceId,
+    action: AuditActions.toolEnabledChanged,
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    actorLabel: actor.actorLabel,
+    entityType: 'tool',
+    entityId: null,
+    summary: `${rows.length} tool(s) ${enabled ? 'enabled' : 'disabled'}`,
+    data: { count: rows.length, enabled, toolIds: unique }
+  });
+
+  return rows.map((row) => ({ ...row, enabled, updatedAt: now }));
 }
 
 export interface EnsureNativeToolRowsResult {

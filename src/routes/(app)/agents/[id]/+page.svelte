@@ -17,12 +17,15 @@ import ModelPicker from '$ui/agents/ModelPicker.svelte';
 import PermissionEditor from '$ui/agents/PermissionEditor.svelte';
 import SkillPicker from '$ui/agents/SkillPicker.svelte';
 import ToolPicker from '$ui/agents/ToolPicker.svelte';
-import type {
-  AgentExecutionConfig,
-  AgentPermissions,
-  AgentVersion,
-  AgentView,
-  WorkflowOption
+import {
+  type AgentExecutionConfig,
+  type AgentPermissions,
+  type AgentVersion,
+  type AgentView,
+  type Model,
+  type ReasoningEffort,
+  supportedReasoningEffortsFor,
+  type WorkflowOption
 } from '$ui/agents/types';
 import VersionHistory from '$ui/agents/VersionHistory.svelte';
 import { ApiError, api, describeApiError } from '$ui/api';
@@ -30,7 +33,7 @@ import ConfirmButton from '$ui/http/controls/ConfirmButton.svelte';
 import JsonTextarea from '$ui/http/controls/JsonTextarea.svelte';
 import PageHeader from '$ui/http/controls/PageHeader.svelte';
 import Section from '$ui/http/controls/Section.svelte';
-import { formatJson, parseJson } from '$ui/http/json';
+import { formatJson, parseJson, parseJsonObject } from '$ui/http/json';
 import Badge from '$ui/primitives/Badge.svelte';
 import Button from '$ui/primitives/Button.svelte';
 import EmptyState from '$ui/primitives/EmptyState.svelte';
@@ -52,7 +55,7 @@ interface AgentBody {
   skillIds: string[];
   toolIds: string[];
   outputSchema: unknown;
-  executionConfig: Record<string, number | boolean>;
+  executionConfig: Record<string, unknown>;
   permissions: {
     native: string[];
     httpOperationIds: string[];
@@ -67,6 +70,7 @@ interface AgentBody {
 let agent = $state<AgentView | null>(null);
 let versions = $state<AgentVersion[]>([]);
 let workflows = $state<WorkflowOption[]>([]);
+let models = $state<Model[]>([]);
 let agentId = $state('');
 let loading = $state(true);
 let error = $state<string | null>(null);
@@ -93,6 +97,8 @@ let maxOutputTokens = $state<number | null>(null);
 let temperature = $state<number | null>(null);
 let topP = $state<number | null>(null);
 let timeoutSeconds = $state<number | null>(null);
+let reasoningEffort = $state<ReasoningEffort | null>(null);
+let reasoningOptionsText = $state('');
 let continueOnToolError = $state(false);
 let retryOnProviderError = $state(false);
 let requireApprovalForMutations = $state(false);
@@ -112,9 +118,12 @@ async function load(id: string) {
   scopeNotice = null;
   agentId = id;
   try {
-    const [detail, workflowResult] = await Promise.all([
+    const [detail, workflowResult, modelResult] = await Promise.all([
       api.get<{ agent: AgentView; versions: AgentVersion[] }>(`/api/agents/${id}`),
-      api.get<{ workflows: WorkflowOption[] }>('/api/workflows')
+      api.get<{ workflows: WorkflowOption[] }>('/api/workflows'),
+      // A model catalogue read is a separate permission; an agent editor without
+      // it still works, it just cannot filter the reasoning levels up front.
+      api.get<{ models: Model[] }>('/api/models').catch(() => ({ models: [] as Model[] }))
     ]);
     agent = detail.agent;
     versions = detail.versions;
@@ -123,6 +132,7 @@ async function load(id: string) {
       name: workflow.name,
       key: workflow.key
     }));
+    models = modelResult.models;
     hydrate(detail.agent);
     changeNote = '';
     baseline = JSON.stringify(buildBody());
@@ -159,6 +169,11 @@ function hydrate(next: AgentView) {
   temperature = config.temperature ?? null;
   topP = config.topP ?? null;
   timeoutSeconds = config.timeoutSeconds ?? null;
+  reasoningEffort = config.reasoningEffort ?? null;
+  reasoningOptionsText =
+    config.reasoningOptions && Object.keys(config.reasoningOptions).length > 0
+      ? formatJson(config.reasoningOptions)
+      : '';
   continueOnToolError = config.continueOnToolError ?? false;
   retryOnProviderError = config.retryOnProviderError ?? false;
   requireApprovalForMutations = config.requireApprovalForMutations ?? false;
@@ -175,7 +190,7 @@ function hydrate(next: AgentView) {
 
 function buildBody(): AgentBody {
   const parsed = parseJson(outputSchema);
-  const executionConfig: Record<string, number | boolean> = {
+  const executionConfig: Record<string, unknown> = {
     continueOnToolError,
     retryOnProviderError,
     requireApprovalForMutations
@@ -185,6 +200,11 @@ function buildBody(): AgentBody {
   if (temperature !== null) executionConfig.temperature = temperature;
   if (topP !== null) executionConfig.topP = topP;
   if (timeoutSeconds !== null) executionConfig.timeoutSeconds = timeoutSeconds;
+  if (reasoningEffort !== null) executionConfig.reasoningEffort = reasoningEffort;
+  const reasoningOptions = parseJsonObject(reasoningOptionsText);
+  if (reasoningOptionsText.trim().length > 0 && reasoningOptions.ok) {
+    executionConfig.reasoningOptions = reasoningOptions.value;
+  }
 
   return {
     name: name.trim(),
@@ -217,6 +237,19 @@ const instructionMeta = $derived(
   )} tokens`
 );
 
+const selectedModel = $derived(models.find((model) => model.id === modelId) ?? null);
+
+/** `null` when the model is unknown (provider default), so the run validates it. */
+const supportedReasoningEfforts = $derived<ReasoningEffort[] | null>(
+  selectedModel === null ? null : supportedReasoningEffortsFor(selectedModel.capabilities)
+);
+
+const reasoningOptionsError = $derived(
+  reasoningOptionsText.trim().length === 0 || parseJsonObject(reasoningOptionsText).ok
+    ? null
+    : 'Enter a valid JSON object, or leave empty.'
+);
+
 const executionErrors = $derived({
   maxSteps:
     maxSteps === null || (Number.isInteger(maxSteps) && maxSteps >= 1 && maxSteps <= 100)
@@ -234,7 +267,8 @@ const executionErrors = $derived({
   timeoutSeconds:
     timeoutSeconds === null || (timeoutSeconds >= 5 && timeoutSeconds <= 3600)
       ? null
-      : 'Enter a number from 5 to 3600.'
+      : 'Enter a number from 5 to 3600.',
+  reasoningOptions: reasoningOptionsError
 });
 
 const executionInvalidCount = $derived(
@@ -486,6 +520,9 @@ async function archive() {
         bind:temperature
         bind:topP
         bind:timeoutSeconds
+        bind:reasoningEffort
+        bind:reasoningOptionsText
+        {supportedReasoningEfforts}
         bind:continueOnToolError
         bind:retryOnProviderError
         bind:requireApprovalForMutations

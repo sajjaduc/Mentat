@@ -33,6 +33,7 @@ import {
   workflowStates,
   workflows
 } from '../db/schema';
+import { isReasoningEffort } from '../providers/reasoning';
 
 export interface AgentView extends Agent {
   currentVersion: number;
@@ -239,6 +240,8 @@ function validateAgentConfig(input: CreateAgentInput): void {
     maxSteps?: number;
     timeoutSeconds?: number;
     temperature?: number;
+    reasoningEffort?: unknown;
+    reasoningOptions?: unknown;
   } | null;
   if (
     config?.maxSteps !== undefined &&
@@ -254,6 +257,19 @@ function validateAgentConfig(input: CreateAgentInput): void {
   }
   if (config?.temperature !== undefined && (config.temperature < 0 || config.temperature > 2)) {
     throw errors.validation('temperature must be between 0 and 2');
+  }
+  if (config?.reasoningEffort !== undefined && !isReasoningEffort(config.reasoningEffort)) {
+    throw errors.validation(
+      'reasoningEffort must be one of off, minimal, low, medium, high or max'
+    );
+  }
+  if (
+    config?.reasoningOptions !== undefined &&
+    (config.reasoningOptions === null ||
+      typeof config.reasoningOptions !== 'object' ||
+      Array.isArray(config.reasoningOptions))
+  ) {
+    throw errors.validation('reasoningOptions must be a JSON object of provider-native keys');
   }
   const permissions = input.permissions;
   if (permissions?.native) {

@@ -76,7 +76,7 @@ async function save() {
         unset.
       </p>
     </div>
-    <InferenceDefaultsFields bind:value={defaults} disabled={saving} />
+    <InferenceDefaultsFields bind:value={defaults} {capabilities} disabled={saving} />
   </div>
 
   {#if error}

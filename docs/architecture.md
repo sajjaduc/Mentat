@@ -168,7 +168,10 @@ rules). Models see `hubspot.get_contact`, never credentials.
 `ModelProvider` declares `health()`, `listModels()`, `generate()` and `stream()`
 with explicit capabilities. The runner depends on the interface, so Ollama is one
 implementation among several and a fake provider can drive the whole execution
-suite deterministically.
+suite deterministically. Reasoning is part of that contract: a model declares the
+portable levels it accepts, each provider maps a level onto its native knob, and a
+level the model does not accept is dropped with a `run.warning` rather than failing
+the run.
 
 ### ADR-0016 — No external infrastructure in V1
 

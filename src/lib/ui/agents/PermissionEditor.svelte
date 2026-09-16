@@ -23,6 +23,7 @@ import type { HttpOperation } from '$ui/http/types';
 import Badge from '$ui/primitives/Badge.svelte';
 import ErrorState from '$ui/primitives/ErrorState.svelte';
 import Skeleton from '$ui/primitives/Skeleton.svelte';
+import { namespaceForKey, ToolGroup } from './tools';
 
 interface Props {
   native?: string[];
@@ -77,9 +78,7 @@ function capabilityForms(key: string): string[] {
 }
 
 function namespaceOf(key: string): string {
-  const bare = key.startsWith('mentat.') ? key.slice('mentat.'.length) : key;
-  const head = bare.split('.')[0];
-  return head !== undefined && head.length > 0 ? head : 'other';
+  return namespaceForKey(key);
 }
 
 function isGranted(key: string): boolean {
@@ -90,6 +89,19 @@ function toggleNative(key: string) {
   const forms = capabilityForms(key);
   const granted = forms.some((form) => native.includes(form));
   native = granted ? native.filter((entry) => !forms.includes(entry)) : [...native, key];
+}
+
+/** Grant or clear every capability in a namespace in one action. */
+function toggleNativeGroup(tools: NativeToolDescriptor[], next: boolean) {
+  for (const tool of tools) {
+    if (isGranted(tool.key) !== next) toggleNative(tool.key);
+  }
+}
+
+function nativeGroupState(tools: NativeToolDescriptor[]): 'all' | 'some' | 'none' {
+  const granted = tools.filter((tool) => isGranted(tool.key)).length;
+  if (granted === 0) return 'none';
+  return granted === tools.length ? 'all' : 'some';
 }
 
 const NATIVE_ORDER: readonly string[] = NATIVE_PERMISSION_NAMESPACES;
@@ -115,7 +127,7 @@ const operationOptions = $derived(
   operations.map((operation) => ({
     value: operation.id,
     label: operation.key,
-    group: operation.method,
+    group: namespaceForKey(operation.key),
     hint: `${operation.method} ${operation.path}${
       operation.description.length > 0 ? ` — ${truncate(operation.description, 120)}` : ''
     }`,
@@ -170,15 +182,20 @@ const writableScope = $derived(
       {#if nativeGroups.length === 0}
         <p class="text-xs text-[var(--color-ink-subtle)]">No native capabilities are registered.</p>
       {:else}
-        <div class="grid gap-3 md:grid-cols-2">
+        <div class="space-y-2">
           {#each nativeGroups as [namespace, tools] (namespace)}
-            <div class="rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] p-3">
-              <p
-                class="text-[10px] font-semibold tracking-wider text-[var(--color-ink-subtle)] uppercase"
-              >
-                {namespace}
-              </p>
-              <div class="mt-2 space-y-2.5">
+            {@const granted = tools.filter((tool) => isGranted(tool.key)).length}
+            <ToolGroup
+              name={namespace}
+              count={tools.length}
+              meta={`${granted} of ${tools.length} granted`}
+              toggle={{
+                state: nativeGroupState(tools),
+                onToggle: (next: boolean) => toggleNativeGroup(tools, next),
+                hint: 'Grant group'
+              }}
+            >
+              <div class="space-y-2.5">
                 {#each tools as tool (tool.key)}
                   <label class="flex cursor-pointer items-start gap-2.5">
                     <input
@@ -193,6 +210,9 @@ const writableScope = $derived(
                         {#if tool.permission !== null}
                           <Badge tone="neutral">{tool.permission}</Badge>
                         {/if}
+                        {#if !tool.enabled}
+                          <Badge tone="caution">disabled</Badge>
+                        {/if}
                       </span>
                       <span class="block text-[11px] leading-relaxed text-[var(--color-ink-subtle)]">
                         {tool.description}
@@ -201,7 +221,7 @@ const writableScope = $derived(
                   </label>
                 {/each}
               </div>
-            </div>
+            </ToolGroup>
           {/each}
         </div>
       {/if}
@@ -246,10 +266,11 @@ const writableScope = $derived(
     <div class="border-t border-[var(--color-border-subtle)] pt-4">
       <MultiSelect
         label="HTTP operations"
-        hint="Operations this agent may invoke directly, in addition to any HTTP tools attached on the Tools tab."
+        hint="Operations this agent may invoke directly, in addition to any HTTP tools attached on the Tools tab. Use a group's checkbox to grant or revoke the whole namespace."
         searchPlaceholder="Search operations…"
         emptyLabel="No HTTP operations exist yet."
         options={operationOptions}
+        groupToggle
         bind:selected={httpOperationIds}
       />
     </div>
