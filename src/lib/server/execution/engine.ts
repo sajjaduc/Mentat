@@ -110,7 +110,6 @@ export async function handleStateEntry(
     }
     // Count this execution within the current entry.
     const runCount = incrementStateRunCount(db, ticket.id);
-    const _now = Date.now();
     const run = createAgentRunSync(db, {
       workspaceId: ticket.workspaceId,
       ticket,

@@ -255,28 +255,24 @@ function compileStateCondition(
   unresolved: string[]
 ): SQL | undefined {
   const key = condition.key;
-  let _column: SQL;
-  if (key === 'stateId' || key === 'id') {
-    _column = sql`${workflowStates.id}`;
-  } else if (key === 'name' || key === 'stateName') {
-    _column = sql`${workflowStates.name}`;
-  } else if (key === 'kind' || key === 'stateKind') {
-    _column = sql`${workflowStates.kind}`;
-  } else if (key === 'category' || key === 'stateCategory') {
-    _column = sql`${workflowStates.category}`;
-  } else {
+  const supported = new Set([
+    'stateId',
+    'id',
+    'name',
+    'stateName',
+    'kind',
+    'stateKind',
+    'category',
+    'stateCategory'
+  ]);
+  if (!supported.has(key)) {
     unresolved.push(key);
     return undefined;
   }
 
-  const states = db
-    .select({ id: workflowStates.id })
-    .from(workflowStates)
-    .where(eq(workflowStates.workspaceId, workspaceId))
-    .all();
-  if (states.length === 0) return sql`0 = 1`;
-
-  // Resolve through the ticket's own state so the condition stays index-friendly.
+  // Resolve the matching states first, then constrain the ticket's own state column:
+  // that keeps the outer query index-friendly on `tickets(state_id)` rather than
+  // joining `workflow_states` for every row.
   const matching = db
     .select({
       id: workflowStates.id,

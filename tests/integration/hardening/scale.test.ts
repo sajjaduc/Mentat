@@ -31,7 +31,7 @@ import {
 import { createFieldDefinition, setWorkflowFields } from '../../../src/lib/server/fields/service';
 import { clearProviderOverrides } from '../../../src/lib/server/providers/registry';
 import { getBoard, listTickets } from '../../../src/lib/server/tickets/query';
-import { getDefaultToolRegistry, resetToolRegistry } from '../../../src/lib/server/tools/registry';
+import { resetToolRegistry } from '../../../src/lib/server/tools/registry';
 import { createWorkflow } from '../../../src/lib/server/workflows/service';
 import { createTestDatabase, type TestDatabase } from '../../helpers/db';
 import { addMember, createWorkspace } from '../../helpers/factories';
