@@ -18,7 +18,10 @@
  * transaction is open. The PostgreSQL port keeps the same interface and gains
  * true async transactions for free (ADR-0004).
  */
+
 import { Database } from 'bun:sqlite';
+import fs from 'node:fs';
+import path from 'node:path';
 import { sql } from 'drizzle-orm';
 import { type BunSQLiteDatabase, drizzle } from 'drizzle-orm/bun-sqlite';
 import { errors } from '../core/errors';
@@ -46,6 +49,10 @@ export interface CreateDatabaseOptions {
 
 export function createDatabase(options: CreateDatabaseOptions): DatabaseHandle {
   const url = normalizeUrl(options.url);
+  // SQLite creates the file but not the directory, so a nested path (the default
+  // `./data/mentat.db`, or a test database under `.e2e/`) needs the parent to exist
+  // before the connection is opened.
+  ensureParentDirectory(url, options.readonly ?? false);
   const sqlite = new Database(url, options.readonly ? { readonly: true } : undefined);
 
   // WAL keeps readers from blocking the single writer; `foreign_keys` is off by
@@ -62,6 +69,16 @@ export function createDatabase(options: CreateDatabaseOptions): DatabaseHandle {
     sqlite,
     close: () => sqlite.close()
   };
+}
+
+/** Create the containing directory for a filesystem-backed database path. */
+function ensureParentDirectory(url: string, readonly: boolean): void {
+  if (url === ':memory:' || url.startsWith('file::memory:')) return;
+  if (readonly) return;
+  const filePath = url.startsWith('file:') ? url.slice('file:'.length) : url;
+  if (filePath.length === 0 || filePath.includes('?')) return;
+  const directory = path.dirname(path.resolve(filePath));
+  fs.mkdirSync(directory, { recursive: true });
 }
 
 function normalizeUrl(url: string): string {

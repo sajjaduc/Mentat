@@ -42,7 +42,9 @@ export default defineConfig({
     }
   ],
   webServer: {
-    command: `bun run dev --port ${PORT}`,
+    // Bind explicitly to IPv4: `localhost` can resolve to ::1, which the health check
+    // below (and the browser) would then miss.
+    command: `bun run dev --host 127.0.0.1 --port ${PORT}`,
     url: BASE_URL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
@@ -57,8 +59,8 @@ export default defineConfig({
       MENTAT_WORKER_CONCURRENCY: '2',
       MENTAT_BASE_URL: BASE_URL,
       MENTAT_LOG_LEVEL: 'warn',
-      // Deterministic key so a rerun can read its own secrets.
-      MENTAT_MASTER_KEY: 'ZTJlLXRlc3Qta2V5LWZvci1tZW50YXQtZTJlLTAwMDAwMDA='
+      // A fixed, valid 32-byte key so a rerun can still decrypt its own secrets.
+      MENTAT_MASTER_KEY: 'vaIhKUcfE8H71v5zVkOloabeHdxHu49ZTFi1rR5fuRs='
     }
   }
 });
