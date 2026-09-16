@@ -57,7 +57,8 @@ export function createUserRecord(
   if (!user) throw errors.internal('Failed to create user');
 
   writeAudit(db, {
-    workspaceId: 'system',
+    // Account creation is a platform event, not a tenant event.
+    workspaceId: null,
     action: AuditActions.userCreated,
     actorType: 'system',
     entityType: 'user',
