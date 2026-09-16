@@ -37,11 +37,11 @@ export interface CreateTicketInput {
   relationships?: Array<{ ticketId: string; type: TicketRelationshipType; note?: string }>;
   provenance?: {
     sourceType?: string;
-    sourceReference?: string;
-    sourceLabel?: string;
-    triggerId?: string;
-    triggerEventId?: string;
-    externalRef?: string;
+    sourceReference?: string | null;
+    sourceLabel?: string | null;
+    triggerId?: string | null;
+    triggerEventId?: string | null;
+    externalRef?: string | null;
   };
   /** Suppress the state-entry execution (used when the caller owns dispatch). */
   deferExecution?: boolean;

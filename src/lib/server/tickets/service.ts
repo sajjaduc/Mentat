@@ -221,12 +221,12 @@ export function createTicketSync(
     originTicketId: input.originTicketId ?? null,
     provenance: input.provenance
       ? {
-          sourceType: input.provenance.sourceType,
-          sourceReference: input.provenance.sourceReference,
-          sourceLabel: input.provenance.sourceLabel,
-          triggerId: input.provenance.triggerId,
-          triggerEventId: input.provenance.triggerEventId,
-          externalRef: input.provenance.externalRef,
+          sourceType: input.provenance.sourceType ?? undefined,
+          sourceReference: input.provenance.sourceReference ?? undefined,
+          sourceLabel: input.provenance.sourceLabel ?? undefined,
+          triggerId: input.provenance.triggerId ?? undefined,
+          triggerEventId: input.provenance.triggerEventId ?? undefined,
+          externalRef: input.provenance.externalRef ?? undefined,
           ingestedAt: now
         }
       : null,

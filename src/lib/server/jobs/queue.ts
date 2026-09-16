@@ -47,9 +47,9 @@ export interface EnqueueInput {
   dedupeKey?: string;
   idempotencyKey?: string;
   timeoutSeconds?: number;
-  ticketId?: string;
-  runId?: string;
-  parentJobId?: string;
+  ticketId?: string | null;
+  runId?: string | null;
+  parentJobId?: string | null;
   actorType?: 'user' | 'agent' | 'system' | 'api' | 'extraction';
   actorId?: string | null;
   actorLabel?: string | null;
