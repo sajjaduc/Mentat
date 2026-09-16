@@ -444,10 +444,13 @@ export function setWorkflowFields(
 }
 
 /**
- * Fields that must have a value before the ticket may be in `stateId`.
- * Enforced on entry so a state's requirements cannot be bypassed by any actor.
+ * Fields that must hold a value *while the ticket is in* `stateId`.
+ *
+ * Enforced when the ticket **leaves** the state: a requirement attached to a state
+ * is something the work in that state is supposed to produce — a review outcome, for
+ * example — so requiring it on entry would make the state impossible to enter.
  */
-export function requiredFieldsForState(
+export function fieldsRequiredWhileIn(
   db: Executor,
   workspaceId: string,
   workflowId: string,
@@ -468,12 +471,39 @@ export function requiredFieldsForState(
 
   return rows
     .filter((row) => {
-      if (row.workflowField.required) return true;
       const requiredInStates = row.workflowField.requiredInStates as string[] | null;
       return Array.isArray(requiredInStates) && requiredInStates.includes(stateId);
     })
     .map((row) => row.definition);
 }
+
+/**
+ * Fields marked universally required on the workflow. These must hold a value in
+ * every state, so they are enforced on entry as well as on exit.
+ */
+export function alwaysRequiredFields(
+  db: Executor,
+  workspaceId: string,
+  workflowId: string
+): FieldDefinition[] {
+  const rows = db
+    .select({ definition: fieldDefinitions })
+    .from(workflowFields)
+    .innerJoin(fieldDefinitions, eq(fieldDefinitions.id, workflowFields.fieldDefinitionId))
+    .where(
+      and(
+        eq(workflowFields.workspaceId, workspaceId),
+        eq(workflowFields.workflowId, workflowId),
+        eq(workflowFields.required, true),
+        isNull(fieldDefinitions.archivedAt)
+      )
+    )
+    .all();
+  return rows.map((row) => row.definition);
+}
+
+/** Backwards-compatible alias kept for callers that mean "required in this state". */
+export const requiredFieldsForState = fieldsRequiredWhileIn;
 
 /** Field definitions required before a ticket may be transferred out of the workflow. */
 export function requiredFieldsForTransfer(

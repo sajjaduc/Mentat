@@ -23,6 +23,7 @@ interface Props {
   emptyLabel?: string;
   noMatchLabel?: string;
   disabled?: boolean;
+  onchange?: (selected: string[]) => void;
 }
 
 let {
@@ -33,7 +34,8 @@ let {
   searchPlaceholder = 'Search…',
   emptyLabel = 'Nothing available to select.',
   noMatchLabel = 'No matches.',
-  disabled = false
+  disabled = false,
+  onchange
 }: Props = $props();
 
 let query = $state('');
@@ -64,10 +66,12 @@ function toggle(value: string) {
   selected = selected.includes(value)
     ? selected.filter((entry) => entry !== value)
     : [...selected, value];
+  onchange?.(selected);
 }
 
 function clear() {
   selected = [];
+  onchange?.(selected);
 }
 </script>
 

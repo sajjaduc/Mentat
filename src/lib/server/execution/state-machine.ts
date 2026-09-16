@@ -32,7 +32,7 @@ import {
   workflowStates,
   workflowTransitions
 } from '../db/schema';
-import { requiredFieldsForState } from '../fields/service';
+import { alwaysRequiredFields, fieldsRequiredWhileIn } from '../fields/service';
 import { enqueueJobSync } from '../jobs/queue';
 import {
   assertRequiredFieldsSatisfied,
@@ -255,11 +255,24 @@ export function validateTransition(
     }
   }
 
-  // Field requirements: the transition's own list, the gate's list, and any
-  // state-specific requirements on the destination.
+  // Field requirements, in the order a reviewer would expect to see them:
+  //  - the transition's own list and the gate's list (explicit policy);
+  //  - fields the workflow marks universally required;
+  //  - fields that must hold a value while the ticket is in the *source* state —
+  //    this is what makes "Review Outcome is required before leaving Human review"
+  //    true without making the state impossible to enter.
   const requiredKeys = new Set<string>([
     ...((resolution.transition.requiredFieldKeys as string[] | null) ?? []),
-    ...(gate?.requiredFieldKeys ?? [])
+    ...(gate?.requiredFieldKeys ?? []),
+    ...alwaysRequiredFields(db, input.actor.workspaceId, ticket.workflowId).map(
+      (definition) => definition.key
+    ),
+    ...fieldsRequiredWhileIn(
+      db,
+      input.actor.workspaceId,
+      ticket.workflowId,
+      resolution.fromState.id
+    ).map((definition) => definition.key)
   ]);
   if (requiredKeys.size > 0) {
     const values = fieldValuesByKey(db, input.actor.workspaceId, ticket.id);
@@ -330,18 +343,16 @@ export function applyTransitionSync(
     });
   }
 
-  const destinationRequired = requiredFieldsForState(
-    tx,
-    workspaceId,
-    current.workflowId,
-    resolution.toState.id
-  );
+  // Universally required fields must hold in the destination too. State-scoped
+  // requirements are deliberately *not* checked here: they describe what the work in
+  // that state produces, and are enforced when the ticket leaves it.
+  const universal = alwaysRequiredFields(tx, workspaceId, current.workflowId);
   assertRequiredFieldsSatisfied(tx, {
     workspaceId,
     ticketId: current.id,
     workflowId: current.workflowId,
     stateId: resolution.toState.id,
-    requiredFields: destinationRequired
+    requiredFields: universal
   });
 
   // Close the open interval.

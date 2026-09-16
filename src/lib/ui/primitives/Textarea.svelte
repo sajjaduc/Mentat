@@ -1,6 +1,7 @@
 <script lang="ts">
 /** Textarea: multi-line field with an optional monospace mode for JSON/templates. */
 import type { HTMLTextareaAttributes } from 'svelte/elements';
+import { nextControlId } from './ids';
 
 interface Props extends HTMLTextareaAttributes {
   label?: string;
@@ -15,9 +16,11 @@ let {
   mono = false,
   class: className = '',
   id,
+  // `value` must be declared bindable, otherwise `bind:value` is one-way.
+  value = $bindable(),
   ...rest
 }: Props = $props();
-const inputId = id ?? `textarea-${Math.random().toString(36).slice(2, 9)}`;
+const inputId = $derived(id ?? `textarea-${nextControlId()}`);
 </script>
 
 <div class="flex flex-col gap-1.5">
@@ -26,6 +29,7 @@ const inputId = id ?? `textarea-${Math.random().toString(36).slice(2, 9)}`;
   {/if}
   <textarea
     {...rest}
+    bind:value
     id={inputId}
     aria-invalid={error ? 'true' : undefined}
     class="w-full resize-y rounded-[var(--radius-md)] border bg-[var(--color-surface)] px-2.5 py-2 text-sm leading-relaxed

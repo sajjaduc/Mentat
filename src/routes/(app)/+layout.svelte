@@ -23,11 +23,24 @@ let paletteOpen = $state(false);
 let userMenuOpen = $state(false);
 let mobileNavOpen = $state(false);
 
-const nav = $derived([
+/** One navigation model, typed once so optional counts and tones are visible. */
+interface NavItem {
+  href: string;
+  label: string;
+  icon: string;
+  count?: number;
+  tone?: 'neutral' | 'accent' | 'positive' | 'caution' | 'danger' | 'muted';
+}
+interface NavGroup {
+  label: string;
+  items: NavItem[];
+}
+
+const nav: NavGroup[] = $derived([
   {
     label: 'Work',
     items: [
-      { href: '/workflows', label: 'Workflows', icon: 'columns', match: /^\/workflows/ },
+      { href: '/workflows', label: 'Workflows', icon: 'columns' },
       { href: '/my-work', label: 'My Work', icon: 'inbox', count: data.counts?.waitingForMe },
       {
         href: '/approvals',

@@ -14,6 +14,7 @@ interface Props {
   emptyLabel?: string;
   /** When true a row can be removed; templates keep this on. */
   removable?: boolean;
+  onchange?: (value: Record<string, string>) => void;
 }
 
 let {
@@ -24,7 +25,8 @@ let {
   valuePlaceholder = '{{param}}',
   addLabel = 'Add row',
   emptyLabel = 'No entries yet.',
-  removable = true
+  removable = true,
+  onchange
 }: Props = $props();
 
 let draftKey = $state('');
@@ -32,6 +34,11 @@ let draftValue = $state('');
 let duplicate = $state(false);
 
 const entries = $derived(Object.entries(value));
+
+function commit(next: Record<string, string>) {
+  value = next;
+  onchange?.(next);
+}
 
 function add() {
   const key = draftKey.trim();
@@ -41,7 +48,7 @@ function add() {
     return;
   }
   duplicate = false;
-  value = { ...value, [key]: draftValue };
+  commit({ ...value, [key]: draftValue });
   draftKey = '';
   draftValue = '';
 }
@@ -53,17 +60,17 @@ function updateKey(previous: string, next: string) {
   for (const [entryKey, entryValue] of Object.entries(value)) {
     rebuilt[entryKey === previous ? key : entryKey] = entryValue;
   }
-  value = rebuilt;
+  commit(rebuilt);
 }
 
 function updateValue(key: string, next: string) {
-  value = { ...value, [key]: next };
+  commit({ ...value, [key]: next });
 }
 
 function remove(key: string) {
   const next = { ...value };
   delete next[key];
-  value = next;
+  commit(next);
 }
 
 const cell =
@@ -118,7 +125,7 @@ const cell =
     <input
       class={cell}
       bind:value={draftKey}
-      {keyPlaceholder}
+      placeholder={keyPlaceholder}
       aria-label={`New ${keyLabel}`}
       onkeydown={(event) => {
         if (event.key === 'Enter') {
@@ -130,7 +137,7 @@ const cell =
     <input
       class={cell}
       bind:value={draftValue}
-      {valuePlaceholder}
+      placeholder={valuePlaceholder}
       aria-label={`New ${valueLabel}`}
       onkeydown={(event) => {
         if (event.key === 'Enter') {

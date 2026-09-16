@@ -20,7 +20,8 @@ import { type AuditAction, type AuditEvent, auditEvents } from '../db/schema';
 export { AuditActions } from '../db/schema/audit';
 
 export interface AuditInput {
-  workspaceId: string;
+  /** Null for platform-level events that belong to no tenant. */
+  workspaceId: string | null;
   action: AuditAction;
   actorType?: ActorType;
   actorId?: string | null;

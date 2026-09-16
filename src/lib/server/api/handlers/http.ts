@@ -29,6 +29,7 @@ import {
   archiveTrigger,
   createTrigger,
   findTriggerByWebhookToken,
+  getTrigger,
   listTriggers,
   updateTrigger
 } from '../../triggers/service';
@@ -351,9 +352,12 @@ export const httpRoutes = [
     path: '/triggers/:id/events',
     permission: Permissions.triggerRead,
     summary: 'Recent trigger events with their processing status',
-    handler: ({ db, actor, params }) => ({
-      body: { events: recentTriggerEvents(db, actor.workspaceId, params.id as string, 50) }
-    })
+    handler: ({ db, actor, params }) => {
+      getTrigger(db, actor, params.id as string);
+      return {
+        body: { events: recentTriggerEvents(db, actor.workspaceId, params.id as string, 50) }
+      };
+    }
   }),
 
   route({
@@ -362,8 +366,8 @@ export const httpRoutes = [
     permission: Permissions.triggerRead,
     summary: 'The public webhook URL for a trigger',
     handler: ({ db, actor, params, request }) => {
-      const trigger = listTriggers(db, actor).find((row) => row.id === params.id);
-      if (!trigger?.webhookToken) return { body: { url: null } };
+      const trigger = getTrigger(db, actor, params.id as string);
+      if (!trigger.webhookToken) return { body: { url: null } };
       const origin = new URL(request.url).origin;
       return { body: { url: `${origin}/api/webhooks/${trigger.webhookToken}` } };
     }
@@ -404,8 +408,10 @@ export const publicWebhookRoutes = [
     path: '/webhooks/:token',
     public: true,
     summary: 'Receive a webhook delivery for a trigger',
-    handler: async ({ db, params, request }) => {
-      const rawBody = await request.text();
+    handler: async ({ db, params, request, rawBody: dispatchedBody }) => {
+      // The dispatcher already read the body; re-reading the stream here would
+      // return an empty string for a request whose body was consumed.
+      const rawBody = dispatchedBody ?? (await request.text());
       const headers: Record<string, string> = {};
       request.headers.forEach((value, key) => {
         headers[key.toLowerCase()] = value;

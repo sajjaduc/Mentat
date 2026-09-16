@@ -52,7 +52,6 @@ const objectSchema = (
 });
 
 const stringProp = (description: string) => ({ type: 'string', description });
-const _booleanProp = (description: string) => ({ type: 'boolean', description });
 const arrayProp = (description: string, items: Record<string, unknown>) => ({
   type: 'array',
   description,

@@ -457,6 +457,21 @@ export async function executeAgentRun(
       });
       executedSteps += 1;
 
+      writeAudit(db, {
+        workspaceId,
+        action: AuditActions.toolCallStarted,
+        actorType: 'agent',
+        actorId: run.agentId,
+        actorLabel: agent.name,
+        entityType: 'agent_run',
+        entityId: run.id,
+        ticketId: run.ticketId,
+        workflowId: run.workflowId,
+        runId,
+        summary: `Tool call started: ${toolCall.name}`,
+        data: { toolKey: toolCall.name, arguments: toolCall.arguments }
+      });
+
       // Approval policy is evaluated by Mentat, never by the model.
       const approval = evaluateApprovalPolicy(descriptor, toolCall, executionConfig);
       if (approval.required) {
@@ -555,6 +570,29 @@ export async function executeAgentRun(
         }
       });
       executedSteps += 1;
+
+      // The ledger records tool calls explicitly: "which agent called what, and did
+      // it work" is one of the questions the audit trail exists to answer.
+      writeAudit(db, {
+        workspaceId,
+        action: result.ok ? AuditActions.toolCallCompleted : AuditActions.toolCallFailed,
+        actorType: 'agent',
+        actorId: run.agentId,
+        actorLabel: agent.name,
+        entityType: 'agent_run',
+        entityId: run.id,
+        ticketId: run.ticketId,
+        workflowId: run.workflowId,
+        runId,
+        summary: `${result.ok ? 'Tool call' : 'Tool call failed'}: ${toolCall.name}`,
+        data: {
+          toolKey: toolCall.name,
+          ok: result.ok,
+          durationMs: result.durationMs,
+          cacheStatus: result.cacheStatus ?? null,
+          error: result.error?.message ?? null
+        }
+      });
 
       publishRunEvent(db, {
         workspaceId,

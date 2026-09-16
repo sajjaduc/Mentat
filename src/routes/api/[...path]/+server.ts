@@ -18,6 +18,9 @@ function queryObject(url: URL): Record<string, string> {
   return out;
 }
 
+/** The router's patterns are relative to `/api`; the adapter strips the prefix. */
+const API_PREFIX = '/api';
+
 export const fallback: RequestHandler = async () => {
   return new Response(
     JSON.stringify({
@@ -40,7 +43,7 @@ async function handle(event: Parameters<RequestHandler>[0]): Promise<Response> {
   const context = await resolveRequestContext(event);
 
   // The API index is public and useful for debugging a local instance.
-  if (event.url.pathname === '/api' || event.url.pathname === '/api/') {
+  if (event.url.pathname === API_PREFIX || event.url.pathname === `${API_PREFIX}/`) {
     return new Response(JSON.stringify({ routes: apiIndex() }), {
       headers: { 'content-type': 'application/json' }
     });
@@ -54,10 +57,14 @@ async function handle(event: Parameters<RequestHandler>[0]): Promise<Response> {
           .text()
           .catch(() => undefined);
 
+  const relativePath = event.url.pathname.startsWith(API_PREFIX)
+    ? event.url.pathname.slice(API_PREFIX.length) || '/'
+    : event.url.pathname;
+
   const result = await dispatchApi({
     db: context.db,
     method: event.request.method,
-    pathname: event.url.pathname,
+    pathname: relativePath,
     actor: context.actor,
     query: queryObject(event.url),
     rawBody,

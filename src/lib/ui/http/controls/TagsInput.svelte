@@ -11,6 +11,7 @@ interface Props {
   placeholder?: string;
   disabled?: boolean;
   emptyLabel?: string;
+  onchange?: (values: string[]) => void;
 }
 
 let {
@@ -19,7 +20,8 @@ let {
   hint,
   placeholder = 'Add value…',
   disabled = false,
-  emptyLabel = 'None.'
+  emptyLabel = 'None.',
+  onchange
 }: Props = $props();
 
 let draft = $state('');
@@ -35,10 +37,12 @@ function commit() {
   }
   values = [...new Set([...values, ...parts])];
   draft = '';
+  onchange?.(values);
 }
 
 function remove(index: number) {
   values = values.filter((_, position) => position !== index);
+  onchange?.(values);
 }
 </script>
 

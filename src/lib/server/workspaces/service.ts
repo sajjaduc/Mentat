@@ -25,6 +25,7 @@ import {
   workspaceMembers,
   workspaces
 } from '../db/schema';
+import { ensureNativeToolRows } from '../tools/catalog';
 
 export interface WorkspaceWithRole extends Workspace {
   role: WorkspaceRole;
@@ -57,7 +58,8 @@ export function createUserRecord(
   if (!user) throw errors.internal('Failed to create user');
 
   writeAudit(db, {
-    workspaceId: 'system',
+    // Account creation is a platform event, not a tenant event.
+    workspaceId: null,
     action: AuditActions.userCreated,
     actorType: 'system',
     entityType: 'user',
@@ -158,6 +160,10 @@ export function createWorkspaceWithOwner(
       updatedAt: now
     })
     .run();
+
+  // Seed the bindable tool catalogue so agents in a brand-new workspace can be
+  // granted capabilities straight away.
+  ensureNativeToolRows(db, workspaceId);
 
   writeAudit(db, {
     workspaceId,
