@@ -1,0 +1,54 @@
+{
+  "name": "mentat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Mentat — self-hostable work-orchestration platform where humans and AI agents participate in durable workflows.",
+  "engines": {
+    "bun": ">=1.2.0"
+  },
+  "scripts": {
+    "dev": "vite dev --port 5273",
+    "build": "vite build",
+    "preview": "bun run build && bun ./build/index.js",
+    "start": "bun ./build/index.js",
+    "worker": "bun run src/worker/main.ts",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "typecheck": "svelte-kit sync && tsc --noEmit -p tsconfig.json",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "test": "bun test --preload ./tests/setup.ts tests/unit tests/integration",
+    "test:unit": "bun test --preload ./tests/setup.ts tests/unit",
+    "test:integration": "bun test --preload ./tests/setup.ts tests/integration",
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install --with-deps chromium",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "bun run scripts/migrate.ts",
+    "db:reset": "bun run scripts/reset-db.ts",
+    "verify": "bun run lint && bun run typecheck && bun run test",
+    "seed": "bun run scripts/seed.ts"
+  },
+  "dependencies": {
+    "@google-cloud/storage": "^7.16.0",
+    "@sveltejs/adapter-node": "^5.2.12",
+    "@sveltejs/kit": "^2.48.0",
+    "cron-parser": "^5.2.0",
+    "drizzle-orm": "^0.44.2",
+    "svelte": "^5.36.0",
+    "unpdf": "^1.2.1",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.1.0",
+    "@playwright/test": "^1.53.0",
+    "@sveltejs/vite-plugin-svelte": "^6.0.0",
+    "@tailwindcss/vite": "^4.1.0",
+    "@types/bun": "^1.2.0",
+    "drizzle-kit": "^0.31.0",
+    "svelte-check": "^4.2.0",
+    "tailwindcss": "^4.1.0",
+    "typescript": "^5.8.0",
+    "vite": "^7.0.0"
+  }
+}

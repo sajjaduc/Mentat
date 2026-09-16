@@ -1,0 +1,94 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.1.0/schema.json",
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "files": {
+    "includes": [
+      "**",
+      "!**/node_modules/**",
+      "!**/build/**",
+      "!**/.svelte-kit/**",
+      "!**/drizzle/meta/**",
+      "!**/data/**",
+      "!**/package.json"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100,
+    "lineEnding": "lf"
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "trailingCommas": "none",
+      "semicolons": "always",
+      "arrowParentheses": "always"
+    }
+  },
+  "json": {
+    "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2 }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "complexity": {
+        "noBannedTypes": "off",
+        "useLiteralKeys": "off",
+        "noExcessiveCognitiveComplexity": "warn",
+        "noForEach": "off"
+      },
+      "correctness": {
+        "noUnusedVariables": "error",
+        "noUnusedImports": "error",
+        "useExhaustiveDependencies": "off",
+        "noUnreachable": "error"
+      },
+      "suspicious": {
+        "noExplicitAny": "error",
+        "noConsole": "off",
+        "noArrayIndexKey": "off",
+        "noAssignInExpressions": "error",
+        "noImplicitAnyLet": "error",
+        "useAwait": "off"
+      },
+      "style": {
+        "noNonNullAssertion": "off",
+        "useConst": "error",
+        "useTemplate": "warn",
+        "noParameterAssign": "off",
+        "useDefaultParameterLast": "off",
+        "useNamingConvention": "off"
+      },
+      "performance": {
+        "noDelete": "off"
+      },
+      "a11y": {
+        "useKeyWithClickEvents": "off",
+        "noSvgWithoutTitle": "off",
+        "useSemanticElements": "off"
+      }
+    }
+  },
+  "overrides": [
+    {
+      "includes": ["**/*.svelte"],
+      "linter": {
+        "rules": {
+          "correctness": { "noUnusedVariables": "off", "noUnusedImports": "off" },
+          "suspicious": { "noExplicitAny": "off" }
+        }
+      }
+    },
+    {
+      "includes": ["tests/**/*.ts", "scripts/**/*.ts"],
+      "linter": {
+        "rules": {
+          "suspicious": { "noExplicitAny": "off" }
+        }
+      }
+    }
+  ]
+}
