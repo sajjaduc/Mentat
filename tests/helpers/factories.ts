@@ -21,6 +21,14 @@ import {
   type FieldType,
   fieldDefinitions,
   labels,
+  type Model,
+  type ModelCapabilities,
+  type ModelInferenceDefaults,
+  models,
+  type Provider,
+  type ProviderConfig,
+  type ProviderType,
+  providers,
   type StateKind,
   teamMembers,
   teams,
@@ -402,4 +410,91 @@ export function memberActor(workspaceId: string, userId: string, label = 'Member
     role: 'member',
     permissions: permissionsForRole('member')
   });
+}
+
+export interface ProviderRowOptions {
+  workspaceId: string;
+  name?: string;
+  type?: ProviderType;
+  baseUrl?: string | null;
+  apiKeySecretId?: string | null;
+  config?: ProviderConfig | null;
+  enabled?: boolean;
+  isDefault?: boolean;
+  createdByUserId?: string | null;
+}
+
+/** Insert a provider row directly, bypassing the provider service under test. */
+export async function createProviderRow(
+  db: Executor,
+  options: ProviderRowOptions
+): Promise<Provider> {
+  const id = uuidv7();
+  const now = Date.now();
+  await db
+    .insert(providers)
+    .values({
+      id,
+      workspaceId: options.workspaceId,
+      name: options.name ?? unique('Provider'),
+      type: options.type ?? 'ollama',
+      baseUrl: options.baseUrl ?? null,
+      apiKeySecretId: options.apiKeySecretId ?? null,
+      config: options.config ?? null,
+      enabled: options.enabled ?? true,
+      isDefault: options.isDefault ?? false,
+      createdByUserId: options.createdByUserId ?? null,
+      createdAt: now,
+      updatedAt: now
+    })
+    .run();
+  const rows = await db.select().from(providers).where(eq(providers.id, id)).all();
+  return rows[0]!;
+}
+
+export interface ModelRowOptions {
+  workspaceId: string;
+  providerId: string;
+  modelKey?: string;
+  displayName?: string;
+  family?: string | null;
+  parameterSize?: string | null;
+  quantization?: string | null;
+  capabilities?: ModelCapabilities | null;
+  contextWindow?: number | null;
+  maxOutputTokens?: number | null;
+  inferenceDefaults?: ModelInferenceDefaults | null;
+  enabled?: boolean;
+  discovered?: boolean;
+}
+
+/** Insert a model row directly, bypassing the model service under test. */
+export async function createModelRow(db: Executor, options: ModelRowOptions): Promise<Model> {
+  const id = uuidv7();
+  const now = Date.now();
+  await db
+    .insert(models)
+    .values({
+      id,
+      workspaceId: options.workspaceId,
+      providerId: options.providerId,
+      modelKey: options.modelKey ?? unique('model'),
+      displayName: options.displayName ?? options.modelKey ?? 'Model',
+      family: options.family ?? null,
+      parameterSize: options.parameterSize ?? null,
+      quantization: options.quantization ?? null,
+      capabilities: options.capabilities ?? null,
+      contextWindow: options.contextWindow ?? null,
+      maxOutputTokens: options.maxOutputTokens ?? null,
+      inferenceDefaults: options.inferenceDefaults ?? null,
+      enabled: options.enabled ?? true,
+      discovered: options.discovered ?? false,
+      discoveredAt: options.discovered ? now : null,
+      lastSeenAt: options.discovered ? now : null,
+      createdAt: now,
+      updatedAt: now
+    })
+    .run();
+  const rows = await db.select().from(models).where(eq(models.id, id)).all();
+  return rows[0]!;
 }
