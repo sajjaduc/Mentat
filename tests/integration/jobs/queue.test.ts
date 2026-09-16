@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { and, eq } from 'drizzle-orm';
 import { jobAttempts, jobs } from '../../../src/lib/server/db/schema';
-import { SqliteJobQueue, getJobAttempts, listJobs } from '../../../src/lib/server/jobs/queue';
+import { getJobAttempts, listJobs, SqliteJobQueue } from '../../../src/lib/server/jobs/queue';
 import { createTestDatabase, type TestDatabase } from '../../helpers/db';
 import { createWorkspace } from '../../helpers/factories';
 
@@ -60,7 +60,12 @@ describe('job queue: enqueue and complete', () => {
 
   test('does not lease a job before its availability time', async () => {
     const future = Date.now() + 60_000;
-    const job = await queue.enqueue({ workspaceId, type: 'trigger.cron', payload: {}, availableAt: future });
+    const job = await queue.enqueue({
+      workspaceId,
+      type: 'trigger.cron',
+      payload: {},
+      availableAt: future
+    });
     expect(await queue.lease({ workerId: 'worker-a' })).toBeNull();
 
     const leased = await queue.lease({ workerId: 'worker-a', now: future + 1 });
@@ -142,7 +147,12 @@ describe('job queue: idempotent enqueue', () => {
   test('scopes dedupe keys per workspace', async () => {
     const other = await createWorkspace(handle.db, 'Other');
     const a = await queue.enqueue({ workspaceId, type: 'agent.run', payload: {}, dedupeKey: 'k' });
-    const b = await queue.enqueue({ workspaceId: other.id, type: 'agent.run', payload: {}, dedupeKey: 'k' });
+    const b = await queue.enqueue({
+      workspaceId: other.id,
+      type: 'agent.run',
+      payload: {},
+      dedupeKey: 'k'
+    });
     expect(b.id).not.toBe(a.id);
   });
 });
@@ -157,7 +167,10 @@ describe('job queue: retries and failure', () => {
     });
     await queue.lease({ workerId: 'worker-a' });
 
-    const outcome = await queue.fail(job.id, { error: new Error('provider timeout'), errorCode: 'timeout' });
+    const outcome = await queue.fail(job.id, {
+      error: new Error('provider timeout'),
+      errorCode: 'timeout'
+    });
     expect(outcome.willRetry).toBe(true);
     expect(outcome.status).toBe('pending');
     expect(outcome.attempts).toBe(1);
@@ -179,7 +192,11 @@ describe('job queue: retries and failure', () => {
     });
 
     await queue.lease({ workerId: 'worker-a' });
-    await queue.fail(job.id, { error: new Error('first'), now: Date.now(), availableAt: Date.now() });
+    await queue.fail(job.id, {
+      error: new Error('first'),
+      now: Date.now(),
+      availableAt: Date.now()
+    });
     await queue.lease({ workerId: 'worker-a' });
     const outcome = await queue.fail(job.id, { error: new Error('second') });
 
@@ -192,7 +209,12 @@ describe('job queue: retries and failure', () => {
   });
 
   test('fails permanently when the error is not retryable', async () => {
-    const job = await queue.enqueue({ workspaceId, type: 'agent.run', payload: {}, maxAttempts: 5 });
+    const job = await queue.enqueue({
+      workspaceId,
+      type: 'agent.run',
+      payload: {},
+      maxAttempts: 5
+    });
     await queue.lease({ workerId: 'worker-a' });
     const outcome = await queue.fail(job.id, {
       error: new Error('validation failed'),
@@ -204,7 +226,12 @@ describe('job queue: retries and failure', () => {
   });
 
   test('records each attempt and its outcome', async () => {
-    const job = await queue.enqueue({ workspaceId, type: 'agent.run', payload: {}, maxAttempts: 3 });
+    const job = await queue.enqueue({
+      workspaceId,
+      type: 'agent.run',
+      payload: {},
+      maxAttempts: 3
+    });
     await queue.lease({ workerId: 'worker-a' });
     await queue.fail(job.id, { error: new Error('boom'), availableAt: Date.now() });
     await queue.lease({ workerId: 'worker-b' });
@@ -216,7 +243,12 @@ describe('job queue: retries and failure', () => {
   });
 
   test('honours an explicit Retry-After availability time', async () => {
-    const job = await queue.enqueue({ workspaceId, type: 'http.request', payload: {}, maxAttempts: 3 });
+    const job = await queue.enqueue({
+      workspaceId,
+      type: 'http.request',
+      payload: {},
+      maxAttempts: 3
+    });
     await queue.lease({ workerId: 'worker-a' });
     const retryAt = Date.now() + 30_000;
     const outcome = await queue.fail(job.id, { error: new Error('429'), availableAt: retryAt });
@@ -226,7 +258,12 @@ describe('job queue: retries and failure', () => {
 
 describe('job queue: worker death and leases', () => {
   test('an expired lease becomes leasable again without an external reaper', async () => {
-    const job = await queue.enqueue({ workspaceId, type: 'agent.run', payload: {}, maxAttempts: 5 });
+    const job = await queue.enqueue({
+      workspaceId,
+      type: 'agent.run',
+      payload: {},
+      maxAttempts: 5
+    });
     const start = Date.now();
     const first = await queue.lease({ workerId: 'dead-worker', leaseSeconds: 10, now: start });
     expect(first?.attempts).toBe(1);
@@ -304,17 +341,19 @@ describe('job queue: observability', () => {
   });
 
   test('writes audit events for the queue lifecycle', async () => {
-    const job = await queue.enqueue({ workspaceId, type: 'agent.run', payload: {}, ticketId: 'ticket-1' });
+    const job = await queue.enqueue({
+      workspaceId,
+      type: 'agent.run',
+      payload: {},
+      ticketId: 'ticket-1'
+    });
     await queue.lease({ workerId: 'worker-a' });
     await queue.fail(job.id, { error: new Error('nope'), availableAt: Date.now() });
 
-    const events = await handle.sqlite
+    const events = (await handle.sqlite
       .query('SELECT action FROM audit_events WHERE workspace_id = ? ORDER BY seq')
-      .all(workspaceId) as Array<{ action: string }>;
-    expect(events.map((event) => event.action)).toEqual([
-      'job.enqueued',
-      'job.retry_scheduled'
-    ]);
+      .all(workspaceId)) as Array<{ action: string }>;
+    expect(events.map((event) => event.action)).toEqual(['job.enqueued', 'job.retry_scheduled']);
   });
 
   test('lists jobs filtered by ticket and run', async () => {
@@ -327,7 +366,12 @@ describe('job queue: observability', () => {
   });
 
   test('stores attempt rows uniquely per attempt number', async () => {
-    const job = await queue.enqueue({ workspaceId, type: 'agent.run', payload: {}, maxAttempts: 2 });
+    const job = await queue.enqueue({
+      workspaceId,
+      type: 'agent.run',
+      payload: {},
+      maxAttempts: 2
+    });
     await queue.lease({ workerId: 'worker-a' });
     await handle.db
       .insert(jobAttempts)

@@ -9,7 +9,8 @@
       "!**/.svelte-kit/**",
       "!**/drizzle/meta/**",
       "!**/data/**",
-      "!**/package.json"
+      "!**/package.json",
+      "!**/*.css"
     ]
   },
   "formatter": {
@@ -18,6 +19,11 @@
     "indentWidth": 2,
     "lineWidth": 100,
     "lineEnding": "lf"
+  },
+  "css": {
+    "linter": { "enabled": false },
+    "formatter": { "enabled": false },
+    "parser": { "allowWrongLineComments": true }
   },
   "javascript": {
     "formatter": {

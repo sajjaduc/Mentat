@@ -50,7 +50,7 @@ export interface EnqueueInput {
   ticketId?: string;
   runId?: string;
   parentJobId?: string;
-  actorType?: 'user' | 'agent' | 'system' | 'api';
+  actorType?: 'user' | 'agent' | 'system' | 'api' | 'extraction';
   actorId?: string | null;
   actorLabel?: string | null;
 }
@@ -124,6 +124,80 @@ function describeError(error: unknown): string {
 }
 
 /**
+ * Synchronous enqueue, callable inside a transaction.
+ *
+ * This exists because "enqueue subsequent work only after persistence succeeds"
+ * must be literally true: the job row, the domain change and the audit row commit
+ * together. `bun:sqlite` is synchronous, so the whole operation can run inside the
+ * transaction callback without awaiting anything.
+ */
+export function enqueueJobSync(db: Executor, input: EnqueueInput): Job {
+  const now = Date.now();
+  const availableAt = input.availableAt ?? now + (input.delayMs ?? 0);
+
+  if (input.dedupeKey) {
+    const existing = db
+      .select()
+      .from(jobs)
+      .where(
+        and(
+          eq(jobs.workspaceId, input.workspaceId),
+          eq(jobs.dedupeKey, input.dedupeKey),
+          inArray(jobs.status, ACTIVE_STATUSES)
+        )
+      )
+      .limit(1)
+      .all();
+    const active = existing[0];
+    if (active) return active;
+  }
+
+  const inserted = db
+    .insert(jobs)
+    .values({
+      workspaceId: input.workspaceId,
+      type: input.type,
+      queue: input.queue ?? 'default',
+      payload: input.payload as never,
+      status: 'pending',
+      priority: input.priority ?? 0,
+      attempts: 0,
+      maxAttempts: input.maxAttempts ?? 5,
+      availableAt,
+      timeoutSeconds: input.timeoutSeconds ?? null,
+      dedupeKey: input.dedupeKey ?? null,
+      idempotencyKey: input.idempotencyKey ?? null,
+      ticketId: input.ticketId ?? null,
+      runId: input.runId ?? null,
+      parentJobId: input.parentJobId ?? null,
+      createdAt: now,
+      updatedAt: now
+    })
+    .returning()
+    .all();
+
+  const job = inserted[0];
+  if (!job) throw errors.internal('Failed to enqueue job', { type: input.type });
+
+  writeAudit(db, {
+    workspaceId: input.workspaceId,
+    action: AuditActions.jobEnqueued,
+    actorType: input.actorType ?? 'system',
+    actorId: input.actorId ?? null,
+    actorLabel: input.actorLabel ?? null,
+    entityType: 'job',
+    entityId: job.id,
+    jobId: job.id,
+    ticketId: job.ticketId,
+    runId: job.runId,
+    summary: `Job ${input.type} enqueued`,
+    data: { type: input.type, queue: job.queue, availableAt, dedupeKey: input.dedupeKey ?? null }
+  });
+
+  return job;
+}
+
+/**
  * SQLite-native queue implementation. PostgreSQL swaps only the lease statement;
  * every other method is dialect-neutral.
  */
@@ -131,68 +205,7 @@ export class SqliteJobQueue implements JobQueue {
   constructor(private readonly db: Executor) {}
 
   async enqueue(input: EnqueueInput): Promise<Job> {
-    const now = Date.now();
-    const availableAt = input.availableAt ?? now + (input.delayMs ?? 0);
-
-    if (input.dedupeKey) {
-      const existing = await this.db
-        .select()
-        .from(jobs)
-        .where(
-          and(
-            eq(jobs.workspaceId, input.workspaceId),
-            eq(jobs.dedupeKey, input.dedupeKey),
-            inArray(jobs.status, ACTIVE_STATUSES)
-          )
-        )
-        .limit(1)
-        .all();
-      if (existing[0]) return existing[0];
-    }
-
-    const inserted = await this.db
-      .insert(jobs)
-      .values({
-        workspaceId: input.workspaceId,
-        type: input.type,
-        queue: input.queue ?? 'default',
-        payload: input.payload as never,
-        status: 'pending',
-        priority: input.priority ?? 0,
-        attempts: 0,
-        maxAttempts: input.maxAttempts ?? 5,
-        availableAt,
-        timeoutSeconds: input.timeoutSeconds ?? null,
-        dedupeKey: input.dedupeKey ?? null,
-        idempotencyKey: input.idempotencyKey ?? null,
-        ticketId: input.ticketId ?? null,
-        runId: input.runId ?? null,
-        parentJobId: input.parentJobId ?? null,
-        createdAt: now,
-        updatedAt: now
-      })
-      .returning()
-      .all();
-
-    const job = inserted[0];
-    if (!job) throw errors.internal('Failed to enqueue job', { type: input.type });
-
-    writeAudit(this.db, {
-      workspaceId: input.workspaceId,
-      action: AuditActions.jobEnqueued,
-      actorType: input.actorType ?? 'system',
-      actorId: input.actorId ?? null,
-      actorLabel: input.actorLabel ?? null,
-      entityType: 'job',
-      entityId: job.id,
-      jobId: job.id,
-      ticketId: job.ticketId,
-      runId: job.runId,
-      summary: `Job ${input.type} enqueued`,
-      data: { type: input.type, queue: job.queue, availableAt, dedupeKey: input.dedupeKey ?? null }
-    });
-
-    return job;
+    return enqueueJobSync(this.db, input);
   }
 
   async lease(options: LeaseOptions): Promise<LeasedJob | null> {

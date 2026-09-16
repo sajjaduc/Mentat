@@ -39,7 +39,10 @@ export function formatRelative(value: number | null | undefined, now = Date.now(
     ['year', 31_536_000_000]
   ];
   const formatter = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
-  let chosen: [Intl.RelativeTimeFormatUnit, number] = units[0] as [Intl.RelativeTimeFormatUnit, number];
+  let chosen: [Intl.RelativeTimeFormatUnit, number] = units[0] as [
+    Intl.RelativeTimeFormatUnit,
+    number
+  ];
   for (const unit of units) {
     if (abs >= unit[1]) chosen = unit;
   }

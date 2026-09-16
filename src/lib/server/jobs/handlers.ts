@@ -34,7 +34,7 @@ export interface JobHandlerResult {
   skipRetry?: boolean;
 }
 
-export type JobHandler = (context: JobHandlerContext) => Promise<JobHandlerResult | void>;
+export type JobHandler = (context: JobHandlerContext) => Promise<JobHandlerResult | undefined>;
 
 const handlers = new Map<string, JobHandler>();
 const log = moduleLogger('jobs.handlers');
