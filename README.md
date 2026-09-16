@@ -36,6 +36,18 @@ The first visit shows **Create the first account**: that account becomes the own
 of a starter workspace. If you ran the seed, sign in with
 `owner@mentat.local` / `mentat-local-dev`.
 
+### Docker
+
+Everything Mentat needs is in one service — server, worker and database:
+
+```bash
+export MENTAT_MASTER_KEY="$(openssl rand -base64 32)"
+docker compose up -d          # http://localhost:5273
+```
+
+State lives in the `mentat-data` volume (database, blobs and master key). Ollama runs
+on the host; the compose file points Mentat at `host.docker.internal:11434`.
+
 ### Connect a local model
 
 1. `ollama serve` (defaults to `http://localhost:11434`) and `ollama pull llama3.1:8b`.
@@ -119,6 +131,7 @@ secret has been re-encrypted; ciphertexts record the key version that produced t
 | `docs/development.md` | Local setup, testing strategy, conventions and how to add a feature |
 | `docs/operations.md` | Running it, backups, key rotation, worker scaling, troubleshooting |
 | `docs/postgres-migration.md` | The concrete path from SQLite to PostgreSQL, and what is already portable |
+| `docs/definition-of-done.md` | Every milestone requirement mapped to the test or surface that proves it |
 | `docs/workstream-brief.md` | Conventions and the Definition of Done used during the build |
 | `docs/ui-brief.md` | Design system, data-loading pattern and the complete API surface |
 

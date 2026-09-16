@@ -2,6 +2,7 @@
 /** Select: native select styled to match Input, with grouped options support. */
 import type { HTMLSelectAttributes } from 'svelte/elements';
 import { nextControlId } from './ids';
+import type { Option } from './types';
 
 interface Props extends HTMLSelectAttributes {
   label?: string;

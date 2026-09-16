@@ -3,7 +3,9 @@
 import type { HTMLInputAttributes } from 'svelte/elements';
 import { nextControlId } from './ids';
 
-interface Props extends HTMLInputAttributes {
+// `size` is omitted from the native attributes because the primitive uses it for its
+// own visual scale, not for the HTML `size` attribute.
+interface Props extends Omit<HTMLInputAttributes, 'size'> {
   label?: string;
   hint?: string;
   error?: string | null;

@@ -42,7 +42,7 @@ $effect(() => {
       aria-label="Close panel"
       onclick={onclose}
     ></button>
-    <section
+    <div
       bind:this={panel}
       tabindex="-1"
       role="dialog"
@@ -71,6 +71,6 @@ $effect(() => {
         </button>
       </header>
       <div class="scrollbar-thin flex-1 overflow-y-auto">{@render children?.()}</div>
-    </section>
+    </div>
   </div>
 {/if}

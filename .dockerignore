@@ -1,0 +1,24 @@
+node_modules
+.git
+.github
+.svelte-kit
+build
+data
+.e2e
+.test-data
+.worktrees
+test-results
+playwright-report
+blob-report
+coverage
+.DS_Store
+*.log
+
+# Build context hygiene: never bake local state or secrets into an image.
+data/
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal

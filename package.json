@@ -9,13 +9,13 @@
     "bun": ">=1.2.0"
   },
   "scripts": {
-    "dev": "vite dev --port 5273",
-    "build": "vite build",
+    "dev": "bunx --bun vite dev --port 5273",
+    "build": "bunx --bun vite build",
     "preview": "bun run build && bun ./build/index.js",
     "start": "bun ./build/index.js",
     "worker": "bun run src/worker/main.ts",
-    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "typecheck": "svelte-kit sync && tsc --noEmit -p tsconfig.json",
+    "check": "bunx --bun svelte-kit sync && bunx --bun svelte-check --tsconfig ./tsconfig.json",
+    "typecheck": "bunx --bun svelte-kit sync && bunx tsc --noEmit -p tsconfig.json",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
@@ -27,7 +27,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "bun run scripts/migrate.ts",
     "db:reset": "bun run scripts/reset-db.ts",
-    "verify": "bun run lint && bun run typecheck && bun run test",
+    "verify": "bun run lint && bun run typecheck && bun run check && bun run test",
     "seed": "bun run scripts/seed.ts"
   },
   "dependencies": {

@@ -21,6 +21,7 @@ import {
   type AgentContextConfig,
   type AgentSnapshot,
   fieldDefinitions,
+  fieldValueHistory,
   fileExtractedContent,
   fileFieldValues,
   files,
@@ -153,10 +154,13 @@ export async function buildAgentRunContext(
     }
   }
 
-  if (config.includeHistory) {
+  // Two separate switches, because they answer different questions and cost
+  // different amounts of context: where the ticket has been, and what its data used
+  // to say.
+  if (config.includeStateHistory) {
     const history = db
       .select({
-        action: ticketStateHistory.stateName,
+        stateName: ticketStateHistory.stateName,
         enteredAt: ticketStateHistory.enteredAt,
         exitedAt: ticketStateHistory.exitedAt
       })
@@ -169,13 +173,49 @@ export async function buildAgentRunContext(
         `## State history\n${history
           .map(
             (row) =>
-              `- ${row.action} entered ${new Date(row.enteredAt).toISOString()}${
+              `- ${row.stateName} entered ${new Date(row.enteredAt).toISOString()}${
                 row.exitedAt ? ` left ${new Date(row.exitedAt).toISOString()}` : ' (current)'
               }`
           )
           .join('\n')}`
       );
       sections.push('state_history');
+    }
+  }
+
+  if (config.includeHistory) {
+    const changes = db
+      .select({
+        key: fieldDefinitions.key,
+        name: fieldDefinitions.name,
+        previous: fieldValueHistory.previousValue,
+        next: fieldValueHistory.newValue,
+        actorLabel: fieldValueHistory.actorLabel,
+        source: fieldValueHistory.source,
+        createdAt: fieldValueHistory.createdAt
+      })
+      .from(fieldValueHistory)
+      .innerJoin(fieldDefinitions, eq(fieldDefinitions.id, fieldValueHistory.fieldDefinitionId))
+      .where(
+        and(
+          eq(fieldValueHistory.workspaceId, options.workspaceId),
+          eq(fieldValueHistory.ownerType, 'ticket'),
+          eq(fieldValueHistory.ownerId, options.ticket.id)
+        )
+      )
+      .orderBy(asc(fieldValueHistory.createdAt))
+      .limit(20)
+      .all();
+    if (changes.length > 0) {
+      userParts.push(
+        `## Field history\n${changes
+          .map(
+            (row) =>
+              `- ${row.name}: ${renderValue(row.previous)} → ${renderValue(row.next)} (${row.actorLabel ?? row.source ?? 'system'})`
+          )
+          .join('\n')}`
+      );
+      sections.push('field_history');
     }
   }
 

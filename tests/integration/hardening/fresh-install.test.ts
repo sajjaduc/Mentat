@@ -26,7 +26,7 @@ import { createDatabase } from '../../../src/lib/server/db/client';
 import { hasFullTextSearch, runMigrations } from '../../../src/lib/server/db/migrate';
 import { allSchema, tickets as ticketsTable, users } from '../../../src/lib/server/db/schema';
 import { clearProviderOverrides } from '../../../src/lib/server/providers/registry';
-import { getDefaultToolRegistry, resetToolRegistry } from '../../../src/lib/server/tools/registry';
+import { resetToolRegistry } from '../../../src/lib/server/tools/registry';
 import { listWorkflows } from '../../../src/lib/server/workflows/service';
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mentat-fresh-'));
