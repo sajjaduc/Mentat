@@ -12,7 +12,7 @@ bun run dev
 
 # Production: build once, then run the built server.
 bun run build
-MENTAT_MASTER_KEY=... NODE_ENV=production bun run start
+MENTAT_MASTER_KEY=... NODE_ENV=production PORT=5273 bun run start
 
 # Split roles: the server serves requests, a separate process works the queue.
 MENTAT_WORKER_ENABLED=false bun run start
@@ -23,6 +23,12 @@ Bootstrap runs on the first request and applies migrations automatically, so an
 upgrade is: stop, deploy, start. The worker and server coordinate purely through
 database leases, so a second worker process needs no configuration — but it *does*
 need the same database path and the same master key.
+
+`PORT` (default 3000) and `HOST` (default `0.0.0.0`) are read by the adapter-node
+server. The build runs Vite under Bun on purpose: the server code imports `bun:sqlite`,
+which Node's ESM loader cannot resolve, so `bun run build` uses `bunx --bun vite build`.
+Run the published server with `bun ./build/index.js` (or `bun run start`), not with
+`node`.
 
 ### Health
 
