@@ -52,7 +52,14 @@ export interface CompiledFilter {
 }
 
 export interface TicketFilterCompiler {
-  compile(db: Executor, options: { workspaceId: string; filter: FilterAst | null }): CompiledFilter;
+  /**
+   * Compile a filter AST into a Drizzle condition. May be asynchronous: the
+   * canonical implementation resolves field definitions before building conditions.
+   */
+  compile(
+    db: Executor,
+    options: { workspaceId: string; filter: FilterAst | null }
+  ): CompiledFilter | Promise<CompiledFilter>;
 }
 
 export interface TicketSort {
@@ -706,7 +713,7 @@ export async function listTickets(db: Executor, options: ListTicketsOptions): Pr
     conditions.push(inArray(tickets.stateId, options.stateIds));
   }
 
-  const compiled = activeCompiler.compile(db, {
+  const compiled = await activeCompiler.compile(db, {
     workspaceId: options.workspaceId,
     filter: options.filter ?? null
   });
@@ -850,7 +857,7 @@ export async function countTickets(
   if (options.stateIds && options.stateIds.length > 0) {
     conditions.push(inArray(tickets.stateId, options.stateIds));
   }
-  const compiled = activeCompiler.compile(db, {
+  const compiled = await activeCompiler.compile(db, {
     workspaceId: options.workspaceId,
     filter: options.filter ?? null
   });

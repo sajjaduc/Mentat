@@ -32,7 +32,7 @@ import {
   tickets,
   type WorkflowState
 } from '../db/schema';
-import { type JobHandlerContext, registerJobHandler } from '../jobs/handlers';
+import { getJobHandler, type JobHandlerContext, registerJobHandler } from '../jobs/handlers';
 import { enqueueJobSync } from '../jobs/queue';
 import { addNoteSync, requestTransitionSync, requireTicketSync } from '../tickets/service';
 import { writeTicketFieldValues } from '../tickets/values';
@@ -583,6 +583,11 @@ export function cancelAgentRunSync(db: Executor, actor: ActorContext, runId: str
 // ---------------------------------------------------------------------------
 
 export function registerExecutionJobHandlers(): void {
+  // Registration is idempotent: bootstrap runs once per process, but tests and a
+  // future hot-reload path may call it again, and duplicate registration is fatal
+  // by design — so skip rather than throw when the handler is already present.
+  if (getJobHandler('state.enter')) return;
+
   registerJobHandler('state.enter', async (context: JobHandlerContext) => {
     const payload = context.job.payload as unknown as StateEntryPayload;
     if (!payload?.ticketId || !payload.stateId) {

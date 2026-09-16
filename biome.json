@@ -43,7 +43,7 @@
       "complexity": {
         "noBannedTypes": "off",
         "useLiteralKeys": "off",
-        "noExcessiveCognitiveComplexity": "warn",
+        "noExcessiveCognitiveComplexity": { "level": "warn", "options": { "maxAllowedComplexity": 30 } },
         "noForEach": "off"
       },
       "correctness": {
