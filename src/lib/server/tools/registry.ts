@@ -1,30 +1,53 @@
 /**
- * Default tool registry.
+ * Module-level default native tool registry.
  *
- * The registry holds *in-process* native handlers. HTTP tools are not registered
- * here — they live in the database as `http_operations` and are dispatched through
- * the HTTP runtime — so this module stays a small, honest map with one instance
- * per process.
+ * Bootstrap needs one shared registry that every workstream adds to, rather than
+ * each module keeping a private map. `getDefaultToolRegistry()` returns that
+ * instance; tests use `resetToolRegistry()` to get a clean one because duplicate
+ * registration is intentionally fatal (see `ToolRegistry.register`).
  *
- * Native tool implementations are contributed by their owning modules
- * (`tools/native/**`) at bootstrap, which keeps the set of things an agent can do
- * auditable in one place.
+ * Usage from bootstrap:
+ *
+ * ```ts
+ * import { getDefaultToolRegistry } from '$server/tools/registry';
+ * import { registerNativeTools } from '$server/tools/native';
+ * import { registerCoreNativeTools } from '$server/tools/native/register';
+ * const registry = getDefaultToolRegistry();
+ * registerNativeTools(registry);        // state / data / cache tools
+ * registerCoreNativeTools(registry);    // ticket / file tools
+ * ```
+ *
+ * Tool keys are namespaced per owning module, so the two entry points never
+ * collide; a genuine duplicate still throws loudly at startup rather than at 3am
+ * inside a run.
  */
 import { ToolRegistry } from './types';
 
-let instance: ToolRegistry | null = null;
+let defaultRegistry = new ToolRegistry();
 
+/** The process-wide registry every native tool module registers into. */
 export function getDefaultToolRegistry(): ToolRegistry {
-  if (!instance) instance = new ToolRegistry();
-  return instance;
+  return defaultRegistry;
 }
 
 /** Convenience alias so callers do not repeat `getDefaultToolRegistry()`. */
 export function toolRegistry(): ToolRegistry {
-  return getDefaultToolRegistry();
+  return defaultRegistry;
 }
 
-/** Test/bootstrap helper: install native tools exactly once. */
+/**
+ * Replace the default registry with a fresh, empty one. Intended for test
+ * isolation; production bootstrap registers exactly once per process.
+ */
+export function resetToolRegistry(): ToolRegistry {
+  defaultRegistry = new ToolRegistry();
+  return defaultRegistry;
+}
+
+/** Alias kept for the native-data module's original naming. */
+export const resetDefaultToolRegistry = resetToolRegistry;
+
+/** Install a contributor function against a registry (bootstrap/test helper). */
 export function installNativeTools(
   register: (registry: ToolRegistry) => void,
   registry: ToolRegistry = getDefaultToolRegistry()
@@ -33,8 +56,5 @@ export function installNativeTools(
   return registry;
 }
 
-export function resetToolRegistry(): void {
-  instance = null;
-}
-
+export { nativeToolKeys, nativeTools, registerNativeTools } from './native';
 export { ToolRegistry };
