@@ -36,7 +36,7 @@ import {
   type MockOllamaServer,
   startMockOllama
 } from '../../../src/lib/server/providers/testing/mock-ollama';
-import { getDefaultToolRegistry, resetToolRegistry } from '../../../src/lib/server/tools/registry';
+import { resetToolRegistry } from '../../../src/lib/server/tools/registry';
 import { createTestDatabase, type TestDatabase } from '../../helpers/db';
 import { addMember, createWorkspace } from '../../helpers/factories';
 import { jsonResponse, type MockHttpServer, startMockServer } from '../../helpers/mock-http';
@@ -785,7 +785,7 @@ describe('Definition of Done (core plan)', () => {
       rawBody: JSON.stringify({
         message: { id: 'msg-1', subject: 'Quote request', from: { name: 'Northwind' } }
       }),
-      request: new Request('http://127.0.0.1/api' + webhookUrl, {
+      request: new Request(`http://127.0.0.1/api${webhookUrl}`, {
         method: 'POST',
         headers: { 'idempotency-key': 'msg-1', 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -806,7 +806,7 @@ describe('Definition of Done (core plan)', () => {
       rawBody: JSON.stringify({
         message: { id: 'msg-1', subject: 'Quote request', from: { name: 'Northwind' } }
       }),
-      request: new Request('http://127.0.0.1/api' + webhookUrl, {
+      request: new Request(`http://127.0.0.1/api${webhookUrl}`, {
         method: 'POST',
         headers: { 'idempotency-key': 'msg-1', 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -1032,7 +1032,7 @@ describe('Definition of Done (files and agent-created work)', () => {
       actor: null,
       query: {},
       rawBody: JSON.stringify(payload),
-      request: new Request('http://127.0.0.1/api' + url, {
+      request: new Request(`http://127.0.0.1/api${url}`, {
         method: 'POST',
         headers: { 'idempotency-key': 'msg-attach-1', 'content-type': 'application/json' },
         body: JSON.stringify(payload)
