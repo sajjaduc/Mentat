@@ -30,7 +30,7 @@ $effect(() => {
       aria-label="Close dialog"
       onclick={onclose}
     ></button>
-    <section
+    <div
       bind:this={panel}
       tabindex="-1"
       role="dialog"
@@ -49,6 +49,6 @@ $effect(() => {
           {@render footer()}
         </footer>
       {/if}
-    </section>
+    </div>
   </div>
 {/if}
