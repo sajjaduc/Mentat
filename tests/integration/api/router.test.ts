@@ -123,6 +123,17 @@ describe('route matching', () => {
     expect(matchRoute('DELETE', '/workflows')).toBeNull();
   });
 
+  test('a literal segment beats a parameter', () => {
+    // `/files/search` and `/files/:id` have the same shape; the search handler must
+    // win, otherwise a static route is unreachable behind its dynamic sibling.
+    expect(matchRoute('GET', '/files/search')?.route.path).toBe('/files/search');
+    expect(matchRoute('GET', '/files/abc')?.route.path).toBe('/files/:id');
+  });
+
+  test('an unknown sub-path of a known resource is a 404, not a silent match', () => {
+    expect(matchRoute('GET', '/files/abc/def/ghi')).toBeNull();
+  });
+
   test('every route declares a method, path and handler', () => {
     for (const entry of apiRoutes) {
       expect(entry.method, entry.path).toMatch(/^[A-Z]+$/);

@@ -55,9 +55,10 @@ export const authRoutes = [
     public: true,
     summary: 'Liveness, schema and worker status',
     handler: async ({ db }) => {
-      // A raw catalog query is appropriate here: this endpoint reports on the
-      // local SQLite instance itself rather than on domain data.
-      const tables = db.get<{ n: number }>(
+      // A raw catalog query is appropriate here: this endpoint reports on the local
+      // SQLite instance itself rather than on domain data. `all` is used rather than
+      // `get` because a raw single-column select comes back as a positional array.
+      const tables = db.all<{ n: number }>(
         sql`select count(*) as n from sqlite_master where type = 'table'`
       );
       return {
@@ -65,7 +66,7 @@ export const authRoutes = [
           ok: true,
           version: '0.1.0',
           environment: env().NODE_ENV,
-          tables: tables?.n ?? 0,
+          tables: tables[0]?.n ?? 0,
           masterKeyFromEnv: Boolean(env().MENTAT_MASTER_KEY),
           workerEnabled: env().MENTAT_WORKER_ENABLED
         }

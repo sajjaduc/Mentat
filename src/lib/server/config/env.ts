@@ -16,6 +16,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 
+/**
+ * Boolean coercion that does what an operator expects.
+ *
+ * `z.coerce.boolean()` applies JavaScript truthiness, so the string `"false"` becomes
+ * `true` — the single most dangerous misreading of an env var in a scheduler. This
+ * helper accepts the spellings people actually write.
+ */
+const boolish = (defaultValue: boolean) =>
+  z
+    .union([z.boolean(), z.string()])
+    .default(defaultValue)
+    .transform((value) => {
+      if (typeof value === 'boolean') return value;
+      const normalized = value.trim().toLowerCase();
+      if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) return true;
+      if (['0', 'false', 'no', 'n', 'off', ''].includes(normalized)) return false;
+      throw new Error(`Expected a boolean-ish value, received "${value}"`);
+    });
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   MENTAT_DB_PATH: z.string().default('./data/mentat.db'),
@@ -25,13 +44,13 @@ const envSchema = z.object({
   MENTAT_DATA_DIR: z.string().default('./data'),
   MENTAT_BASE_URL: z.string().default('http://localhost:5273'),
   MENTAT_LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).optional(),
-  MENTAT_WORKER_ENABLED: z.coerce.boolean().default(true),
+  MENTAT_WORKER_ENABLED: boolish(true),
   MENTAT_WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(64).default(4),
   MENTAT_WORKER_POLL_MS: z.coerce.number().int().min(25).default(500),
   MENTAT_JOB_LEASE_SECONDS: z.coerce.number().int().min(5).default(120),
-  MENTAT_ALLOW_SIGNUP: z.coerce.boolean().default(true),
+  MENTAT_ALLOW_SIGNUP: boolish(true),
   MENTAT_SESSION_DAYS: z.coerce.number().int().min(1).default(30),
-  MENTAT_COOKIE_SECURE: z.coerce.boolean().default(false),
+  MENTAT_COOKIE_SECURE: boolish(false),
   /** Ollama default endpoint offered in the provider setup form. */
   MENTAT_OLLAMA_URL: z.string().default('http://localhost:11434'),
   MENTAT_GCS_BUCKET: z.string().optional(),

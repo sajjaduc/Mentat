@@ -21,6 +21,12 @@ export interface ApiContext<Body = unknown, Query = unknown> {
   body: Body;
   /** The raw request, for handlers that need headers or streams. */
   request: Request;
+  /**
+   * The exact request body text as received. Handlers that must not re-read the
+   * stream (signature verification, content hashing) use this, so the body has one
+   * source of truth inside the dispatcher.
+   */
+  rawBody: string | null;
   method: string;
   pathname: string;
 }

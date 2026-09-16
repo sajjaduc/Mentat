@@ -41,7 +41,7 @@ import {
   registerProvider,
   updateProvider
 } from '../../providers/service';
-import { listToolRows } from '../../tools/catalog';
+import { ensureNativeToolRows, listToolRows } from '../../tools/catalog';
 import { getDefaultToolRegistry } from '../../tools/registry';
 import { mutate, queryInt, queryString } from '../helpers';
 import { route } from '../types';
@@ -229,6 +229,9 @@ export const agentRoutes = [
     permission: Permissions.agentRead,
     summary: 'Every tool an agent can be granted: native registry plus HTTP operations',
     handler: ({ db, actor }) => {
+      // Materialise the rows an agent can actually be granted before listing, so the
+      // tool picker never shows a capability that cannot be bound.
+      ensureNativeToolRows(db, actor.workspaceId);
       const native = getDefaultToolRegistry()
         .list()
         .map((tool) => ({

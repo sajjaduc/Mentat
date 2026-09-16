@@ -59,7 +59,7 @@ import {
   resolveTransition,
   validateTransition
 } from '../execution/state-machine';
-import { requiredFieldsForState } from '../fields/service';
+import { alwaysRequiredFields, requiredFieldsForTransfer } from '../fields/service';
 import type { FilterAst } from '../filters/ast';
 import { requireState, requireWorkflow } from '../workflows/service';
 import {
@@ -1267,7 +1267,7 @@ export function previewTransfer(
   const defaultTargetStateId = policy.rule?.defaultTargetStateId ?? target.defaultStateId ?? null;
   const requiredStateId = defaultTargetStateId ?? states[0]?.id ?? '';
   const requiredDefinitions = requiredStateId
-    ? requiredFieldsForState(db, actor.workspaceId, target.id, requiredStateId)
+    ? alwaysRequiredFields(db, actor.workspaceId, target.id)
     : [];
   const mappedTargets = new Set(Object.values(mappings));
   const destinationRequired = requiredDefinitions.map((definition) => {
@@ -1385,7 +1385,7 @@ export function transferTicketSync(
   // values the ticket will hold after mapping. A failed transfer therefore cannot
   // leave partial state behind, even if a caller forgets to wrap it in a
   // transaction.
-  const destinationRequired = requiredFieldsForState(tx, actor.workspaceId, target.id, toState.id);
+  const destinationRequired = alwaysRequiredFields(tx, actor.workspaceId, target.id);
   if (destinationRequired.length > 0) {
     const projected: Record<string, unknown> = { ...sourceValues, ...mappedValues };
     const missing = destinationRequired.filter((definition) => {
@@ -1405,6 +1405,23 @@ export function transferTicketSync(
           targetWorkflowId: target.id,
           targetStateId: toState.id
         }
+      );
+    }
+  }
+
+  // Some fields must be present before a ticket is allowed to leave its workflow at
+  // all (for example a classification the destination depends on).
+  const mustLeaveWith = requiredFieldsForTransfer(tx, actor.workspaceId, ticket.workflowId);
+  if (mustLeaveWith.length > 0) {
+    const currentValues = fieldValuesByKey(tx, actor.workspaceId, ticket.id);
+    const absent = mustLeaveWith.filter((definition) => {
+      const value = currentValues[definition.key];
+      return value === null || value === undefined || value === '';
+    });
+    if (absent.length > 0) {
+      throw errors.precondition(
+        `Transfer requires: ${absent.map((definition) => definition.name).join(', ')}`,
+        { fieldKeys: absent.map((definition) => definition.key) }
       );
     }
   }

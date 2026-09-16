@@ -614,7 +614,7 @@ describe('transition validation', () => {
     expect(ok.enteredStateId).toBe(workflow.stateIds['Done'] as string);
   });
 
-  test('enforces required fields on the destination state', async () => {
+  test('enforces state-scoped required fields when leaving that state', async () => {
     const workflow = await createWorkflow(handle.db, workspaceId, { name: 'Claims' });
     const fieldId = await createField(handle.db, {
       workspaceId,
@@ -624,29 +624,72 @@ describe('transition validation', () => {
       options: { choices: [{ value: 'approved', label: 'Approved' }] }
     });
     setWorkflowFields(handle.db, owner, workflow.id, [
-      {
-        fieldDefinitionId: fieldId,
-        requiredInStates: [workflow.stateIds['In Progress'] as string]
-      }
+      { fieldDefinitionId: fieldId, requiredInStates: [workflow.stateIds['In Progress'] as string] }
     ]);
     const ticket = createTicketSync(handle.db, owner, {
       workflowId: workflow.id,
       title: 'Needs outcome'
     });
 
+    // Entering the state is allowed: the requirement describes what the work in the
+    // state must produce, not what it needs on arrival.
+    const entered = requestTransitionSync(handle.db, owner, {
+      ticketId: ticket.id,
+      targetStateId: workflow.stateIds['In Progress'] as string
+    });
+    expect(entered.enteredStateId).toBe(workflow.stateIds['In Progress'] as string);
+
+    // Leaving it without the outcome is refused.
     expect(() =>
       requestTransitionSync(handle.db, owner, {
         ticketId: ticket.id,
-        targetStateId: workflow.stateIds['In Progress'] as string
+        targetStateId: workflow.stateIds['Done'] as string
       })
     ).toThrow(/Required field/);
 
-    const ok = requestTransitionSync(handle.db, owner, {
+    // Supplying the value on the transition satisfies it in one step.
+    const left = requestTransitionSync(handle.db, owner, {
       ticketId: ticket.id,
-      targetStateId: workflow.stateIds['In Progress'] as string,
+      targetStateId: workflow.stateIds['Done'] as string,
       fieldValues: { outcome: 'approved' }
     });
-    expect(ok.enteredStateId).toBe(workflow.stateIds['In Progress'] as string);
+    expect(left.enteredStateId).toBe(workflow.stateIds['Done'] as string);
+  });
+
+  test('enforces universally required fields on entry', async () => {
+    const workflow = await createWorkflow(handle.db, workspaceId, { name: 'Claims' });
+    const fieldId = await createField(handle.db, {
+      workspaceId,
+      key: 'customer',
+      name: 'Customer',
+      type: 'short_text'
+    });
+    setWorkflowFields(handle.db, owner, workflow.id, [
+      { fieldDefinitionId: fieldId, required: true }
+    ]);
+    const ticket = createTicketSync(handle.db, owner, {
+      workflowId: workflow.id,
+      title: 'Needs customer',
+      fields: { customer: 'ACME' }
+    });
+
+    requestTransitionSync(handle.db, owner, {
+      ticketId: ticket.id,
+      targetStateId: workflow.stateIds['In Progress'] as string
+    });
+    writeTicketFieldValues(handle.db, {
+      workspaceId,
+      ticketId: ticket.id,
+      workflowId: workflow.id,
+      values: { customer: '' },
+      actor: owner
+    });
+    expect(() =>
+      requestTransitionSync(handle.db, owner, {
+        ticketId: ticket.id,
+        targetStateId: workflow.stateIds['Done'] as string
+      })
+    ).toThrow(/Required field/);
   });
 
   test('marks a terminal state as closed', async () => {

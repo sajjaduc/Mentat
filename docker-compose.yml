@@ -1,0 +1,48 @@
+# Local deployment with Docker Compose.
+#
+# Everything Mentat needs runs in this one service: the HTTP server, the worker and
+# the SQLite database. There is no Redis, no queue broker and no external scheduler.
+#
+#   MENTAT_MASTER_KEY=$(openssl rand -base64 32) docker compose up -d
+#
+# Then open http://localhost:5273 and create the first account.
+#
+# Ollama is expected on the host, not in this stack: run `ollama serve` locally and
+# Mentat reaches it at http://host.docker.internal:11434 from inside the container.
+
+services:
+  mentat:
+    build: .
+    image: mentat:local
+    ports:
+      - '5273:3000'
+    environment:
+      # Required: secrets are encrypted at rest with this key. Generate one with
+      # `openssl rand -base64 32` and keep it — without it, stored secrets are lost.
+      MENTAT_MASTER_KEY: ${MENTAT_MASTER_KEY:?set MENTAT_MASTER_KEY (openssl rand -base64 32)}
+      # Set once accounts exist, so the instance is not publicly self-serviceable.
+      MENTAT_ALLOW_SIGNUP: ${MENTAT_ALLOW_SIGNUP:-true}
+      MENTAT_LOG_LEVEL: ${MENTAT_LOG_LEVEL:-info}
+      # In-process worker; raise the concurrency for heavier agent traffic.
+      MENTAT_WORKER_ENABLED: ${MENTAT_WORKER_ENABLED:-true}
+      MENTAT_WORKER_CONCURRENCY: ${MENTAT_WORKER_CONCURRENCY:-4}
+      # Suggested endpoint in the provider setup form.
+      MENTAT_OLLAMA_URL: ${MENTAT_OLLAMA_URL:-http://host.docker.internal:11434}
+      MENTAT_BASE_URL: ${MENTAT_BASE_URL:-http://localhost:5273}
+    volumes:
+      # The database, the blob store and the generated master key live here.
+      - mentat-data:/data
+    extra_hosts:
+      # Lets the container reach a host-run Ollama on Linux; Docker Desktop provides
+      # this name on macOS and Windows.
+      - 'host.docker.internal:host-gateway'
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O-', 'http://127.0.0.1:3000/api/health']
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  mentat-data:

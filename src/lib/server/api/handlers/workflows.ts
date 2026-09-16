@@ -16,6 +16,7 @@ import {
   fieldUsage,
   listFieldDefinitions,
   listWorkflowFields,
+  requireFieldDefinition,
   setWorkflowFields,
   updateFieldDefinition
 } from '../../fields/service';
@@ -37,6 +38,8 @@ import {
   listTransitions,
   listWorkflows,
   reorderStates,
+  requireState,
+  requireWorkflow,
   setTransferRule,
   updateState,
   updateWorkflow,
@@ -185,6 +188,10 @@ export const workflowRoutes = [
     permission: Permissions.ticketRead,
     summary: 'Board columns with tickets, honouring a filter AST',
     handler: async ({ db, actor, params, query }) => {
+      // Loading the workflow first turns "unknown id" into 404 instead of an empty
+      // board, which is also what makes cross-tenant probing indistinguishable from
+      // a missing resource.
+      requireWorkflow(db, actor.workspaceId, params.id as string);
       const options = (query ?? {}) as { filter?: unknown; search?: unknown; limit?: unknown };
       const filter = parseFilterInput(options.filter ?? null);
       const board = await getBoard(db, {
@@ -207,9 +214,10 @@ export const workflowRoutes = [
     path: '/workflows/:id/states',
     permission: Permissions.workflowRead,
     summary: 'States in board order',
-    handler: ({ db, actor, params }) => ({
-      body: { states: listStates(db, actor.workspaceId, params.id as string) }
-    })
+    handler: ({ db, actor, params }) => {
+      requireWorkflow(db, actor.workspaceId, params.id as string);
+      return { body: { states: listStates(db, actor.workspaceId, params.id as string) } };
+    }
   }),
 
   route({
@@ -271,9 +279,10 @@ export const workflowRoutes = [
     path: '/workflows/:id/transitions',
     permission: Permissions.workflowRead,
     summary: 'All transitions in a workflow',
-    handler: ({ db, actor, params }) => ({
-      body: { transitions: listTransitions(db, actor.workspaceId, params.id as string) }
-    })
+    handler: ({ db, actor, params }) => {
+      requireWorkflow(db, actor.workspaceId, params.id as string);
+      return { body: { transitions: listTransitions(db, actor.workspaceId, params.id as string) } };
+    }
   }),
 
   route({
@@ -317,9 +326,12 @@ export const workflowRoutes = [
     path: '/states/:id/transitions',
     permission: Permissions.ticketRead,
     summary: 'Transitions available to the caller from a state',
-    handler: ({ db, actor, params }) => ({
-      body: { transitions: availableTransitionsForState(db, actor, params.id as string) }
-    })
+    handler: ({ db, actor, params }) => {
+      requireState(db, actor.workspaceId, params.id as string);
+      return {
+        body: { transitions: availableTransitionsForState(db, actor, params.id as string) }
+      };
+    }
   }),
 
   // ------------------------------------------------------------------ fields
@@ -412,9 +424,10 @@ export const workflowRoutes = [
     path: '/fields/:id/usage',
     permission: Permissions.workspaceRead,
     summary: 'How many ticket values reference a field',
-    handler: ({ db, actor, params }) => ({
-      body: { usage: fieldUsage(db, actor.workspaceId, params.id as string) }
-    })
+    handler: ({ db, actor, params }) => {
+      requireFieldDefinition(db, actor.workspaceId, params.id as string);
+      return { body: { usage: fieldUsage(db, actor.workspaceId, params.id as string) } };
+    }
   }),
 
   route({
@@ -464,9 +477,10 @@ export const workflowRoutes = [
     path: '/workflows/:id/transfer-rules',
     permission: Permissions.workflowRead,
     summary: 'Cross-workflow transfer rules defined by a workflow',
-    handler: ({ db, actor, params }) => ({
-      body: { rules: listTransferRules(db, actor.workspaceId, params.id as string) }
-    })
+    handler: ({ db, actor, params }) => {
+      requireWorkflow(db, actor.workspaceId, params.id as string);
+      return { body: { rules: listTransferRules(db, actor.workspaceId, params.id as string) } };
+    }
   }),
 
   route({

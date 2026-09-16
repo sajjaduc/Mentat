@@ -8,7 +8,7 @@
  * Errors are converted into redacted JSON/HTML responses here so an unexpected
  * failure never leaks a stack trace or a secret to the browser.
  */
-import type { Handle, HandleServerError } from '@sveltejs/kit';
+import { type Handle, type HandleServerError, isHttpError } from '@sveltejs/kit';
 import { assertProductionConfig, ensureBootstrapped } from '$server/bootstrap';
 import { isAppError, toAppError } from '$server/core/errors';
 import { moduleLogger } from '$server/core/logger';
@@ -33,6 +33,11 @@ export const handle: Handle = async ({ event, resolve }) => {
     response.headers.set('referrer-policy', 'same-origin');
     return response;
   } catch (error) {
+    // A 4xx raised by a route (a legitimate 404, a redirect target that does not
+    // exist) is normal traffic, not an incident: rethrow it untouched so SvelteKit
+    // renders its own error page without an error-level log line.
+    if (isHttpError(error)) throw error;
+
     const appError = toAppError(error);
     log.error('request failed', { url: event.url.pathname, error });
     if (event.url.pathname.startsWith('/api/')) {

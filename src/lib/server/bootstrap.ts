@@ -67,9 +67,9 @@ export function resetBootstrap(): void {
  * Run bootstrap once. Concurrent callers share the same promise, so a request that
  * races startup cannot observe a half-wired system.
  */
-export function ensureBootstrapped(): Promise<BootstrapResult> {
+export function ensureBootstrapped(options: RunBootstrapOptions = {}): Promise<BootstrapResult> {
   if (!bootstrapPromise) {
-    bootstrapPromise = runBootstrap().catch((error) => {
+    bootstrapPromise = runBootstrap(options).catch((error) => {
       // A failed bootstrap must not be cached: the next request should retry
       // rather than serve a permanently broken process.
       bootstrapPromise = null;

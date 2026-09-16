@@ -144,9 +144,12 @@ export const auditEvents = sqliteTable(
     id: text('id')
       .notNull()
       .$defaultFn(() => uuidv7()),
-    workspaceId: text('workspace_id')
-      .notNull()
-      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    /**
+     * Null for platform-level events (account creation, key rotation) that belong to
+     * no tenant. Tenant ledger queries filter by workspaceId and therefore never see
+     * them, which is the correct isolation behaviour.
+     */
+    workspaceId: text('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
     action: text('action').notNull(),
     actorType: text('actor_type').$type<ActorType>().notNull().default('system'),
     actorId: text('actor_id'),

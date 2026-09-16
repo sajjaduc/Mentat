@@ -13,7 +13,10 @@ import Input from '$ui/primitives/Input.svelte';
 
 let { data } = $props();
 
-let mode = $state<'login' | 'register'>(data.needsSetup ? 'register' : 'login');
+// `data` is static for this page, so derive the default mode and keep an explicit
+// override for the toggle rather than seeding state from a prop reference.
+let modeOverride = $state<'login' | 'register' | null>(null);
+const mode = $derived(modeOverride ?? (data.needsSetup ? 'register' : 'login'));
 let email = $state('');
 let name = $state('');
 let password = $state('');
@@ -81,7 +84,7 @@ async function submit(event: SubmitEvent) {
           type="button"
           class="w-full text-center text-xs text-[var(--color-ink-subtle)] hover:text-[var(--color-ink)]"
           onclick={() => {
-            mode = mode === 'login' ? 'register' : 'login';
+            modeOverride = mode === 'login' ? 'register' : 'login';
             error = null;
           }}
         >
