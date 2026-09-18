@@ -4,23 +4,23 @@
  * A widget is a declarative analytics question: data source + filter + measure +
  * grouping + time range + visualisation (ADR-0017). This module answers it with
  * SQL derived from *history* where the question is historical, and always
- * through the shared ticket filter compiler, so a widget can never disagree with
- * a ticket list about what a filter means (ADR-0012).
+ * through the shared workflow-item filter compiler, so a widget can never
+ * disagree with a work list about what a filter means (ADR-0012, ADR-0021).
  *
  * ## Grouping and fan-out
  *
  * `COUNT` uses `COUNT(DISTINCT base id)` everywhere, because label grouping joins
- * `ticket_labels` and would otherwise multiply a ticket. `SUM`/`AVG` over a field
- * for a label breakdown intentionally follow the fan-out; label grouping is a
- * count-oriented view.
+ * `workflow_item_labels` and would otherwise multiply an item. `SUM`/`AVG` over a
+ * field for a label breakdown intentionally follow the fan-out; label grouping is
+ * a count-oriented view.
  *
  * ## Time
  *
  * Relative ranges resolve against an injectable `now`. Buckets are UTC
  * (`strftime(..., 'unixepoch')` in SQLite; `date_trunc`/`to_char` on PostgreSQL —
  * see `series.ts`). `median` is computed with a window function so odd and even
- * samples are both exact; `duration` reads `ticket_state_history` intervals
- * rather than current ticket rows; `conversion` uses the widget's *explicitly
+ * samples are both exact; `duration` reads `workflow_item_state_history`
+ * intervals rather than current rows; `conversion` uses the widget's *explicitly
  * ordered* funnel stages, never Kanban order.
  */
 import { type SQL, sql } from 'drizzle-orm';
@@ -31,24 +31,27 @@ import {
   fieldDefinitions,
   fieldValueHistory,
   files,
+  fileWorkflowItems,
   labels,
+  recordFieldValues,
+  records,
   savedViews,
   teams,
-  ticketFieldValues,
-  ticketFiles,
-  ticketStateHistory,
-  tickets,
   users,
   type WidgetDataSource,
   type WidgetGrouping,
   type WidgetMeasure,
   type WidgetTimeRange,
   type WidgetType,
+  workflowItemFieldValues,
+  workflowItemLabels,
+  workflowItemStateHistory,
+  workflowItems,
   workflowStates,
   workflows
 } from '../db/schema';
 import { combineFilters, describeFilter, type FilterAst, parseFilterAst } from '../filters/ast';
-import { compileTicketFilterDetailed } from '../filters/compile';
+import { compileWorkflowItemFilterDetailed } from '../filters/compile';
 import {
   type BucketPoint,
   type BucketUnit,
@@ -128,33 +131,35 @@ function buildSourcePlan(kind: WidgetDataSource['kind'], workspaceId: string): S
   switch (kind) {
     case 'state_history':
       return {
-        from: sql`${ticketStateHistory} h JOIN ${tickets} ON ${tickets.id} = h.ticket_id AND ${tickets.workspaceId} = h.workspace_id`,
+        from: sql`${workflowItemStateHistory} h JOIN ${workflowItems} ON ${workflowItems.id} = h.workflow_item_id AND ${workflowItems.workspaceId} = h.workspace_id JOIN ${records} ON ${records.id} = ${workflowItems.recordId}`,
         workspace: sql`h.workspace_id = ${workspaceId}`,
         idExpr: sql`h.id`,
         stateExpr: sql`h.state_id`,
         workflowExpr: sql`h.workflow_id`,
         time: {
-          created: sql`${tickets.createdAt}`,
-          updated: sql`${tickets.updatedAt}`,
+          created: sql`${workflowItems.createdAt}`,
+          updated: sql`${workflowItems.updatedAt}`,
           entered_state: sql`h.entered_at`
         }
       };
     case 'field_history':
+      // A value change may be recorded on the participation (overlay) or on the
+      // Record (base); a work-item history widget reads both.
       return {
-        from: sql`${fieldValueHistory} fvh JOIN ${tickets} ON ${tickets.id} = fvh.owner_id AND fvh.owner_type = 'ticket' AND ${tickets.workspaceId} = fvh.workspace_id`,
+        from: sql`${fieldValueHistory} fvh JOIN ${workflowItems} ON (${workflowItems.id} = fvh.owner_id AND fvh.owner_type = 'workflow_item') OR (${workflowItems.recordId} = fvh.owner_id AND fvh.owner_type = 'record') JOIN ${records} ON ${records.id} = ${workflowItems.recordId}`,
         workspace: sql`fvh.workspace_id = ${workspaceId}`,
         idExpr: sql`fvh.id`,
-        stateExpr: sql`${tickets.stateId}`,
-        workflowExpr: sql`${tickets.workflowId}`,
+        stateExpr: sql`${workflowItems.stateId}`,
+        workflowExpr: sql`${workflowItems.workflowId}`,
         time: {
           created: sql`fvh.created_at`,
           updated: sql`fvh.created_at`,
-          entered_state: sql`${tickets.enteredStateAt}`
+          entered_state: sql`${workflowItems.enteredStateAt}`
         }
       };
     case 'runs':
       return {
-        from: sql`${agentRuns} ar JOIN ${tickets} ON ${tickets.id} = ar.ticket_id AND ${tickets.workspaceId} = ar.workspace_id`,
+        from: sql`${agentRuns} ar JOIN ${workflowItems} ON ${workflowItems.id} = ar.workflow_item_id AND ${workflowItems.workspaceId} = ar.workspace_id JOIN ${records} ON ${records.id} = ${workflowItems.recordId}`,
         workspace: sql`ar.workspace_id = ${workspaceId}`,
         idExpr: sql`ar.id`,
         stateExpr: sql`ar.state_id`,
@@ -162,33 +167,46 @@ function buildSourcePlan(kind: WidgetDataSource['kind'], workspaceId: string): S
         time: {
           created: sql`ar.created_at`,
           updated: sql`ar.created_at`,
-          entered_state: sql`${tickets.enteredStateAt}`
+          entered_state: sql`${workflowItems.enteredStateAt}`
         }
       };
     case 'files':
       return {
-        from: sql`${files} fl JOIN ${ticketFiles} tfl ON tfl.file_id = fl.id AND tfl.removed_at IS NULL JOIN ${tickets} ON ${tickets.id} = tfl.ticket_id AND ${tickets.workspaceId} = tfl.workspace_id`,
+        from: sql`${files} fl JOIN ${fileWorkflowItems} fwi ON fwi.file_id = fl.id AND fwi.removed_at IS NULL JOIN ${workflowItems} ON ${workflowItems.id} = fwi.workflow_item_id AND ${workflowItems.workspaceId} = fwi.workspace_id JOIN ${records} ON ${records.id} = ${workflowItems.recordId}`,
         workspace: sql`fl.workspace_id = ${workspaceId} AND fl.deleted_at IS NULL`,
         idExpr: sql`fl.id`,
-        stateExpr: sql`${tickets.stateId}`,
-        workflowExpr: sql`${tickets.workflowId}`,
+        stateExpr: sql`${workflowItems.stateId}`,
+        workflowExpr: sql`${workflowItems.workflowId}`,
         time: {
           created: sql`fl.created_at`,
           updated: sql`fl.updated_at`,
-          entered_state: sql`${tickets.enteredStateAt}`
+          entered_state: sql`${workflowItems.enteredStateAt}`
         }
       };
-    case 'tickets':
+    case 'workflow_items':
       return {
-        from: sql`${tickets}`,
-        workspace: sql`${tickets.workspaceId} = ${workspaceId}`,
-        idExpr: sql`${tickets.id}`,
-        stateExpr: sql`${tickets.stateId}`,
-        workflowExpr: sql`${tickets.workflowId}`,
+        from: sql`${workflowItems} JOIN ${records} ON ${records.id} = ${workflowItems.recordId}`,
+        workspace: sql`${workflowItems.workspaceId} = ${workspaceId}`,
+        idExpr: sql`${workflowItems.id}`,
+        stateExpr: sql`${workflowItems.stateId}`,
+        workflowExpr: sql`${workflowItems.workflowId}`,
         time: {
-          created: sql`${tickets.createdAt}`,
-          updated: sql`${tickets.updatedAt}`,
-          entered_state: sql`${tickets.enteredStateAt}`
+          created: sql`${workflowItems.createdAt}`,
+          updated: sql`${workflowItems.updatedAt}`,
+          entered_state: sql`${workflowItems.enteredStateAt}`
+        }
+      };
+    case 'records':
+      return {
+        from: sql`${records}`,
+        workspace: sql`${records.workspaceId} = ${workspaceId}`,
+        idExpr: sql`${records.id}`,
+        stateExpr: sql`NULL`,
+        workflowExpr: sql`NULL`,
+        time: {
+          created: sql`${records.createdAt}`,
+          updated: sql`${records.updatedAt}`,
+          entered_state: sql`${records.createdAt}`
         }
       };
   }
@@ -229,10 +247,12 @@ async function buildGroupPlan(
         limit
       };
     case 'priority':
+      // The universal model has no priority column; legacy `priority` grouping
+      // reads the Record's structured projection.
       return {
         by,
-        key: sql`${tickets.priority}`,
-        label: sql`${tickets.priority}`,
+        key: sql`json_extract(${records.structuredData}, '$.priority')`,
+        label: sql`json_extract(${records.structuredData}, '$.priority')`,
         joins: NO_JOIN,
         timeUnit: null,
         limit
@@ -240,8 +260,8 @@ async function buildGroupPlan(
     case 'owner':
       return {
         by,
-        key: sql`${tickets.ownerUserId}`,
-        label: sql`(SELECT ${users.name} FROM ${users} WHERE ${users.id} = ${tickets.ownerUserId})`,
+        key: sql`${workflowItems.ownerUserId}`,
+        label: sql`(SELECT ${users.name} FROM ${users} WHERE ${users.id} = ${workflowItems.ownerUserId})`,
         joins: NO_JOIN,
         timeUnit: null,
         limit
@@ -249,8 +269,8 @@ async function buildGroupPlan(
     case 'team':
       return {
         by,
-        key: sql`${tickets.ownerTeamId}`,
-        label: sql`(SELECT ${teams.name} FROM ${teams} WHERE ${teams.id} = ${tickets.ownerTeamId})`,
+        key: sql`${workflowItems.ownerTeamId}`,
+        label: sql`(SELECT ${teams.name} FROM ${teams} WHERE ${teams.id} = ${workflowItems.ownerTeamId})`,
         joins: NO_JOIN,
         timeUnit: null,
         limit
@@ -258,8 +278,8 @@ async function buildGroupPlan(
     case 'workflow':
       return {
         by,
-        key: sql`${tickets.workflowId}`,
-        label: sql`(SELECT ${workflows.name} FROM ${workflows} WHERE ${workflows.id} = ${tickets.workflowId})`,
+        key: sql`${workflowItems.workflowId}`,
+        label: sql`(SELECT ${workflows.name} FROM ${workflows} WHERE ${workflows.id} = ${workflowItems.workflowId})`,
         joins: NO_JOIN,
         timeUnit: null,
         limit
@@ -267,9 +287,9 @@ async function buildGroupPlan(
     case 'label':
       return {
         by,
-        key: sql`tl.label_id`,
+        key: sql`wil.label_id`,
         label: sql`lbl.name`,
-        joins: sql`JOIN ${labels} lbl ON lbl.workspace_id = ${workspaceId} JOIN ticket_labels tl ON tl.label_id = lbl.id AND tl.ticket_id = ${tickets.id} AND tl.workspace_id = ${workspaceId}`,
+        joins: sql`JOIN ${labels} lbl ON lbl.workspace_id = ${workspaceId} JOIN ${workflowItemLabels} wil ON wil.label_id = lbl.id AND wil.workflow_item_id = ${workflowItems.id} AND wil.workspace_id = ${workspaceId}`,
         timeUnit: null,
         limit
       };
@@ -278,8 +298,7 @@ async function buildGroupPlan(
       if (!key) throw errors.validation('Field grouping requires fieldKey');
       const definition = await resolveFieldDefinition(db, workspaceId, key);
       if (!definition) throw errors.validation(`Unknown grouping field: ${key}`, { fieldKey: key });
-      const column = columnForFieldType(definition.type);
-      const valueExpr = sql`(SELECT ${column} FROM ${ticketFieldValues} tfv WHERE tfv.ticket_id = ${tickets.id} AND tfv.workspace_id = ${workspaceId} AND tfv.field_definition_id = ${definition.id} LIMIT 1)`;
+      const valueExpr = mergedFieldValueExpr(workspaceId, definition.id, definition.type);
       return {
         by,
         key: valueExpr,
@@ -316,28 +335,45 @@ async function resolveFieldDefinition(
     .select({ id: fieldDefinitions.id, key: fieldDefinitions.key, type: fieldDefinitions.type })
     .from(fieldDefinitions)
     .where(
-      sql`${fieldDefinitions.workspaceId} = ${workspaceId} AND ${fieldDefinitions.scope} = 'ticket' AND (${fieldDefinitions.key} = ${key} OR ${fieldDefinitions.id} = ${key})`
+      sql`${fieldDefinitions.workspaceId} = ${workspaceId} AND ${fieldDefinitions.scope} <> 'file' AND (${fieldDefinitions.key} = ${key} OR ${fieldDefinitions.id} = ${key})`
     )
     .all();
   return rows[0] ?? null;
 }
 
-function columnForFieldType(type: string): SQL {
+/** Typed column name for a field value store (no alias prefix). */
+function fieldColumnName(type: string): string {
   switch (type) {
     case 'number':
     case 'currency':
-      return sql`tfv.value_number`;
+      return 'value_number';
     case 'date':
     case 'datetime':
-      return sql`tfv.value_date`;
+      return 'value_date';
     case 'boolean':
-      return sql`tfv.value_bool`;
+      return 'value_bool';
     case 'multi_select':
     case 'json':
-      return sql`tfv.value_json`;
+      return 'value_json';
     default:
-      return sql`tfv.value_text`;
+      return 'value_text';
   }
+}
+
+/** Workflow-overlay value for one definition (NULL when unset). */
+function overlayFieldValueExpr(workspaceId: string, fieldId: string, column: string): SQL {
+  return sql`(SELECT wifv.${sql.raw(column)} FROM ${workflowItemFieldValues} wifv WHERE wifv.workflow_item_id = ${workflowItems.id} AND wifv.workspace_id = ${workspaceId} AND wifv.field_definition_id = ${fieldId} LIMIT 1)`;
+}
+
+/** Record base value for one definition (NULL when unset). */
+function baseFieldValueExpr(workspaceId: string, fieldId: string, column: string): SQL {
+  return sql`(SELECT rfv.${sql.raw(column)} FROM ${recordFieldValues} rfv WHERE rfv.record_id = ${workflowItems.recordId} AND rfv.workspace_id = ${workspaceId} AND rfv.field_definition_id = ${fieldId} LIMIT 1)`;
+}
+
+/** Merged field value: the workflow overlay wins over the Record base. */
+function mergedFieldValueExpr(workspaceId: string, fieldId: string, type: string): SQL {
+  const column = fieldColumnName(type);
+  return sql`COALESCE(${overlayFieldValueExpr(workspaceId, fieldId, column)}, ${baseFieldValueExpr(workspaceId, fieldId, column)})`;
 }
 
 interface ResolvedRange {
@@ -449,6 +485,20 @@ export async function runWidget(db: Executor, options: RunWidgetOptions): Promis
   const now = options.now ?? Date.now();
   const widget = options.widget;
 
+  // Records and WorkflowItems are answered by the universal engine, which compiles
+  // filters and field measures against the canonical tables (ADR-0021). History
+  // sources keep the report path below (itself workflow-item based) so an aging
+  // widget still returns its per-state rows.
+  const { isUniversalSource, runUniversalWidget } = await import('./universal');
+  if (isUniversalSource(widget.dataSource.kind)) {
+    return runUniversalWidget(db, {
+      workspaceId: options.workspaceId,
+      widget,
+      globalFilter: options.globalFilter ?? null,
+      now
+    });
+  }
+
   if (widget.type === 'funnel') {
     const { runFunnel } = await import('./funnel');
     const definition = widget.dataSource;
@@ -546,7 +596,7 @@ async function buildContext(
     combineFilters(viewFilter, safeParse(widget.filter)),
     options.globalFilter ?? null
   );
-  const compiled = await compileTicketFilterDetailed(db, {
+  const compiled = await compileWorkflowItemFilterDetailed(db, {
     workspaceId: options.workspaceId,
     filter: combined,
     now
@@ -600,12 +650,12 @@ async function buildContext(
 }
 
 /**
- * Scope conditions for the `tickets` table. Conversion and per-ticket duration
- * measures always read tickets even when the widget declares another source, so
- * they cannot reuse scope conditions that name a source-specific alias.
+ * Scope conditions for `workflow_items`. Conversion and per-item duration
+ * measures always read work items even when the widget declares another source,
+ * so they cannot reuse scope conditions that name a source-specific alias.
  */
-function ticketScope(context: RunContext): SQL {
-  const plan = buildSourcePlan('tickets', context.workspaceId);
+function workflowItemScope(context: RunContext): SQL {
+  const plan = buildSourcePlan('workflow_items', context.workspaceId);
   const conditions: SQL[] = [plan.workspace, context.compiledSql];
   if (context.workflowIds.length > 0) {
     conditions.push(
@@ -624,7 +674,9 @@ function fromWithJoins(source: SourcePlan, group: GroupPlan): SQL {
 
 function fieldMeasureExpression(workspaceId: string, fieldId: string | null): SQL | null {
   if (!fieldId) return null;
-  return sql`(SELECT tfv.value_number FROM ${ticketFieldValues} tfv WHERE tfv.ticket_id = ${tickets.id} AND tfv.workspace_id = ${workspaceId} AND tfv.field_definition_id = ${fieldId} LIMIT 1)`;
+  // Measures are numeric: read the merged numeric value (overlay wins).
+  const column = 'value_number';
+  return sql`COALESCE(${overlayFieldValueExpr(workspaceId, fieldId, column)}, ${baseFieldValueExpr(workspaceId, fieldId, column)})`;
 }
 
 function aggregateExpression(
@@ -789,12 +841,12 @@ function durationExpression(context: RunContext): SQL {
       if (!target) {
         throw errors.validation('time_to_state requires agingStates or a funnel stage state');
       }
-      const reached = sql`(SELECT MIN(${ticketStateHistory}.entered_at) FROM ${ticketStateHistory} WHERE ${ticketStateHistory}.ticket_id = ${tickets.id} AND ${ticketStateHistory}.workspace_id = ${workspaceId} AND ${ticketStateHistory}.state_id = ${target})`;
-      return sql`AVG((${reached} - ${tickets.createdAt}) / 1000.0)`;
+      const reached = sql`(SELECT MIN(${workflowItemStateHistory}.entered_at) FROM ${workflowItemStateHistory} WHERE ${workflowItemStateHistory}.workflow_item_id = ${workflowItems.id} AND ${workflowItemStateHistory}.workspace_id = ${workspaceId} AND ${workflowItemStateHistory}.state_id = ${target})`;
+      return sql`AVG((${reached} - ${workflowItems.createdAt}) / 1000.0)`;
     }
     case 'cycle_time': {
-      const terminal = sql`(SELECT MIN(hist.entered_at) FROM ${ticketStateHistory} hist JOIN ${workflowStates} st ON st.id = hist.state_id AND st.workspace_id = hist.workspace_id WHERE hist.ticket_id = ${tickets.id} AND hist.workspace_id = ${workspaceId} AND (st.is_terminal = 1 OR st.category IN ('done', 'cancelled')))`;
-      return sql`AVG((${terminal} - ${tickets.createdAt}) / 1000.0)`;
+      const terminal = sql`(SELECT MIN(hist.entered_at) FROM ${workflowItemStateHistory} hist JOIN ${workflowStates} st ON st.id = hist.state_id AND st.workspace_id = hist.workspace_id WHERE hist.workflow_item_id = ${workflowItems.id} AND hist.workspace_id = ${workspaceId} AND (st.is_terminal = 1 OR st.category IN ('done', 'cancelled')))`;
+      return sql`AVG((${terminal} - ${workflowItems.createdAt}) / 1000.0)`;
     }
   }
 }
@@ -807,7 +859,7 @@ async function runDuration(context: RunContext): Promise<WidgetResult> {
 
   if (measure.durationOf === 'time_in_state') {
     // Dwell time is an interval property: read it from history, not from the
-    // current ticket row.
+    // current work-item row.
     source = buildSourcePlan('state_history', context.workspaceId);
     const timeExpr =
       source.time[context.range.basis === 'entered_state' ? 'entered_state' : context.range.basis];
@@ -819,8 +871,8 @@ async function runDuration(context: RunContext): Promise<WidgetResult> {
       timeExpr
     );
     // The base WHERE names the original source's alias; history always joins
-    // `tickets`, so re-scope against tickets instead of reusing it.
-    const parts: SQL[] = [ticketScope(context)];
+    // `workflow_items`, so re-scope against work items instead of reusing it.
+    const parts: SQL[] = [workflowItemScope(context)];
     if (context.range.from !== null) parts.push(sql`${timeExpr} >= ${context.range.from}`);
     if (context.range.to !== null) parts.push(sql`${timeExpr} <= ${context.range.to}`);
     const states = context.widget.dataSource.agingStates ?? [];
@@ -834,9 +886,9 @@ async function runDuration(context: RunContext): Promise<WidgetResult> {
     }
     where = sql.join(parts, sql` AND `);
   } else {
-    // Cycle time and time-to-state are per-ticket: base on tickets, ignoring the
-    // data source's row unit so a ticket is never counted twice.
-    source = buildSourcePlan('tickets', context.workspaceId);
+    // Cycle time and time-to-state are per-item: base on work items, ignoring the
+    // data source's row unit so an item is never counted twice.
+    source = buildSourcePlan('workflow_items', context.workspaceId);
     group = await buildGroupPlan(
       context.db,
       context.workspaceId,
@@ -844,7 +896,7 @@ async function runDuration(context: RunContext): Promise<WidgetResult> {
       source,
       source.time[context.range.basis]
     );
-    const parts: SQL[] = [ticketScope(context)];
+    const parts: SQL[] = [workflowItemScope(context)];
     const scopedTime = source.time[context.range.basis];
     if (context.range.from !== null) parts.push(sql`${scopedTime} >= ${context.range.from}`);
     if (context.range.to !== null) parts.push(sql`${scopedTime} <= ${context.range.to}`);
@@ -899,25 +951,25 @@ async function runConversion(context: RunContext): Promise<WidgetResult> {
       parts.push(sql`${sql.raw(`${alias}.entered_at`)} <= ${context.range.to}`);
     return parts.length > 0 ? sql` AND ${sql.join(parts, sql` AND `)}` : sql``;
   };
-  const firstEntry = sql`(SELECT MIN(fh.entered_at) FROM ${ticketStateHistory} fh WHERE fh.ticket_id = ${tickets.id} AND fh.workspace_id = ${workspaceId} AND fh.state_id IN (${sql.join(
+  const firstEntry = sql`(SELECT MIN(fh.entered_at) FROM ${workflowItemStateHistory} fh WHERE fh.workflow_item_id = ${workflowItems.id} AND fh.workspace_id = ${workspaceId} AND fh.state_id IN (${sql.join(
     firstStates.map((id) => sql`${id}`),
     sql`, `
   )})${windowClause('fh')})`;
-  const lastEntry = sql`(SELECT MIN(lh.entered_at) FROM ${ticketStateHistory} lh WHERE lh.ticket_id = ${tickets.id} AND lh.workspace_id = ${workspaceId} AND lh.state_id IN (${sql.join(
+  const lastEntry = sql`(SELECT MIN(lh.entered_at) FROM ${workflowItemStateHistory} lh WHERE lh.workflow_item_id = ${workflowItems.id} AND lh.workspace_id = ${workspaceId} AND lh.state_id IN (${sql.join(
     lastStates.map((id) => sql`${id}`),
     sql`, `
   )}))`;
 
-  const reachedFirst = sql`COUNT(DISTINCT CASE WHEN ${firstEntry} IS NOT NULL THEN ${tickets.id} END)`;
-  const reachedLast = sql`COUNT(DISTINCT CASE WHEN ${lastEntry} IS NOT NULL THEN ${tickets.id} END)`;
+  const reachedFirst = sql`COUNT(DISTINCT CASE WHEN ${firstEntry} IS NOT NULL THEN ${workflowItems.id} END)`;
+  const reachedLast = sql`COUNT(DISTINCT CASE WHEN ${lastEntry} IS NOT NULL THEN ${workflowItems.id} END)`;
   const ratio = sql`(100.0 * ${reachedLast}) / NULLIF(${reachedFirst}, 0)`;
 
-  const where = sql.join([ticketScope(context), sql`${firstEntry} IS NOT NULL`], sql` AND `);
+  const where = sql.join([workflowItemScope(context), sql`${firstEntry} IS NOT NULL`], sql` AND `);
 
   if (!context.group.key) {
     const rows = await executeRows(
       context.db,
-      sql`SELECT ${ratio} AS value FROM ${tickets} WHERE ${where}`
+      sql`SELECT ${ratio} AS value FROM ${workflowItems} JOIN ${records} ON ${records.id} = ${workflowItems.recordId} WHERE ${where}`
     );
     return {
       kind: context.widget.type,
@@ -927,13 +979,13 @@ async function runConversion(context: RunContext): Promise<WidgetResult> {
     };
   }
 
-  // Time buckets are anchored on first-stage entry, not ticket creation, so a
-  // week-over-week conversion answers "of tickets that started this week".
+  // Time buckets are anchored on first-stage entry, not item creation, so a
+  // week-over-week conversion answers "of items that started this week".
   const keyExpr = context.group.timeUnit
     ? bucketExpression(context.group.timeUnit, firstEntry)
     : context.group.key;
   const labelExpr = context.group.timeUnit ? keyExpr : (context.group.label ?? keyExpr);
-  const query = sql`SELECT ${keyExpr} AS g_key, ${labelExpr} AS g_label, ${ratio} AS value FROM ${tickets} WHERE ${where} GROUP BY g_key, g_label`;
+  const query = sql`SELECT ${keyExpr} AS g_key, ${labelExpr} AS g_label, ${ratio} AS value FROM ${workflowItems} JOIN ${records} ON ${records.id} = ${workflowItems.recordId} WHERE ${where} GROUP BY g_key, g_label`;
   const rows = await executeRows(
     context.db,
     orderAndLimit({ ...context, group: { ...context.group, key: keyExpr } }, query)

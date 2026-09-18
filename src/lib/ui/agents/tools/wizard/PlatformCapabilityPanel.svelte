@@ -3,7 +3,7 @@
  * Platform capability panel.
  *
  * The first thing an operator should learn is what they do *not* have to build:
- * Mentat ships a set of native capabilities (tickets, state, data, files) that run
+ * Mentat ships a set of native capabilities (work items, state, data, files) that run
  * in-process. This panel exposes them, grouped, and points at the one place a grant
  * actually happens — an agent's Permissions tab.
  */

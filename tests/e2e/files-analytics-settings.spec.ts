@@ -21,13 +21,12 @@ import {
  *
  * ## Why one shared account
  *
- * `ensureStarterWorkspace` only creates a workspace when the database has no
- * workspaces at all, and `POST /api/workspaces` needs `workspace:read` — which a
- * membership-less account does not have. Registering a *new* account per test
- * therefore fails with `403 Missing permission: workspace:read` on any instance
- * that already has a workspace. Until that is resolved the suite registers once in
- * `beforeAll` and every test runs against that workspace, using a run-unique tag so
- * fixtures never collide across runs. Each test is written to be order-independent
+ * Registration is no longer a trap on a warmed instance: `ensurePersonalWorkspace`
+ * gives every new account a workspace it owns, and `POST /api/workspaces` accepts a
+ * membership-less actor as well. This suite still registers once in `beforeAll` and
+ * runs every test against that workspace, using a run-unique tag so fixtures never
+ * collide across runs — the surfaces here do not depend on tenant separation, and
+ * one account keeps the fixtures cheap. Each test is written to be order-independent
  * except where a comment says otherwise.
  *
  * Run with a clean database (the config's `.e2e` directory) — see the report.
@@ -334,23 +333,23 @@ test.describe('Dashboards', () => {
     await page.waitForURL(/\/dashboards\/[0-9a-f-]+/i);
 
     await expect(page.getByRole('heading', { name: `Operations board ${tag}` })).toBeVisible();
-    // The interface states that both filter levels share the ticket-list language.
+    // The interface states that both filter levels share the work-list language.
     await expect(
-      page.getByText(/same\s+filter\s+language\s+as\s+the\s+ticket\s+list/i)
+      page.getByText(/same\s+filter\s+language\s+as\s+the\s+work\s+item\s+list/i)
     ).toBeVisible();
 
     await page
       .getByRole('button', { name: /add\s+widget/i })
       .first()
       .click();
-    await page.getByLabel('Title').fill('Ticket count');
+    await page.getByLabel('Title').fill('Work item count');
     await page.getByLabel('Aggregation').selectOption('count');
     await page
       .getByRole('button', { name: /add\s+widget/i })
       .last()
       .click();
 
-    await expect(page.getByText('Ticket count').first()).toBeVisible();
+    await expect(page.getByText('Work item count').first()).toBeVisible();
     // A KPI renders a number, and the underlying count is 0 on a fresh workspace.
     await expect(page.getByText('0').first()).toBeVisible({ timeout: 15_000 });
   });
@@ -435,7 +434,7 @@ test.describe('Dashboards', () => {
       .click();
     await page.getByLabel('Title').fill('Dwell time');
     await page.getByLabel('Visualisation').selectOption('aging');
-    await expect(page.getByText(/ticket_state_history/i).first()).toBeVisible();
+    await expect(page.getByText(/workflow_item_state_history/i).first()).toBeVisible();
     await expect(
       page.getByText(/in-progress\s+work\s+is\s+counted\s+rather\s+than\s+dropped/i)
     ).toBeVisible();

@@ -16,6 +16,7 @@ export type JobStatus = 'pending' | 'leased' | 'completed' | 'failed' | 'dead' |
 export type JobType =
   | 'agent.run'
   | 'state.enter'
+  | 'workflow_item.enter'
   | 'approval.resume'
   | 'file.process'
   | 'file.hash'
@@ -57,7 +58,8 @@ export const jobs = sqliteTable(
     /** Stable key that makes enqueueing the same unit of work idempotent. */
     dedupeKey: text('dedupe_key'),
     idempotencyKey: text('idempotency_key'),
-    ticketId: text('ticket_id'),
+    recordId: text('record_id'),
+    workflowItemId: text('workflow_item_id'),
     runId: text('run_id'),
     parentJobId: text('parent_job_id'),
     createdAt: createdAt(),
@@ -68,7 +70,7 @@ export const jobs = sqliteTable(
     index('jobs_lease_idx').on(table.status, table.queue, table.availableAt, table.priority),
     index('jobs_dedupe_idx').on(table.workspaceId, table.dedupeKey),
     index('jobs_run_idx').on(table.runId),
-    index('jobs_ticket_idx').on(table.workspaceId, table.ticketId),
+    index('jobs_workflow_item_idx').on(table.workspaceId, table.workflowItemId),
     index('jobs_status_idx').on(table.workspaceId, table.status, table.createdAt)
   ]
 );
@@ -124,7 +126,9 @@ export const agentRuns = sqliteTable(
     workspaceId: text('workspace_id')
       .notNull()
       .references(() => workspaces.id, { onDelete: 'cascade' }),
-    ticketId: text('ticket_id'),
+    /** Universal-model subject: set for runs over a WorkflowItem of any Object Type. */
+    recordId: text('record_id'),
+    workflowItemId: text('workflow_item_id'),
     workflowId: text('workflow_id').notNull(),
     stateId: text('state_id').notNull(),
     agentId: text('agent_id').notNull(),
@@ -159,7 +163,12 @@ export const agentRuns = sqliteTable(
     updatedAt: updatedAt()
   },
   (table) => [
-    index('agent_runs_ticket_idx').on(table.workspaceId, table.ticketId, table.createdAt),
+    index('agent_runs_record_idx').on(table.workspaceId, table.recordId, table.createdAt),
+    index('agent_runs_workflow_item_idx').on(
+      table.workspaceId,
+      table.workflowItemId,
+      table.createdAt
+    ),
     index('agent_runs_status_idx').on(table.workspaceId, table.status, table.createdAt),
     index('agent_runs_agent_idx').on(table.workspaceId, table.agentId, table.createdAt)
   ]
@@ -225,7 +234,9 @@ export const runEvents = sqliteTable(
       .notNull()
       .references(() => workspaces.id, { onDelete: 'cascade' }),
     runId: text('run_id'),
-    ticketId: text('ticket_id'),
+    /** Universal-model identities so record/workflow-item activity streams exist. */
+    recordId: text('record_id'),
+    workflowItemId: text('workflow_item_id'),
     type: text('type').notNull(),
     data: json<unknown>('data'),
     createdAt: createdAt()
@@ -233,11 +244,12 @@ export const runEvents = sqliteTable(
   (table) => [
     uniqueIndex('run_events_id_unique').on(table.id),
     index('run_events_run_idx').on(table.runId, table.seq),
-    index('run_events_ticket_idx').on(table.workspaceId, table.ticketId, table.seq)
+    index('run_events_record_idx').on(table.workspaceId, table.recordId, table.seq),
+    index('run_events_workflow_item_idx').on(table.workspaceId, table.workflowItemId, table.seq)
   ]
 );
 
-export type ApprovalKind = 'state_transition' | 'tool_call' | 'transfer' | 'ticket_creation';
+export type ApprovalKind = 'state_transition' | 'tool_call' | 'transfer' | 'record_creation';
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'cancelled' | 'expired';
 
 export interface ApprovalAction {
@@ -252,7 +264,9 @@ export const approvalRequests = sqliteTable(
     workspaceId: text('workspace_id')
       .notNull()
       .references(() => workspaces.id, { onDelete: 'cascade' }),
-    ticketId: text('ticket_id'),
+    /** Universal-model subject the approval concerns. */
+    recordId: text('record_id'),
+    workflowItemId: text('workflow_item_id'),
     workflowId: text('workflow_id'),
     runId: text('run_id'),
     stepId: text('step_id'),
@@ -283,7 +297,7 @@ export const approvalRequests = sqliteTable(
   },
   (table) => [
     index('approval_requests_status_idx').on(table.workspaceId, table.status, table.createdAt),
-    index('approval_requests_ticket_idx').on(table.workspaceId, table.ticketId),
+    index('approval_requests_workflow_item_idx').on(table.workspaceId, table.workflowItemId),
     index('approval_requests_run_idx').on(table.runId)
   ]
 );

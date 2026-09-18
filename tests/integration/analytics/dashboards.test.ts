@@ -21,15 +21,16 @@ import { createTestDatabase, type TestDatabase } from '../../helpers/db';
 import {
   createDashboardRecord,
   createField,
-  createTicket,
   createUser,
   createWidgetRecord,
   createWorkflow,
+  createWorkflowItem,
   createWorkspace,
   memberActor,
   ownerActor,
   setTypedFieldValue,
   type UserFixture,
+  updateRecordRow,
   type WorkflowFixture
 } from '../../helpers/factories';
 
@@ -68,16 +69,19 @@ async function seed(): Promise<void> {
     { key: 'C', priority: 'low' as const, amount: 300 }
   ];
   for (const spec of specs) {
-    const ticket = await createTicket(db, {
+    const ticket = await createWorkflowItem(db, {
       workspaceId,
       workflow,
-      title: spec.key,
-      priority: spec.priority
+      title: spec.key
     });
     ids[spec.key] = ticket.id;
+    // `priority` is a Record structured value in the universal model.
+    await updateRecordRow(db, ticket.recordId, {
+      structuredData: { priority: spec.priority }
+    });
     await setTypedFieldValue(db, {
       workspaceId,
-      ticketId: ticket.id,
+      workflowItemId: ticket.id,
       fieldDefinitionId: amountField,
       type: 'currency',
       value: spec.amount
@@ -222,13 +226,13 @@ describe('dashboards: widgets and layout', () => {
     const kpi = await addWidget(db, ownerView, dashboard.id, {
       title: 'Count',
       type: 'kpi',
-      dataSource: { kind: 'tickets' },
+      dataSource: { kind: 'workflow_items' },
       measure: { aggregation: 'count' }
     });
     const sum = await addWidget(db, ownerView, dashboard.id, {
       title: 'Amount',
       type: 'number',
-      dataSource: { kind: 'tickets' },
+      dataSource: { kind: 'workflow_items' },
       measure: { aggregation: 'sum', fieldKey: 'amount' }
     });
 
@@ -260,7 +264,7 @@ describe('dashboards: widgets and layout', () => {
       await addWidget(db, ownerView, foreign.id, {
         title: 'Nope',
         type: 'kpi',
-        dataSource: { kind: 'tickets' },
+        dataSource: { kind: 'workflow_items' },
         measure: { aggregation: 'count' }
       });
     } catch (error) {
@@ -279,13 +283,13 @@ describe('dashboards: run', () => {
     const countWidget = await addWidget(db, ownerView, dashboard.id, {
       title: 'Count',
       type: 'kpi',
-      dataSource: { kind: 'tickets' },
+      dataSource: { kind: 'workflow_items' },
       measure: { aggregation: 'count' }
     });
     const sumWidget = await addWidget(db, ownerView, dashboard.id, {
       title: 'Amount over 150',
       type: 'number',
-      dataSource: { kind: 'tickets' },
+      dataSource: { kind: 'workflow_items' },
       filter: {
         type: 'condition',
         kind: 'field',
@@ -309,7 +313,7 @@ describe('dashboards: run', () => {
     const countWidget = await addWidget(db, ownerView, dashboard.id, {
       title: 'Count',
       type: 'kpi',
-      dataSource: { kind: 'tickets' },
+      dataSource: { kind: 'workflow_items' },
       measure: { aggregation: 'count' }
     });
     const result = await runDashboard(db, {
@@ -330,7 +334,7 @@ describe('dashboards: run', () => {
       workspaceId,
       dashboardId,
       type: 'kpi',
-      dataSource: { kind: 'tickets' },
+      dataSource: { kind: 'workflow_items' },
       measure: { aggregation: 'count' }
     });
 
@@ -341,7 +345,7 @@ describe('dashboards: run', () => {
       workspaceId: otherWorkspace.id,
       dashboardId: otherDashboard.id,
       type: 'kpi',
-      dataSource: { kind: 'tickets' },
+      dataSource: { kind: 'workflow_items' },
       measure: { aggregation: 'count' }
     });
 

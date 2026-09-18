@@ -19,7 +19,7 @@
  */
 import { type SQL, sql } from 'drizzle-orm';
 import type { AnySQLiteColumn } from 'drizzle-orm/sqlite-core';
-import { tickets, type WidgetTimeRange } from '../db/schema';
+import { type WidgetTimeRange, workflowItems } from '../db/schema';
 
 export type BucketUnit = 'day' | 'week' | 'month';
 
@@ -101,12 +101,12 @@ export function bucketLabel(value: number | Date, by: BucketUnit): string {
 
 /**
  * SQL expression that groups a timestamp column into a canonical bucket key.
- * Defaults to the ticket creation timestamp, which is the natural axis for
+ * Defaults to the work-item creation timestamp, which is the natural axis for
  * throughput; callers pass the measure's time basis when it differs.
  */
 export function bucketExpression(
   by: BucketUnit,
-  column: SQL | AnySQLiteColumn = tickets.createdAt
+  column: SQL | AnySQLiteColumn = workflowItems.createdAt
 ): SQL {
   const seconds = sql`(${column} / 1000)`;
   switch (by) {

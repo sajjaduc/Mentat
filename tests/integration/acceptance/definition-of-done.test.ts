@@ -24,8 +24,9 @@ import {
   auditEvents,
   files as filesTable,
   jobs,
-  tickets as ticketsTable,
-  users
+  records as recordsTable,
+  users,
+  workflowItemRelationships
 } from '../../../src/lib/server/db/schema';
 import { drainQueue } from '../../../src/lib/server/jobs/worker';
 import {
@@ -53,7 +54,8 @@ let actor: ActorContext;
 async function call<T = unknown>(
   method: string,
   path: string,
-  body?: unknown
+  body?: unknown,
+  asActor: ActorContext | null = actor
 ): Promise<{ status: number; body: T }> {
   // The dispatcher receives `pathname` and `query` separately, exactly as the
   // SvelteKit adapter provides them, so the helper splits the URL the same way.
@@ -65,7 +67,7 @@ async function call<T = unknown>(
     db: handle.db,
     method,
     pathname: url.pathname,
-    actor,
+    actor: asActor,
     query,
     rawBody: body === undefined ? undefined : JSON.stringify(body),
     request: new Request(`http://127.0.0.1/api${path}`, { method })
@@ -74,14 +76,84 @@ async function call<T = unknown>(
 }
 
 /** POST that must succeed, returning the body. */
-async function ok<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const result = await call<T>(method, path, body);
+async function ok<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  asActor: ActorContext | null = actor
+): Promise<T> {
+  const result = await call<T>(method, path, body, asActor);
   if (result.status >= 400) {
     throw new Error(
       `${method} ${path} failed (${result.status}): ${JSON.stringify(result.body).slice(0, 400)}`
     );
   }
   return result.body;
+}
+
+/**
+ * ADR-0021: Object Types are explicit. Every workflow must name one, and Records
+ * instantiate one, so the acceptance fixtures create their own.
+ */
+async function makeObjectType(name = 'Ticket', keyPrefix = 'TKT'): Promise<string> {
+  const created = await ok<{ objectType: { id: string } }>('POST', '/object-types', {
+    name,
+    settings: { numbered: true, keyPrefix }
+  });
+  return created.objectType.id;
+}
+
+interface WorkflowShape {
+  workflow: { id: string };
+  states: Array<{ id: string; name: string }>;
+}
+
+async function makeWorkflow(options: {
+  name: string;
+  objectTypeId: string;
+  template?: 'blank' | 'basic' | 'intake' | 'claims' | 'support';
+}): Promise<WorkflowShape> {
+  return ok<WorkflowShape>('POST', '/workflows', {
+    name: options.name,
+    template: options.template,
+    objectTypeId: options.objectTypeId
+  });
+}
+
+/** Start work: put a Record into a workflow, returning the work item. */
+async function startWork(options: {
+  workflowId: string;
+  objectTypeId: string;
+  displayName: string;
+  stateId?: string;
+  fields?: Record<string, unknown>;
+  structuredData?: Record<string, unknown>;
+  parentWorkflowItemId?: string;
+  asActor?: ActorContext | null;
+}): Promise<{ workflowItem: { id: string; recordId: string } }> {
+  const created = await call<{ workflowItem: { id: string; recordId: string } }>(
+    'POST',
+    '/workflow-items',
+    {
+      workflowId: options.workflowId,
+      stateId: options.stateId,
+      fields: options.fields,
+      structuredData: options.structuredData,
+      parentWorkflowItemId: options.parentWorkflowItemId,
+      record: {
+        objectTypeId: options.objectTypeId,
+        displayName: options.displayName,
+        structuredData: options.structuredData
+      }
+    },
+    options.asActor === undefined ? actor : options.asActor
+  );
+  if (created.status >= 400) {
+    throw new Error(
+      `POST /workflow-items failed (${created.status}): ${JSON.stringify(created.body).slice(0, 300)}`
+    );
+  }
+  return created.body;
 }
 
 beforeAll(async () => {
@@ -104,7 +176,7 @@ beforeAll(async () => {
             tool_calls: [
               {
                 function: {
-                  name: 'mentat.ticket.fields.setMany',
+                  name: 'workflowItems.setFields',
                   arguments: JSON.stringify({
                     values: {
                       risk_category: 'high',
@@ -192,31 +264,34 @@ beforeEach(async () => {
 });
 
 describe('Definition of Done (core plan)', () => {
-  test('1-3. create a workspace, a workflow with states, and move a ticket', async () => {
-    const workflow = await ok<{
-      workflow: { id: string };
-      states: Array<{ id: string; name: string }>;
-    }>('POST', '/workflows', { name: 'Claims', template: 'claims' });
+  test('1-3. create a workspace, a workflow with states, and move a work item', async () => {
+    const objectTypeId = await makeObjectType('Claim', 'CLM');
+    const workflow = await makeWorkflow({ name: 'Claims', template: 'claims', objectTypeId });
     expect(workflow.states.length).toBeGreaterThan(3);
 
-    const ticket = await ok<{ ticket: { id: string; key: string } }>('POST', '/tickets', {
+    const item = await startWork({
       workflowId: workflow.workflow.id,
+      objectTypeId,
       stateId: workflow.states[1]?.id,
-      title: 'Storm damage claim'
+      displayName: 'Storm damage claim'
     });
-    // The key prefix is derived from the workflow name; the template seeds states.
-    expect(ticket.ticket.key).toMatch(/^[A-Z]+-\d+$/);
+    const detail0 = await ok<{ record: { key: string | null } }>(
+      'GET',
+      `/workflow-items/${item.workflowItem.id}`
+    );
+    // Records are numbered by their Object Type's settings.
+    expect(detail0.record.key).toMatch(/^[A-Z]+-\d+$/);
 
     const investigation = workflow.states.find((state) => state.name === 'Investigation');
     const review = workflow.states.find((state) => state.name === 'Human review');
-    await ok('POST', `/tickets/${ticket.ticket.id}/transitions`, {
+    await ok('POST', `/workflow-items/${item.workflowItem.id}/transitions`, {
       targetStateId: review?.id,
       comment: 'Assessment ready'
     });
 
     const detail = await ok<{ state: { name: string }; availableTransitions: unknown[] }>(
       'GET',
-      `/tickets/${ticket.ticket.id}`
+      `/workflow-items/${item.workflowItem.id}`
     );
     expect(detail.state.name).toBe('Human review');
     expect(detail.availableTransitions.length).toBeGreaterThan(0);
@@ -230,9 +305,8 @@ describe('Definition of Done (core plan)', () => {
       type: 'short_text'
     });
 
-    const workflow = await ok<{ workflow: { id: string } }>('POST', '/workflows', {
-      name: 'Claims'
-    });
+    const objectTypeId = await makeObjectType('Claim');
+    const workflow = await makeWorkflow({ name: 'Claims', objectTypeId });
     await ok('PUT', `/workflows/${workflow.workflow.id}/fields`, {
       fields: [{ fieldDefinitionId: field.field.id, required: true, showOnCard: true }]
     });
@@ -391,10 +465,8 @@ describe('Definition of Done (core plan)', () => {
       ]
     });
 
-    const workflow = await ok<{
-      workflow: { id: string };
-      states: Array<{ id: string; name: string }>;
-    }>('POST', '/workflows', { name: 'Claims', template: 'claims' });
+    const objectTypeId = await makeObjectType('Claim');
+    const workflow = await makeWorkflow({ name: 'Claims', template: 'claims', objectTypeId });
     const fieldSpecs = [
       {
         key: 'risk_category',
@@ -422,9 +494,9 @@ describe('Definition of Done (core plan)', () => {
       native: Array<{ key: string }>;
       stored: Array<{ id: string; key: string }>;
     }>('GET', '/tools');
-    const fieldTool = tools.stored.find((tool) => tool.key === 'mentat.ticket.fields.setMany');
+    const fieldTool = tools.stored.find((tool) => tool.key === 'workflowItems.setFields');
     expect(
-      fieldTool ?? tools.native.find((tool) => tool.key === 'mentat.ticket.fields.setMany')
+      fieldTool ?? tools.native.find((tool) => tool.key === 'workflowItems.setFields')
     ).toBeDefined();
 
     const agent = await ok<{ agent: { id: string } }>('POST', '/agents', {
@@ -436,7 +508,7 @@ describe('Definition of Done (core plan)', () => {
       skillIds: [skill.skill.id],
       toolIds: [fieldTool!.id],
       executionConfig: { maxSteps: 6, retryOnProviderError: true },
-      permissions: { native: ['mentat.ticket.fields.setMany', 'mentat.ticket.get'] }
+      permissions: { native: ['workflowItems.setFields', 'workflowItems.get'] }
     });
 
     // Bind the agent to the investigation state.
@@ -447,17 +519,18 @@ describe('Definition of Done (core plan)', () => {
       maxAttempts: 3
     });
 
-    const ticket = await ok<{ ticket: { id: string } }>('POST', '/tickets', {
+    const ticket = await startWork({
       workflowId: workflow.workflow.id,
+      objectTypeId,
       stateId: investigation?.id,
-      title: 'Hail damage at 12 Harbour Street'
+      displayName: 'Hail damage at 12 Harbour Street'
     });
 
     // 12. trigger work manually — the automatic state entry already queued a job, so
     // dispatch is asserted to be idempotent for the same entry.
     const dispatched = await ok<{ jobId: string; stateId: string }>(
       'POST',
-      `/tickets/${ticket.ticket.id}/dispatch`,
+      `/workflow-items/${ticket.workflowItem.id}/dispatch`,
       { force: true }
     );
     expect(dispatched.jobId).toBeTruthy();
@@ -475,45 +548,51 @@ describe('Definition of Done (core plan)', () => {
     const run = handle.db
       .select()
       .from(agentRuns)
-      .where(eq(agentRuns.ticketId, ticket.ticket.id))
+      .where(eq(agentRuns.workflowItemId, ticket.workflowItem.id))
       .all()[0];
     expect(run?.status, run?.error ?? 'no error').toBe('succeeded');
     expect(run?.outputText).toContain('Assessment complete');
     expect(run?.usage?.inputTokens).toBeGreaterThan(0);
 
-    // The tool call the mock model requested actually landed on the ticket.
+    // The tool call the mock model requested actually landed on the work item.
     const fields = await ok<{ fields: Record<string, unknown> }>(
       'GET',
-      `/tickets/${ticket.ticket.id}/fields`
+      `/workflow-items/${ticket.workflowItem.id}/fields`
     );
     expect(fields.fields.risk_category).toBe('high');
     expect(String(fields.fields.reviewer_notes)).toContain('Storm damage');
 
-    // 16. complete history: ticket timeline plus the audit ledger.
+    // 16. complete history: work timeline plus the audit ledger.
     const timeline = await ok<{ events: Array<{ action: string }> }>(
       'GET',
-      `/tickets/${ticket.ticket.id}/timeline`
+      `/workflow-items/${ticket.workflowItem.id}/timeline`
     );
     const actions = timeline.events.map((event) => event.action);
-    expect(actions).toContain('ticket.created');
+    expect(actions).toContain('workflow_item.created');
     expect(actions).toContain('agent.run.started');
     expect(actions).toContain('agent.run.completed');
     expect(actions).toContain('tool.call.completed');
-    expect(actions).toContain('job.enqueued');
 
     const ledger = handle.db
       .select()
       .from(auditEvents)
-      .where(eq(auditEvents.ticketId, ticket.ticket.id))
+      .where(eq(auditEvents.workflowItemId, ticket.workflowItem.id))
       .all();
     expect(ledger.length).toBeGreaterThan(5);
+
+    // Enqueueing is audited at workspace level.
+    const workspaceActions = handle.db
+      .select({ action: auditEvents.action })
+      .from(auditEvents)
+      .where(eq(auditEvents.workspaceId, actor.workspaceId))
+      .all()
+      .map((event) => event.action);
+    expect(workspaceActions).toContain('job.enqueued');
   });
 
   test('15. require and resolve human approval for a gated tool call', async () => {
-    const workflow = await ok<{
-      workflow: { id: string };
-      states: Array<{ id: string; name: string }>;
-    }>('POST', '/workflows', { name: 'Approvals', template: 'basic' });
+    const objectTypeId = await makeObjectType('Claim');
+    const workflow = await makeWorkflow({ name: 'Approvals', template: 'basic', objectTypeId });
     const provider = await ok<{ provider: { id: string } }>('POST', '/providers', {
       name: 'Local Ollama',
       type: 'ollama',
@@ -543,7 +622,7 @@ describe('Definition of Done (core plan)', () => {
       .where(
         and(
           eq(toolsTable.workspaceId, actor.workspaceId),
-          eq(toolsTable.key, 'mentat.ticket.fields.setMany')
+          eq(toolsTable.key, 'workflowItems.setFields')
         )
       )
       .all()[0];
@@ -593,7 +672,7 @@ describe('Definition of Done (core plan)', () => {
       modelId: model?.id,
       instructions: 'Set the claim amount.',
       toolIds: [toolId],
-      permissions: { native: ['mentat.ticket.fields.setMany'] }
+      permissions: { native: ['workflowItems.setFields'] }
     });
 
     const state = workflow.states[1];
@@ -603,10 +682,11 @@ describe('Definition of Done (core plan)', () => {
       autoExecute: true
     });
 
-    const ticket = await ok<{ ticket: { id: string } }>('POST', '/tickets', {
+    const ticket = await startWork({
       workflowId: workflow.workflow.id,
+      objectTypeId,
       stateId: state?.id,
-      title: 'Needs approval'
+      displayName: 'Needs approval'
     });
 
     // The mock model answers with a field-set tool call, which must be gated.
@@ -628,7 +708,7 @@ describe('Definition of Done (core plan)', () => {
     const run = handle.db
       .select()
       .from(agentRuns)
-      .where(eq(agentRuns.ticketId, ticket.ticket.id))
+      .where(eq(agentRuns.workflowItemId, ticket.workflowItem.id))
       .all()[0];
     expect(run?.status).toBe('awaiting_approval');
 
@@ -654,7 +734,7 @@ describe('Definition of Done (core plan)', () => {
 
     const fields = await ok<{ fields: Record<string, unknown> }>(
       'GET',
-      `/tickets/${ticket.ticket.id}/fields`
+      `/workflow-items/${ticket.workflowItem.id}/fields`
     );
     expect(fields.fields.risk_category).toBe('high');
 
@@ -663,18 +743,19 @@ describe('Definition of Done (core plan)', () => {
   });
 
   test('17. filter and save a view', async () => {
-    const workflow = await ok<{ workflow: { id: string } }>('POST', '/workflows', {
-      name: 'Filtered'
-    });
-    await ok('POST', '/tickets', {
+    const objectTypeId = await makeObjectType('Ticket');
+    const workflow = await makeWorkflow({ name: 'Filtered', objectTypeId });
+    await startWork({
       workflowId: workflow.workflow.id,
-      title: 'High',
-      priority: 'high'
+      objectTypeId,
+      displayName: 'High',
+      structuredData: { priority: 'high' }
     });
-    await ok('POST', '/tickets', {
+    await startWork({
       workflowId: workflow.workflow.id,
-      title: 'Low',
-      priority: 'low'
+      objectTypeId,
+      displayName: 'Low',
+      structuredData: { priority: 'low' }
     });
 
     const filter = {
@@ -684,15 +765,20 @@ describe('Definition of Done (core plan)', () => {
       operator: 'eq',
       value: 'high'
     };
-    const page = await ok<{ rows: Array<{ ticket: { title: string } }>; total: number }>(
+    const page = await ok<{ rows: Array<{ id: string }>; total: number }>(
       'GET',
-      `/tickets?filter=${encodeURIComponent(JSON.stringify(filter))}`
+      `/workflow-items?filter=${encodeURIComponent(JSON.stringify(filter))}`
     );
-    expect(page.rows.map((row) => row.ticket.title)).toEqual(['High']);
+    expect(page.rows).toHaveLength(1);
+    const high = await ok<{ record: { displayName: string } }>(
+      'GET',
+      `/workflow-items/${page.rows[0]!.id}`
+    );
+    expect(high.record.displayName).toBe('High');
 
     const view = await ok<{ view: { id: string; name: string } }>('POST', '/views', {
       name: 'High priority',
-      scope: 'tickets',
+      scope: 'workflowItems',
       filter,
       sort: [{ field: 'updatedAt', direction: 'desc' }],
       isPinned: true
@@ -741,11 +827,8 @@ describe('Definition of Done (core plan)', () => {
   });
 
   test('12. trigger work by webhook and by schedule', async () => {
-    const workflow = await ok<{ workflow: { id: string }; states: Array<{ id: string }> }>(
-      'POST',
-      '/workflows',
-      { name: 'Intake' }
-    );
+    const objectTypeId = await makeObjectType('Intake');
+    const workflow = await makeWorkflow({ name: 'Intake', objectTypeId });
     // A mapping may only target fields the workflow actually configures, so the
     // fixture declares them — mapping to an unknown key is a validation error.
     const customerField = await ok<{ field: { id: string } }>('POST', '/fields', {
@@ -796,7 +879,7 @@ describe('Definition of Done (core plan)', () => {
     expect(delivery.status).toBeGreaterThanOrEqual(200);
     expect(delivery.status).toBeLessThan(300);
 
-    // Redelivery must be recognised as a duplicate, not create a second ticket.
+    // Redelivery must be recognised as a duplicate, not create a second Record.
     const redelivery = await dispatchApi({
       db: handle.db,
       method: 'POST',
@@ -826,10 +909,10 @@ describe('Definition of Done (core plan)', () => {
 
     const created = handle.db
       .select()
-      .from(ticketsTable)
-      .where(eq(ticketsTable.workspaceId, actor.workspaceId))
+      .from(recordsTable)
+      .where(eq(recordsTable.workspaceId, actor.workspaceId))
       .all()
-      .filter((ticket) => ticket.title === 'Quote request');
+      .filter((record) => record.displayName === 'Quote request');
     expect(created).toHaveLength(1);
 
     // Cron: define a schedule and tick the scheduler.
@@ -851,19 +934,17 @@ describe('Definition of Done (core plan)', () => {
   });
 
   test('18. transient failures are survived through retries', async () => {
-    const workflow = await ok<{ workflow: { id: string }; states: Array<{ id: string }> }>(
-      'POST',
-      '/workflows',
-      { name: 'Retries', template: 'basic' }
-    );
+    const objectTypeId = await makeObjectType('Retry');
+    const workflow = await makeWorkflow({ name: 'Retries', template: 'basic', objectTypeId });
 
     // A job that fails until its third attempt, then succeeds.
     const tool = await ok<{ native: Array<{ key: string }> }>('GET', '/tools');
     void tool;
 
-    const ticket = await ok<{ ticket: { id: string } }>('POST', '/tickets', {
+    const ticket = await startWork({
       workflowId: workflow.workflow.id,
-      title: 'Retry me'
+      objectTypeId,
+      displayName: 'Retry me'
     });
 
     // A dead-letter check: a non-retryable failure lands in `failed`, not `pending`.
@@ -888,7 +969,7 @@ describe('Definition of Done (core plan)', () => {
       type: 'maintenance.reap',
       payload: {},
       maxAttempts: 5,
-      ticketId: ticket.ticket.id
+      workflowItemId: ticket.workflowItem.id
     });
 
     // Drain repeatedly: each failure schedules a delayed retry, so drive the clock
@@ -926,11 +1007,17 @@ describe('Definition of Done (files and agent-created work)', () => {
   async function ingest(
     name: string,
     contents: string,
-    options: { ticketId?: string; sourceType?: string; reference?: string } = {}
+    options: {
+      workflowItemId?: string;
+      recordId?: string;
+      sourceType?: string;
+      reference?: string;
+    } = {}
   ) {
     const form = new FormData();
     form.set('file', new File([contents], name, { type: 'text/plain' }));
-    if (options.ticketId) form.set('ticketId', options.ticketId);
+    if (options.workflowItemId) form.set('workflowItemId', options.workflowItemId);
+    if (options.recordId) form.set('recordId', options.recordId);
     if (options.sourceType) form.set('sourceType', options.sourceType);
     if (options.reference) form.set('reference', options.reference);
 
@@ -988,11 +1075,8 @@ describe('Definition of Done (files and agent-created work)', () => {
   });
 
   test('5-7. automatic attachment from an event, durable processing, version-aware reuse', async () => {
-    const workflow = await ok<{ workflow: { id: string }; states: Array<{ id: string }> }>(
-      'POST',
-      '/workflows',
-      { name: 'Intake' }
-    );
+    const objectTypeId = await makeObjectType('Intake');
+    const workflow = await makeWorkflow({ name: 'Intake', objectTypeId });
     const trigger = await ok<{ trigger: { id: string; webhookToken: string } }>(
       'POST',
       '/triggers',
@@ -1073,9 +1157,8 @@ describe('Definition of Done (files and agent-created work)', () => {
   });
 
   test('8-9. define workflow file fields, correct them, and keep history', async () => {
-    const workflow = await ok<{ workflow: { id: string } }>('POST', '/workflows', {
-      name: 'Claims'
-    });
+    const objectTypeId = await makeObjectType('Claim');
+    const workflow = await makeWorkflow({ name: 'Claims', objectTypeId });
     const field = await ok<{ field: { id: string } }>('POST', '/fields', {
       key: 'document_type',
       name: 'Document Type',
@@ -1156,59 +1239,52 @@ describe('Definition of Done (files and agent-created work)', () => {
     expect(Array.isArray(Array.isArray(search) ? search : search.hits)).toBe(true);
   });
 
-  test('12. one file linked to several tickets; unlinking keeps the file', async () => {
-    const workflow = await ok<{ workflow: { id: string } }>('POST', '/workflows', {
-      name: 'Shared'
-    });
-    const first = await ok<{ ticket: { id: string } }>('POST', '/tickets', {
+  test('12. one file linked to several work items; unlinking keeps the file', async () => {
+    const objectTypeId = await makeObjectType('Ticket');
+    const workflow = await makeWorkflow({ name: 'Shared', objectTypeId });
+    const first = await startWork({
       workflowId: workflow.workflow.id,
-      title: 'Ticket A'
+      objectTypeId,
+      displayName: 'Ticket A'
     });
-    const second = await ok<{ ticket: { id: string } }>('POST', '/tickets', {
+    const second = await startWork({
       workflowId: workflow.workflow.id,
-      title: 'Ticket B'
+      objectTypeId,
+      displayName: 'Ticket B'
     });
 
     const file = await ingest('shared-evidence.txt', 'Evidence used by two claims', {
-      ticketId: first.ticket.id
+      workflowItemId: first.workflowItem.id
     });
-    await ok('POST', `/tickets/${second.ticket.id}/files`, { fileId: file.body.fileId });
+    await ok('POST', `/workflow-items/${second.workflowItem.id}/files`, {
+      fileId: file.body.fileId
+    });
 
-    const ticketB = await ok<{ files: Array<{ id: string }> }>(
+    const secondDetail = await ok<{ files: Array<{ id: string }> }>(
       'GET',
-      `/tickets/${second.ticket.id}`
+      `/workflow-items/${second.workflowItem.id}`
     );
-    expect(ticketB.files.map((entry) => entry.id)).toContain(file.body.fileId);
+    expect(secondDetail.files.map((entry) => entry.id)).toContain(file.body.fileId);
 
-    await ok('DELETE', `/tickets/${first.ticket.id}/files/${file.body.fileId}`);
+    await ok('DELETE', `/workflow-items/${first.workflowItem.id}/files/${file.body.fileId}`);
     const stillThere = await ok<{ file: { id: string } }>('GET', `/files/${file.body.fileId}`);
     expect(stillThere.file.id).toBe(file.body.fileId);
   });
 
-  test('16-18. a human and an agent create tickets, and an agent decomposes work', async () => {
-    const intake = await ok<{ workflow: { id: string }; states: Array<{ id: string }> }>(
-      'POST',
-      '/workflows',
-      { name: 'Intake' }
-    );
-    const claims = await ok<{ workflow: { id: string }; states: Array<{ id: string }> }>(
-      'POST',
-      '/workflows',
-      { name: 'Claims' }
-    );
+  test('16-18. a human and an agent create work, and an agent decomposes work', async () => {
+    const objectTypeId = await makeObjectType('Record');
+    const intake = await makeWorkflow({ name: 'Intake', objectTypeId });
+    const claims = await makeWorkflow({ name: 'Claims', objectTypeId });
 
     // Manual creation, as a human.
-    const parent = await ok<{ ticket: { id: string } }>('POST', '/tickets', {
+    const parent = await startWork({
       workflowId: intake.workflow.id,
-      title: 'Inbound request with three parts'
+      objectTypeId,
+      displayName: 'Inbound request with three parts'
     });
 
-    // Agent creation: driven through the native tool, with the agent's own actor.
-    const { hasTicketService, ticketService } = await import(
-      '../../../src/lib/server/tickets/contracts'
-    );
-    expect(hasTicketService()).toBe(true);
-
+    // Agent creation: driven through the API with the agent's own actor and
+    // permissions, exactly as the native tool would.
     const agentActor = createActorContext({
       workspaceId: actor.workspaceId,
       actorType: 'agent',
@@ -1216,90 +1292,95 @@ describe('Definition of Done (files and agent-created work)', () => {
       actorLabel: 'Triage Agent',
       role: 'agent',
       permissions: new Set([
-        'ticket:read',
-        'ticket:write',
-        'ticket:create',
-        'ticket:transfer',
-        'mentat.ticket.get',
-        'mentat.ticket.transfer',
-        'tickets.create'
+        'workflow_item:read',
+        'workflow_item:write',
+        'workflow_item:create',
+        'workflow_item:transfer',
+        'record:read',
+        'record:create'
       ])
     });
 
-    const children: Array<{ id: string }> = [];
     for (const title of ['Part one', 'Part two', 'Part three']) {
-      const child = await ticketService().create(agentActor, {
+      await startWork({
         workflowId: claims.workflow.id,
-        title,
-        parentTicketId: parent.ticket.id,
-        provenance: { sourceType: 'agent_run', sourceLabel: 'Triage Agent' }
+        objectTypeId,
+        displayName: title,
+        parentWorkflowItemId: parent.workflowItem.id,
+        asActor: agentActor
       });
-      children.push({ id: child.id });
     }
 
-    const detail = await ok<{ relationships: Array<{ type: string; ticket: { id: string } }> }>(
-      'GET',
-      `/tickets/${parent.ticket.id}`
-    );
-    expect(detail.relationships.filter((entry) => entry.type === 'child')).toHaveLength(3);
+    const relationships = handle.db
+      .select()
+      .from(workflowItemRelationships)
+      .where(eq(workflowItemRelationships.toWorkflowItemId, parent.workflowItem.id))
+      .all();
+    expect(relationships.filter((entry) => entry.type === 'parent')).toHaveLength(3);
 
     // An agent moving the same work item between workflows must use transfer, not copy.
-    const transferable = await ok<{ ticket: { id: string } }>('POST', '/tickets', {
+    const transferable = await startWork({
       workflowId: intake.workflow.id,
-      title: 'Route me'
+      objectTypeId,
+      displayName: 'Route me'
     });
-    const transferred = await ticketService().transfer(agentActor, transferable.ticket.id, {
-      targetWorkflowId: claims.workflow.id,
-      reason: 'Belongs with the claims team'
-    });
-    expect(transferred.workflowId).toBe(claims.workflow.id);
+    const transferred = await ok<{ workflowItem: { id: string; recordId: string } }>(
+      'POST',
+      `/workflow-items/${transferable.workflowItem.id}/transfer`,
+      { targetWorkflowId: claims.workflow.id, reason: 'Belongs with the claims team' },
+      agentActor
+    );
 
-    const moved = handle.db
-      .select()
-      .from(ticketsTable)
-      .where(eq(ticketsTable.id, transferable.ticket.id))
-      .all()[0];
-    // Identity is preserved: same row, same key, new workflow.
-    expect(moved?.id).toBe(transferable.ticket.id);
-    expect(moved?.workflowId).toBe(claims.workflow.id);
+    const moved = await ok<{ workflowId: string; record: { id: string; key: string | null } }>(
+      'GET',
+      `/workflow-items/${transferred.workflowItem.id}`
+    );
+    // Identity is preserved: the same Record, now in the target workflow.
+    expect(moved.workflowId).toBe(claims.workflow.id);
+    expect(moved.record.id).toBe(transferable.workflowItem.recordId);
   });
 
-  test('19. deleting a file never destroys another ticket’s content', async () => {
-    const workflow = await ok<{ workflow: { id: string } }>('POST', '/workflows', {
-      name: 'Lifecycle'
-    });
-    const ticket = await ok<{ ticket: { id: string } }>('POST', '/tickets', {
+  test('19. deleting a file never destroys another work item’s content', async () => {
+    const objectTypeId = await makeObjectType('Ticket');
+    const workflow = await makeWorkflow({ name: 'Lifecycle', objectTypeId });
+    const ticket = await startWork({
       workflowId: workflow.workflow.id,
-      title: 'Holds a file'
+      objectTypeId,
+      displayName: 'Holds a file'
     });
-    const file = await ingest('deletable.txt', 'Temporary content', { ticketId: ticket.ticket.id });
+    const file = await ingest('deletable.txt', 'Temporary content', {
+      workflowItemId: ticket.workflowItem.id
+    });
 
     await ok('DELETE', `/files/${file.body.fileId}`);
     const gone = await call('GET', `/files/${file.body.fileId}`);
     expect(gone.status).toBe(404);
 
-    // The ticket survives and reports no files rather than an error.
-    const detail = await ok<{ files: unknown[] }>('GET', `/tickets/${ticket.ticket.id}`);
+    // The work item survives and reports no files rather than an error.
+    const detail = await ok<{ files: unknown[] }>(
+      'GET',
+      `/workflow-items/${ticket.workflowItem.id}`
+    );
     expect(detail.files).toHaveLength(0);
   });
 
   test('20. every mutation left an audit trail', async () => {
-    const workflow = await ok<{ workflow: { id: string } }>('POST', '/workflows', {
-      name: 'Audited'
-    });
-    const ticket = await ok<{ ticket: { id: string } }>('POST', '/tickets', {
+    const objectTypeId = await makeObjectType('Ticket');
+    const workflow = await makeWorkflow({ name: 'Audited', objectTypeId });
+    const ticket = await startWork({
       workflowId: workflow.workflow.id,
-      title: 'Audited work'
+      objectTypeId,
+      displayName: 'Audited work'
     });
-    await ok('POST', `/tickets/${ticket.ticket.id}/notes`, { body: 'A note' });
+    await ok('POST', `/workflow-items/${ticket.workflowItem.id}/notes`, { body: 'A note' });
     await ok('PUT', '/secrets', {}).catch(() => undefined);
 
     const ledger = await ok<{ events: Array<{ action: string }> }>(
       'GET',
-      `/audit?ticketId=${ticket.ticket.id}`
+      `/audit?workflowItemId=${ticket.workflowItem.id}`
     );
     const actions = ledger.events.map((event) => event.action);
-    expect(actions).toContain('ticket.created');
-    expect(actions).toContain('ticket.note.added');
+    expect(actions).toContain('workflow_item.created');
+    expect(actions).toContain('workflow_item.note.added');
   });
 });

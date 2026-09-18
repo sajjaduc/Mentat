@@ -10,7 +10,7 @@
 import type { WorkEvent } from '$ui/work/types';
 
 export interface EventStreamOptions {
-  ticketId?: string;
+  workflowItemId?: string;
   runId?: string;
   /** Highest sequence already rendered; the server replays everything after it. */
   since?: number;
@@ -37,7 +37,7 @@ function parseEvent(raw: string): WorkEvent | null {
       seq: 0,
       type,
       runId: null,
-      ticketId: null,
+      workflowItemId: null,
       data: { replayed: typeof record.replayed === 'number' ? record.replayed : 0 },
       createdAt: Date.now()
     };
@@ -46,7 +46,7 @@ function parseEvent(raw: string): WorkEvent | null {
     seq: typeof record.seq === 'number' ? record.seq : 0,
     type,
     runId: typeof record.runId === 'string' ? record.runId : null,
-    ticketId: typeof record.ticketId === 'string' ? record.ticketId : null,
+    workflowItemId: typeof record.workflowItemId === 'string' ? record.workflowItemId : null,
     data: record.data,
     createdAt: typeof record.createdAt === 'number' ? record.createdAt : Date.now()
   };
@@ -63,7 +63,7 @@ export function openEventStream(options: EventStreamOptions): () => void {
   const connect = () => {
     if (closed) return;
     const params = new URLSearchParams();
-    if (options.ticketId) params.set('ticketId', options.ticketId);
+    if (options.workflowItemId) params.set('workflowItemId', options.workflowItemId);
     if (options.runId) params.set('runId', options.runId);
     params.set('since', String(lastSeq));
     source = new EventSource(`/api/events?${params.toString()}`);

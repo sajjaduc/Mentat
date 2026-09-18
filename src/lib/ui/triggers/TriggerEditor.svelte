@@ -262,7 +262,7 @@ async function save() {
 <div class="space-y-5">
   <Section
     title="Basics"
-    description="A trigger normalizes an inbound signal into a ticket. Name it for the signal, not the integration."
+    description="A trigger normalizes an inbound signal into a work item. Name it for the signal, not the integration."
   >
     <div class="grid gap-4 md:grid-cols-2">
       <Input
@@ -289,7 +289,7 @@ async function save() {
       label="Description"
       value={description}
       rows={2}
-      placeholder="Creates a ticket from each inbound support email."
+      placeholder="Creates a work item from each inbound support email."
       oninput={(event) => (description = event.currentTarget.value)}
     />
 
@@ -342,7 +342,7 @@ async function save() {
     <Toggle
       bind:checked={upsertOnDedupe}
       label="Update on duplicate"
-      hint="When a dedupe key matches an existing ticket, refresh that ticket instead of skipping the delivery."
+      hint="When a dedupe key matches an existing work item, refresh that work item instead of skipping the delivery."
     />
   </Section>
 

@@ -4,54 +4,41 @@
  * The plan is explicit that not every note, field and document should be injected
  * into every model call (§30 context control, follow-up §18). Assembly is driven
  * by the *state's* `AgentContextConfig`, so a state can request exactly the
- * ticket fields, recent notes, linked-file summaries and selected file fields it
+ * record fields, recent notes, linked-file summaries and selected file fields it
  * needs — and nothing else.
  *
- * Secrets are never candidates for inclusion: this module only reads ticket
+ * Secrets are never candidates for inclusion: this module only reads record
  * fields, notes, file summaries and history. Environment variables and secret
  * values are resolved separately, inside execution, and are never rendered into a
  * prompt.
  */
-import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull } from 'drizzle-orm';
 import { assembleSkillInstructions } from '../agents/service';
+import { errors } from '../core/errors';
 import { createRedactor } from '../core/redaction';
 import { registeredSecretValues } from '../core/secret-registry';
 import type { Executor } from '../db/client';
 import {
   type AgentContextConfig,
   type AgentSnapshot,
-  fieldDefinitions,
-  fieldValueHistory,
-  fileExtractedContent,
-  fileFieldValues,
   files,
-  type Ticket,
-  ticketFiles,
-  ticketNotes,
-  ticketStateHistory
+  fileWorkflowItems,
+  recordNotes,
+  records,
+  workflowItemNotes,
+  workflowItemStateHistory,
+  workflowItems
 } from '../db/schema';
 import type { ChatMessage } from '../providers/types';
-import { fieldValuesByKey } from '../tickets/values';
+import { buildRecordContract, describeRecordContract } from '../records/contract';
+import { requireObjectType } from '../records/object-types';
+import { workflowItemFieldValuesByKey } from '../workflow-items/fields';
 
 export interface AgentRunContext {
   messages: ChatMessage[];
   /** Redacted snapshot persisted on the run for inspection. */
   snapshot: Record<string, unknown>;
   sections: string[];
-}
-
-export interface BuildContextOptions {
-  workspaceId: string;
-  ticket: Ticket;
-  workflowId: string;
-  stateId: string;
-  stateName: string;
-  agent: AgentSnapshot;
-  config: AgentContextConfig | null;
-  /** Extra operator guidance appended to the system prompt (for example a gate note). */
-  extraInstructions?: string | null;
-  /** Cap for extracted content, in characters. */
-  maxFileContentChars?: number;
 }
 
 const DEFAULT_CONFIG: AgentContextConfig = {
@@ -66,17 +53,70 @@ const DEFAULT_CONFIG: AgentContextConfig = {
   includeStateHistory: false
 };
 
-export async function buildAgentRunContext(
+// ---------------------------------------------------------------------------
+// Record-bound runs (ADR-0021 / ADR-0023)
+// ---------------------------------------------------------------------------
+
+export interface BuildRecordContextOptions {
+  workspaceId: string;
+  workflowItemId: string;
+  recordId: string;
+  workflowId: string;
+  stateId: string;
+  stateName: string;
+  agent: AgentSnapshot;
+  config: AgentContextConfig | null;
+  extraInstructions?: string | null;
+  /** When set, the run must finish with a validated submission via this tool. */
+  requiredSubmission?: { toolKey?: string; allowWorkflowChange?: boolean } | null;
+}
+
+/**
+ * Context for a run over a WorkflowItem of any Object Type. Input is the record
+ * plus its effective schema and, when the state enforces one, the submission
+ * contract the agent must satisfy.
+ */
+export async function buildRecordRunContext(
   db: Executor,
-  options: BuildContextOptions
+  options: BuildRecordContextOptions
 ): Promise<AgentRunContext> {
   const config = { ...DEFAULT_CONFIG, ...(options.config ?? {}) };
+  const item = db
+    .select()
+    .from(workflowItems)
+    .where(
+      and(
+        eq(workflowItems.workspaceId, options.workspaceId),
+        eq(workflowItems.id, options.workflowItemId)
+      )
+    )
+    .all()[0];
+  if (!item) {
+    throw errors.precondition('The run references a work item that no longer exists');
+  }
+  const record = db
+    .select()
+    .from(records)
+    .where(and(eq(records.workspaceId, options.workspaceId), eq(records.id, options.recordId)))
+    .all()[0];
+  if (!record) {
+    throw errors.precondition('The run references a record that no longer exists');
+  }
+  const objectType = requireObjectType(db, options.workspaceId, record.objectTypeId);
+  const contract = await buildRecordContract(
+    db,
+    options.workspaceId,
+    record.objectTypeId,
+    options.workflowId
+  );
+  const values = workflowItemFieldValuesByKey(db, options.workspaceId, item.id, record.id);
+
   const sections: string[] = [];
   const systemParts: string[] = [];
 
   systemParts.push(
     `You are ${options.agent.name}, an agent working inside Mentat. ` +
-      `You are handling ticket ${options.ticket.key} in the state "${options.stateName}".`
+      `You are handling ${objectType.name} "${record.displayName}" in the state "${options.stateName}".`
   );
   if (options.agent.instructions.trim().length > 0) {
     systemParts.push(options.agent.instructions.trim());
@@ -85,97 +125,126 @@ export async function buildAgentRunContext(
     systemParts.push(options.extraInstructions.trim());
   }
 
-  // Skills are instructions, not executable plugins.
   const skillInstructions = assembleSkillInstructions(
     db,
     options.workspaceId,
     options.agent.skillIds ?? []
   );
   if (skillInstructions.length > 0) {
-    const rendered = skillInstructions
-      .map((skill) => `## Skill: ${skill.name} (v${skill.version})\n${skill.instructions}`)
-      .join('\n\n');
-    systemParts.push(rendered);
+    systemParts.push(
+      skillInstructions
+        .map((skill) => `## Skill: ${skill.name} (v${skill.version})\n${skill.instructions}`)
+        .join('\n\n')
+    );
     sections.push('skills');
+  }
+
+  if (options.requiredSubmission) {
+    const toolKey = options.requiredSubmission.toolKey ?? 'workflowItems.submit';
+    const workflowRule =
+      options.requiredSubmission.allowWorkflowChange === false
+        ? 'Do not set workflow.workflowId: this state keeps the work in its current workflow.'
+        : 'If the work belongs in a different workflow, set workflow.workflowId — the record must then match that workflow.';
+    systemParts.push(
+      `You must finish by calling the \`${toolKey}\` tool exactly once.\n` +
+        '- `record`: the complete record field values, validated against the schema below.\n' +
+        '- `workflow`: the next step, either `{ stateId }` or `{ transitionId }`, with an optional `reason` and `note`.\n' +
+        workflowRule
+    );
   }
 
   systemParts.push(
     'Use the provided tools to inspect and change work. Only call tools you have ' +
-      'been given. Never invent ticket ids, field keys or state ids. When you are ' +
-      'finished, state the outcome plainly.'
+      'been given. Never invent ids or field keys. A submission that does not match ' +
+      'the record contract is rejected with field issues and must be corrected.'
   );
 
   const userParts: string[] = [];
-
-  if (config.includeTitle !== false) {
-    userParts.push(`# Ticket ${options.ticket.key}\n${options.ticket.title}`);
-    sections.push('title');
-  }
-  if (config.includeDescription !== false && options.ticket.description) {
-    userParts.push(`## Description\n${options.ticket.description}`);
-    sections.push('description');
-  }
-
-  const contextFields = await selectedFields(
-    db,
-    options.workspaceId,
-    options.ticket.id,
-    config.fieldKeys ?? []
+  userParts.push(
+    `# ${objectType.name} ${record.displayName}` +
+      (record.key ? ` (${record.key})` : '') +
+      `\nObject Type: ${objectType.key}`
   );
-  if (contextFields.length > 0) {
-    userParts.push(
-      `## Fields\n${contextFields.map((entry) => `- ${entry.name} (${entry.key}): ${renderValue(entry.value)}`).join('\n')}`
-    );
+
+  const fieldLines = contract.fields.map((field) => {
+    const value = values[field.key];
+    const requirement = field.required ? 'required' : 'optional';
+    const provenance = field.source === 'workflow' ? ', workflow overlay' : '';
+    return `- ${field.name} (${field.key}): ${renderValue(value)} [${field.type}, ${requirement}${provenance}]`;
+  });
+  if (fieldLines.length > 0) {
+    userParts.push(`## Record fields\n${fieldLines.join('\n')}`);
     sections.push('fields');
   }
 
-  if ((config.includeRecentNotes ?? 0) > 0) {
-    const noteRows = db
+  if (config.includeRecordSchema !== false) {
+    userParts.push(`## Record contract\n${describeRecordContract(contract)}`);
+    sections.push('record_contract');
+  }
+
+  const noteLimit = config.includeRecentNotes ?? 5;
+  if (noteLimit > 0) {
+    const durable = db
       .select()
-      .from(ticketNotes)
+      .from(recordNotes)
       .where(
         and(
-          eq(ticketNotes.workspaceId, options.workspaceId),
-          eq(ticketNotes.ticketId, options.ticket.id),
-          isNull(ticketNotes.deletedAt)
+          eq(recordNotes.workspaceId, options.workspaceId),
+          eq(recordNotes.recordId, record.id),
+          isNull(recordNotes.deletedAt)
         )
       )
-      .orderBy(desc(ticketNotes.createdAt))
-      .limit(config.includeRecentNotes ?? 0)
-      .all();
-    if (noteRows.length > 0) {
-      const ordered = [...noteRows].reverse();
+      .orderBy(desc(recordNotes.createdAt))
+      .limit(noteLimit)
+      .all()
+      .reverse();
+    const work = db
+      .select()
+      .from(workflowItemNotes)
+      .where(
+        and(
+          eq(workflowItemNotes.workspaceId, options.workspaceId),
+          eq(workflowItemNotes.workflowItemId, item.id),
+          isNull(workflowItemNotes.deletedAt)
+        )
+      )
+      .orderBy(desc(workflowItemNotes.createdAt))
+      .limit(noteLimit)
+      .all()
+      .reverse();
+    if (durable.length > 0) {
       userParts.push(
-        `## Recent notes\n${ordered
-          .map((note) => `- [${note.authorLabel ?? note.authorType}] ${note.body}`)
-          .join('\n')}`
+        `## Record notes\n${durable.map((note) => `- [${note.authorLabel ?? note.authorType}] ${note.body}`).join('\n')}`
       );
-      sections.push('notes');
+      sections.push('record_notes');
+    }
+    if (work.length > 0) {
+      userParts.push(
+        `## Work notes\n${work.map((note) => `- [${note.authorLabel ?? note.authorType}] ${note.body}`).join('\n')}`
+      );
+      sections.push('work_notes');
     }
   }
 
-  // Two separate switches, because they answer different questions and cost
-  // different amounts of context: where the ticket has been, and what its data used
-  // to say.
   if (config.includeStateHistory) {
     const history = db
-      .select({
-        stateName: ticketStateHistory.stateName,
-        enteredAt: ticketStateHistory.enteredAt,
-        exitedAt: ticketStateHistory.exitedAt
-      })
-      .from(ticketStateHistory)
-      .where(eq(ticketStateHistory.ticketId, options.ticket.id))
-      .orderBy(asc(ticketStateHistory.enteredAt))
+      .select()
+      .from(workflowItemStateHistory)
+      .where(
+        and(
+          eq(workflowItemStateHistory.workspaceId, options.workspaceId),
+          eq(workflowItemStateHistory.workflowItemId, item.id)
+        )
+      )
+      .orderBy(asc(workflowItemStateHistory.enteredAt))
       .all();
     if (history.length > 0) {
       userParts.push(
         `## State history\n${history
           .map(
-            (row) =>
-              `- ${row.stateName} entered ${new Date(row.enteredAt).toISOString()}${
-                row.exitedAt ? ` left ${new Date(row.exitedAt).toISOString()}` : ' (current)'
-              }`
+            (entry) =>
+              `- ${entry.stateName}: entered ${new Date(entry.enteredAt).toISOString()}` +
+              (entry.exitedAt ? `, left ${new Date(entry.exitedAt).toISOString()}` : ' (current)')
           )
           .join('\n')}`
       );
@@ -183,228 +252,55 @@ export async function buildAgentRunContext(
     }
   }
 
-  if (config.includeHistory) {
-    const changes = db
-      .select({
-        key: fieldDefinitions.key,
-        name: fieldDefinitions.name,
-        previous: fieldValueHistory.previousValue,
-        next: fieldValueHistory.newValue,
-        actorLabel: fieldValueHistory.actorLabel,
-        source: fieldValueHistory.source,
-        createdAt: fieldValueHistory.createdAt
-      })
-      .from(fieldValueHistory)
-      .innerJoin(fieldDefinitions, eq(fieldDefinitions.id, fieldValueHistory.fieldDefinitionId))
+  if (config.includeFileSummaries !== false) {
+    const linked = db
+      .select({ link: fileWorkflowItems, file: files })
+      .from(fileWorkflowItems)
+      .innerJoin(files, eq(files.id, fileWorkflowItems.fileId))
       .where(
         and(
-          eq(fieldValueHistory.workspaceId, options.workspaceId),
-          eq(fieldValueHistory.ownerType, 'ticket'),
-          eq(fieldValueHistory.ownerId, options.ticket.id)
+          eq(fileWorkflowItems.workspaceId, options.workspaceId),
+          eq(fileWorkflowItems.workflowItemId, item.id),
+          isNull(fileWorkflowItems.removedAt),
+          isNull(files.deletedAt)
         )
       )
-      .orderBy(asc(fieldValueHistory.createdAt))
-      .limit(20)
       .all();
-    if (changes.length > 0) {
+    if (linked.length > 0) {
       userParts.push(
-        `## Field history\n${changes
-          .map(
-            (row) =>
-              `- ${row.name}: ${renderValue(row.previous)} → ${renderValue(row.next)} (${row.actorLabel ?? row.source ?? 'system'})`
+        `## Linked files\n${linked
+          .map((entry) =>
+            entry.file.summary
+              ? `- ${entry.file.originalFilename}: ${entry.file.summary}`
+              : `- ${entry.file.originalFilename} (${entry.file.mimeType})`
           )
           .join('\n')}`
       );
-      sections.push('field_history');
+      sections.push('files');
     }
   }
 
-  const fileContext = await selectedFileContext(
-    db,
-    options.workspaceId,
-    options.ticket.id,
-    config,
-    {
-      maxChars: options.maxFileContentChars ?? 8000
-    }
-  );
-  if (fileContext.rendered) {
-    userParts.push(fileContext.rendered);
-    sections.push('files');
-  }
-
-  const messages: ChatMessage[] = [
-    { role: 'system', content: systemParts.join('\n\n') },
-    { role: 'user', content: userParts.join('\n\n') }
-  ];
-
-  // Defence in depth: if any registered secret value somehow reached the context,
-  // mask it before it can be sent to a provider or persisted.
   const redactor = createRedactor(registeredSecretValues());
-  const redactedMessages = messages.map((message) => ({
-    ...message,
-    content: redactor.string(message.content)
-  }));
-
+  const system = redactor.string(systemParts.join('\n\n'));
+  const user = redactor.string(userParts.join('\n\n'));
   return {
-    messages: redactedMessages,
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: user }
+    ],
     snapshot: {
       sections,
-      ticketKey: options.ticket.key,
+      recordId: record.id,
+      workflowItemId: item.id,
+      objectTypeId: objectType.id,
       state: options.stateName,
-      messageCount: redactedMessages.length,
-      // The snapshot stores the *redacted* prompt so an operator can audit what the
-      // model saw without the snapshot itself becoming a leak vector.
-      system: redactedMessages[0]?.content,
-      user: redactedMessages[1]?.content,
+      messageCount: 2,
+      system,
+      user,
       contextConfig: config
     },
     sections
   };
-}
-
-async function selectedFields(
-  db: Executor,
-  workspaceId: string,
-  ticketId: string,
-  fieldKeys: string[]
-): Promise<Array<{ key: string; name: string; value: unknown }>> {
-  if (fieldKeys.length === 0) return [];
-  const definitions = db
-    .select()
-    .from(fieldDefinitions)
-    .where(
-      and(
-        eq(fieldDefinitions.workspaceId, workspaceId),
-        eq(fieldDefinitions.scope, 'ticket'),
-        inArray(fieldDefinitions.key, fieldKeys)
-      )
-    )
-    .all();
-  if (definitions.length === 0) return [];
-  const values = fieldValuesByKey(db, workspaceId, ticketId);
-  return definitions
-    .filter((definition) => values[definition.key] !== undefined)
-    .map((definition) => ({
-      key: definition.key,
-      name: definition.name,
-      value: values[definition.key]
-    }));
-}
-
-async function selectedFileContext(
-  db: Executor,
-  workspaceId: string,
-  ticketId: string,
-  config: AgentContextConfig,
-  options: { maxChars: number }
-): Promise<{ rendered: string | null }> {
-  const wantsSummaries = config.includeFileSummaries ?? false;
-  const wantsFields = (config.includeFileFields ?? []).length > 0;
-  const wantsContent = config.includeFullFileContent ?? false;
-  if (!wantsSummaries && !wantsFields && !wantsContent) return { rendered: null };
-
-  const links = db
-    .select({
-      id: files.id,
-      filename: files.originalFilename,
-      mimeType: files.mimeType,
-      summary: files.summary,
-      status: files.status
-    })
-    .from(ticketFiles)
-    .innerJoin(files, eq(files.id, ticketFiles.fileId))
-    .where(
-      and(
-        eq(ticketFiles.workspaceId, workspaceId),
-        eq(ticketFiles.ticketId, ticketId),
-        isNull(ticketFiles.removedAt),
-        isNull(files.deletedAt)
-      )
-    )
-    .all();
-  if (links.length === 0) return { rendered: null };
-
-  const fileIds = links.map((link) => link.id);
-  const fieldValues = wantsFields
-    ? db
-        .select({
-          fileId: fileFieldValues.fileId,
-          definition: fieldDefinitions,
-          value: fileFieldValues
-        })
-        .from(fileFieldValues)
-        .innerJoin(fieldDefinitions, eq(fieldDefinitions.id, fileFieldValues.fieldDefinitionId))
-        .where(
-          and(
-            eq(fileFieldValues.workspaceId, workspaceId),
-            inArray(fileFieldValues.fileId, fileIds),
-            inArray(fieldDefinitions.key, config.includeFileFields ?? [])
-          )
-        )
-        .all()
-    : [];
-
-  const contents = wantsContent
-    ? db
-        .select({
-          fileId: fileExtractedContent.fileId,
-          text: fileExtractedContent.text,
-          createdAt: fileExtractedContent.createdAt
-        })
-        .from(fileExtractedContent)
-        .where(
-          and(
-            eq(fileExtractedContent.workspaceId, workspaceId),
-            inArray(fileExtractedContent.fileId, fileIds)
-          )
-        )
-        .orderBy(desc(fileExtractedContent.createdAt))
-        .all()
-    : [];
-  const contentByFile = new Map<string, { text: string; createdAt: number }>();
-  for (const row of contents) {
-    if (!contentByFile.has(row.fileId)) {
-      contentByFile.set(row.fileId, { text: row.text, createdAt: row.createdAt });
-    }
-  }
-
-  const lines: string[] = ['## Linked files'];
-  for (const link of links) {
-    const parts = [`- ${link.filename} (${link.mimeType}, ${link.status})`];
-    if (wantsSummaries && link.summary) parts.push(`  Summary: ${link.summary}`);
-    for (const field of fieldValues.filter((entry) => entry.fileId === link.id)) {
-      parts.push(
-        `  ${field.definition.name}: ${renderValue(
-          field.value.valueText ??
-            field.value.valueNumber ??
-            field.value.valueBool ??
-            field.value.valueDate ??
-            field.value.valueJson
-        )}`
-      );
-    }
-    if (wantsContent) {
-      const content = contentByFile.get(link.id);
-      if (content) {
-        const text =
-          content.text.length > options.maxChars
-            ? `${content.text.slice(0, options.maxChars)}\n…[truncated]`
-            : content.text;
-        parts.push(`  Content:\n${indent(text, '    ')}`);
-      }
-    }
-    lines.push(parts.join('\n'));
-  }
-
-  return { rendered: lines.join('\n') };
-}
-
-function indent(text: string, prefix: string): string {
-  return text
-    .split('\n')
-    .map((line) => `${prefix}${line}`)
-    .join('\n');
 }
 
 function renderValue(value: unknown): string {

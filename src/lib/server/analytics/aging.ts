@@ -1,9 +1,10 @@
 /**
  * Time-in-state, cycle-time and throughput reports.
  *
- * All three read `ticket_state_history` intervals rather than current ticket
- * rows, because current state cannot answer "how long did tickets spend in Human
- * Review" or "how many entered Claims last month" (ADR-0013, ADR-0017).
+ * All three read `workflow_item_state_history` intervals rather than current
+ * work-item rows, because current state cannot answer "how long did items spend
+ * in Human Review" or "how many entered Claims last month" (ADR-0013, ADR-0017,
+ * ADR-0021).
  *
  * An interval is open while `exited_at IS NULL`; open intervals are measured
  * against an injectable `now` so work that is still in progress is counted, not
@@ -13,9 +14,15 @@
  */
 import { type SQL, sql } from 'drizzle-orm';
 import type { Executor } from '../db/client';
-import { ticketStateHistory, tickets, type WidgetTimeRange, workflowStates } from '../db/schema';
+import {
+  records,
+  type WidgetTimeRange,
+  workflowItemStateHistory,
+  workflowItems,
+  workflowStates
+} from '../db/schema';
 import type { FilterAst } from '../filters/ast';
-import { compileTicketFilterDetailed } from '../filters/compile';
+import { compileWorkflowItemFilterDetailed } from '../filters/compile';
 import { type BucketUnit, bucketExpression, enumerateBuckets, resolveTimeWindow } from './series';
 import { maxOf, meanOf, medianOf, p90Of } from './stats';
 
@@ -53,7 +60,7 @@ interface IntervalRow {
 /**
  * History reports default their window to *entry* time even when the caller
  * omits `basis`, because a dwell-time question is about the interval that
- * started, not about when the ticket was created.
+ * started, not about when the work item was created.
  */
 function historyWindow(
   timeRange: WidgetTimeRange | null | undefined,
@@ -67,8 +74,8 @@ function historyWindow(
 
 /**
  * Shared scoping for history queries: workspace + optional workflow/state,
- * the compiled ticket filter (which references `tickets.*`, hence the join), and
- * the caller's time window on the requested timestamp.
+ * the compiled workflow-item filter (which may reference `records.*`, hence the
+ * join), and the caller's time window on the requested timestamp.
  */
 async function historyScope(
   db: Executor,
@@ -76,7 +83,7 @@ async function historyScope(
   eventExpr: SQL,
   now: number
 ): Promise<{ where: SQL; from: SQL; unresolved: string[] }> {
-  const compiled = await compileTicketFilterDetailed(db, {
+  const compiled = await compileWorkflowItemFilterDetailed(db, {
     workspaceId: scope.workspaceId,
     filter: scope.filter ?? null,
     now
@@ -97,7 +104,7 @@ async function historyScope(
   if (window.to !== null) conditions.push(sql`${eventExpr} <= ${window.to}`);
   return {
     where: sql.join(conditions, sql` AND `),
-    from: sql`${ticketStateHistory} h JOIN ${tickets} ON ${tickets.id} = h.ticket_id AND ${tickets.workspaceId} = h.workspace_id`,
+    from: sql`${workflowItemStateHistory} h JOIN ${workflowItems} ON ${workflowItems.id} = h.workflow_item_id AND ${workflowItems.workspaceId} = h.workspace_id JOIN ${records} ON ${records.id} = ${workflowItems.recordId}`,
     unresolved: compiled.unresolved
   };
 }
@@ -135,9 +142,9 @@ export async function timeInStateReport(
   const window = historyWindow(scope.timeRange, now);
   const basisExpr =
     window.basis === 'created'
-      ? sql`${tickets.createdAt}`
+      ? sql`${workflowItems.createdAt}`
       : window.basis === 'updated'
-        ? sql`${tickets.updatedAt}`
+        ? sql`${workflowItems.updatedAt}`
         : sql`h.entered_at`;
   const intervals = await loadIntervals(db, scope, basisExpr, now);
 
@@ -188,26 +195,29 @@ export interface CycleTimeReport {
 }
 
 /**
- * Creation → first terminal entry, per ticket. A ticket that never reached a
- * terminal state contributes no measurement (it has no cycle time yet).
+ * Creation → first terminal entry, per workflow item. An item that never reached
+ * a terminal state contributes no measurement (it has no cycle time yet).
  */
 export async function cycleTimeReport(db: Executor, scope: AgingScope): Promise<CycleTimeReport> {
   const now = scope.now ?? Date.now();
-  const compiled = await compileTicketFilterDetailed(db, {
+  const compiled = await compileWorkflowItemFilterDetailed(db, {
     workspaceId: scope.workspaceId,
     filter: scope.filter ?? null,
     now
   });
-  const conditions: SQL[] = [sql`${tickets.workspaceId} = ${scope.workspaceId}`, compiled.sql];
-  if (scope.workflowId) conditions.push(sql`${tickets.workflowId} = ${scope.workflowId}`);
+  const conditions: SQL[] = [
+    sql`${workflowItems.workspaceId} = ${scope.workspaceId}`,
+    compiled.sql
+  ];
+  if (scope.workflowId) conditions.push(sql`${workflowItems.workflowId} = ${scope.workflowId}`);
   const window = resolveTimeWindow(scope.timeRange, now);
-  if (window.from !== null) conditions.push(sql`${tickets.createdAt} >= ${window.from}`);
-  if (window.to !== null) conditions.push(sql`${tickets.createdAt} <= ${window.to}`);
+  if (window.from !== null) conditions.push(sql`${workflowItems.createdAt} >= ${window.from}`);
+  if (window.to !== null) conditions.push(sql`${workflowItems.createdAt} <= ${window.to}`);
   const where = sql.join(conditions, sql` AND `);
 
-  const terminal = sql`(SELECT MIN(hist.entered_at) FROM ${ticketStateHistory} hist JOIN ${workflowStates} st ON st.id = hist.state_id AND st.workspace_id = hist.workspace_id WHERE hist.ticket_id = ${tickets.id} AND hist.workspace_id = ${scope.workspaceId} AND (st.is_terminal = 1 OR st.category IN ('done', 'cancelled')))`;
+  const terminal = sql`(SELECT MIN(hist.entered_at) FROM ${workflowItemStateHistory} hist JOIN ${workflowStates} st ON st.id = hist.state_id AND st.workspace_id = hist.workspace_id WHERE hist.workflow_item_id = ${workflowItems.id} AND hist.workspace_id = ${scope.workspaceId} AND (st.is_terminal = 1 OR st.category IN ('done', 'cancelled')))`;
   const rows = await db.all<{ cycle_ms: number | null }>(
-    sql`SELECT (${terminal} - ${tickets.createdAt}) AS cycle_ms FROM ${tickets} WHERE ${where} AND ${terminal} IS NOT NULL`
+    sql`SELECT (${terminal} - ${workflowItems.createdAt}) AS cycle_ms FROM ${workflowItems} JOIN ${records} ON ${records.id} = ${workflowItems.recordId} WHERE ${where} AND ${terminal} IS NOT NULL`
   );
   const seconds = rows
     .map((row) => (row.cycle_ms === null ? null : Number(row.cycle_ms) / 1000))
@@ -232,7 +242,7 @@ export interface ThroughputPoint {
 }
 
 /**
- * Tickets entering and leaving states per bucket. Both series use the same
+ * Work items entering and leaving states per bucket. Both series use the same
  * deterministic UTC axis and are zero-filled so a chart never implies a gap in
  * the data where there was only an absence of activity.
  */

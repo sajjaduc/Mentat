@@ -3,9 +3,9 @@
  * Workflows index.
  *
  * A workflow is both a project and a state machine, so the index shows the two
- * numbers that say whether it is alive: tickets and states. Creating one starts
- * from a template and lands directly on its board, because an empty configuration
- * screen is a worse first impression than a working board.
+ * numbers that say whether it is alive: items and states. Creating one requires an
+ * explicit Object Type, because that choice is what gives the Workflow its base
+ * schema and its user-facing nouns.
  */
 import { goto } from '$app/navigation';
 import { api, describeApiError } from '$ui/api';
@@ -16,13 +16,16 @@ import EmptyState from '$ui/primitives/EmptyState.svelte';
 import ErrorState from '$ui/primitives/ErrorState.svelte';
 import Input from '$ui/primitives/Input.svelte';
 import Modal from '$ui/primitives/Modal.svelte';
+import Select from '$ui/primitives/Select.svelte';
 import Skeleton from '$ui/primitives/Skeleton.svelte';
 import Textarea from '$ui/primitives/Textarea.svelte';
+import type { ObjectTypeSummary } from '$ui/records/types';
 import { pushToast } from '$ui/toast';
 import type { WorkflowDetailResponse, WorkflowListItem, WorkflowTemplate } from '$ui/work/types';
 
 let workflows = $state<WorkflowListItem[] | null>(null);
 let templates = $state<WorkflowTemplate[]>([]);
+let objectTypes = $state<ObjectTypeSummary[]>([]);
 let loading = $state(true);
 let error = $state<string | null>(null);
 let includeArchived = $state(false);
@@ -30,23 +33,53 @@ let includeArchived = $state(false);
 let createOpen = $state(false);
 let creating = $state(false);
 let createError = $state<string | null>(null);
+/**
+ * `objectTypeId` defaults to the first Object Type so the form is never blank, but
+ * `objectTypeTouched` keeps Create disabled until the user confirms the choice.
+ */
+let objectTypeTouched = $state(false);
 let draft = $state({
   name: '',
   key: '',
   description: '',
-  template: 'basic' as WorkflowTemplate['key']
+  template: 'basic' as WorkflowTemplate['key'],
+  objectTypeId: ''
 });
+
+const canCreate = $derived(
+  draft.name.trim() !== '' &&
+    draft.objectTypeId !== '' &&
+    // A sole Object Type is unambiguous: there is nothing to choose between.
+    (objectTypeTouched || objectTypes.length <= 1)
+);
+
+function pluralNoun(workflow: WorkflowListItem): string {
+  return (workflow.objectTypePluralName ?? 'items').toLowerCase();
+}
+
+function openCreate() {
+  if (draft.objectTypeId === '' && objectTypes.length > 0) {
+    draft.objectTypeId = objectTypes[0]!.id;
+  }
+  objectTypeTouched = false;
+  createOpen = true;
+}
 
 async function load() {
   loading = true;
   error = null;
   try {
-    const [workflowResponse, templateResponse] = await Promise.all([
+    const [workflowResponse, templateResponse, objectTypeResponse] = await Promise.all([
       api.get<{ workflows: WorkflowListItem[] }>('/api/workflows', { includeArchived }),
-      api.get<{ templates: WorkflowTemplate[] }>('/api/workflow-templates')
+      api.get<{ templates: WorkflowTemplate[] }>('/api/workflow-templates'),
+      api.get<{ objectTypes: ObjectTypeSummary[] }>('/api/object-types')
     ]);
     workflows = workflowResponse.workflows;
     templates = templateResponse.templates;
+    objectTypes = objectTypeResponse.objectTypes;
+    if (draft.objectTypeId === '' && objectTypes.length > 0) {
+      draft.objectTypeId = objectTypes[0]!.id;
+    }
   } catch (failure) {
     error = describeApiError(failure);
   } finally {
@@ -56,7 +89,7 @@ async function load() {
 
 async function create() {
   const name = draft.name.trim();
-  if (name === '') return;
+  if (name === '' || draft.objectTypeId === '') return;
   creating = true;
   createError = null;
   try {
@@ -64,7 +97,8 @@ async function create() {
       name,
       key: draft.key.trim() === '' ? undefined : draft.key.trim(),
       description: draft.description.trim() === '' ? undefined : draft.description.trim(),
-      template: draft.template
+      template: draft.template,
+      objectTypeId: draft.objectTypeId
     });
     await goto(`/workflows/${response.workflow.id}?tab=board`);
   } catch (failure) {
@@ -96,7 +130,7 @@ load();
     <div>
       <h1 class="text-lg font-semibold">Workflows</h1>
       <p class="text-xs text-[var(--color-ink-subtle)]">
-        Each workflow is a project and a state machine: tickets move through states where humans,
+        Each workflow processes Records of one Object Type through a state machine, where humans,
         agents or deterministic actions do the work.
       </p>
     </div>
@@ -105,7 +139,7 @@ load();
         <input type="checkbox" bind:checked={includeArchived} onchange={load} />
         Show archived
       </label>
-      <Button variant="primary" onclick={() => (createOpen = true)}>Create workflow</Button>
+      <Button variant="primary" onclick={openCreate}>Create workflow</Button>
     </div>
   </header>
 
@@ -122,7 +156,7 @@ load();
       title="No workflows yet"
       description="A workflow is where work lives. Pick a template to get states, transitions and a board in one step."
     >
-      <Button variant="primary" onclick={() => (createOpen = true)}>Create from template</Button>
+      <Button variant="primary" onclick={openCreate}>Create from template</Button>
     </EmptyState>
   {:else}
     <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -153,8 +187,11 @@ load();
               </div>
             </div>
             <div class="mt-3 flex items-center gap-3 text-[11px] text-[var(--color-ink-muted)]">
-              <span><span class="font-mono">{workflow.ticketCount}</span> tickets</span>
+              <span><span class="font-mono">{workflow.itemCount}</span> {pluralNoun(workflow)}</span>
               <span><span class="font-mono">{workflow.stateCount}</span> states</span>
+              {#if workflow.objectTypeName}
+                <span class="truncate">· {workflow.objectTypeName}</span>
+              {/if}
             </div>
           </a>
           {#if !workflow.archivedAt}
@@ -177,8 +214,29 @@ load();
 >
   <div class="space-y-4">
     <Input value={draft.name} oninput={(event) => (draft.name = (event.currentTarget as HTMLInputElement).value)} label="Name" placeholder="Claims" />
-    <Input value={draft.key} oninput={(event) => (draft.key = (event.currentTarget as HTMLInputElement).value)} label="Key" placeholder="CLAIM" hint="Used for ticket keys; generated when empty." />
+    <Input value={draft.key} oninput={(event) => (draft.key = (event.currentTarget as HTMLInputElement).value)} label="Key" placeholder="CLAIM" hint="Used for item keys; generated when empty." />
     <Textarea value={draft.description} oninput={(event) => (draft.description = (event.currentTarget as HTMLTextAreaElement).value)} label="Description" rows={2} />
+
+    {#if objectTypes.length === 0}
+      <p class="rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] p-3 text-xs text-[var(--color-ink-muted)]">
+        This workspace has no Object Types yet. A workflow must process one.
+        <a class="text-[var(--color-accent)] underline" href="/settings/object-types"
+          >Define an Object Type</a
+        >
+        first.
+      </p>
+    {:else}
+      <Select
+        label="Object Type (required)"
+        bind:value={draft.objectTypeId}
+        onchange={() => (objectTypeTouched = true)}
+        options={objectTypes.map((type) => ({
+          value: type.id,
+          label: `${type.name} · ${type.pluralName}`
+        }))}
+        hint="The base schema this workflow processes. Confirm the selection to continue."
+      />
+    {/if}
 
     <fieldset class="space-y-2">
       <legend class="text-xs font-medium text-[var(--color-ink-muted)]">Template</legend>
@@ -221,7 +279,7 @@ load();
     <Button
       variant="primary"
       loading={creating}
-      disabled={draft.name.trim() === ''}
+      disabled={!canCreate}
       onclick={create}
     >
       Create and open board

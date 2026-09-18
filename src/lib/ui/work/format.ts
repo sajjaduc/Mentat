@@ -134,15 +134,15 @@ const EVENT_LABELS: Record<string, string> = {
   'approval.decided': 'Approval decided',
   'retry.scheduled': 'Retry scheduled',
   'state.transition': 'State transition',
-  'ticket.field.changed': 'Field changed',
-  'ticket.note.added': 'Note added',
-  'ticket.file.attached': 'File attached',
+  'workItem.field.changed': 'Field changed',
+  'workItem.note.added': 'Note added',
+  'workItem.file.attached': 'File attached',
   'run.paused': 'Run paused',
   'run.resumed': 'Run resumed',
   'run.completed': 'Run completed',
   'run.failed': 'Run failed',
   'run.cancelled': 'Run cancelled',
-  'ticket.updated': 'Ticket updated',
+  'workItem.updated': 'WorkItem updated',
   'stream.ready': 'Stream ready'
 };
 
@@ -155,7 +155,7 @@ export function eventTone(type: string): Tone {
   if (type === 'run.completed') return 'positive';
   if (type === 'approval.requested' || type === 'run.paused') return 'caution';
   if (type.startsWith('tool.')) return 'accent';
-  if (type === 'state.transition' || type === 'ticket.field.changed') return 'accent';
+  if (type === 'state.transition' || type === 'workItem.field.changed') return 'accent';
   return 'neutral';
 }
 

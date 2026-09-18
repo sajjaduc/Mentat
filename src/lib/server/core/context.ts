@@ -18,7 +18,7 @@ export interface ActorContext {
   actorLabel: string | null;
   /** Workspace role for humans; agents get `agent` and rely on granted permissions. */
   role: WorkspaceRole | 'agent' | 'service';
-  /** Effective permission keys, e.g. `ticket:write`, `workflow:admin`. */
+  /** Effective permission keys, e.g. `workflow_item:write`, `workflow:admin`. */
   permissions: Set<string>;
   /** Populated for agent runs so services can attribute changes precisely. */
   runId?: string | null;
@@ -42,12 +42,16 @@ export const Permissions = {
   workflowRead: 'workflow:read',
   workflowWrite: 'workflow:write',
   workflowAdmin: 'workflow:admin',
-  ticketRead: 'ticket:read',
-  ticketWrite: 'ticket:write',
-  ticketAssign: 'ticket:assign',
-  ticketTransfer: 'ticket:transfer',
-  ticketCreate: 'ticket:create',
-  ticketDelete: 'ticket:delete',
+  objectTypeRead: 'object_type:read',
+  objectTypeAdmin: 'object_type:admin',
+  recordRead: 'record:read',
+  recordWrite: 'record:write',
+  recordCreate: 'record:create',
+  recordDelete: 'record:delete',
+  workflowItemRead: 'workflow_item:read',
+  workflowItemWrite: 'workflow_item:write',
+  workflowItemCreate: 'workflow_item:create',
+  workflowItemTransfer: 'workflow_item:transfer',
   approvalRead: 'approval:read',
   approvalDecide: 'approval:decide',
   agentRead: 'agent:read',
@@ -102,11 +106,14 @@ export function permissionsForRole(role: WorkspaceRole): Set<string> {
       return new Set<string>([
         Permissions.workspaceRead,
         Permissions.workflowRead,
-        Permissions.ticketRead,
-        Permissions.ticketWrite,
-        Permissions.ticketAssign,
-        Permissions.ticketTransfer,
-        Permissions.ticketCreate,
+        Permissions.objectTypeRead,
+        Permissions.recordRead,
+        Permissions.recordWrite,
+        Permissions.recordCreate,
+        Permissions.workflowItemRead,
+        Permissions.workflowItemWrite,
+        Permissions.workflowItemCreate,
+        Permissions.workflowItemTransfer,
         Permissions.approvalRead,
         Permissions.approvalDecide,
         Permissions.agentRead,

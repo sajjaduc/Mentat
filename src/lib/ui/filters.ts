@@ -153,7 +153,7 @@ export const OPERATOR_LABELS: Record<FilterOperator, string> = {
 
 export const FIELD_KIND_LABELS: Record<FilterFieldKind, string> = {
   system: 'Built-in',
-  field: 'Ticket field',
+  field: 'Record field',
   file_field: 'File field',
   state: 'State',
   workflow: 'Workflow',
@@ -178,21 +178,34 @@ export const FILE_SYSTEM_FIELDS: ReadonlyArray<{ key: string; label: string; typ
   { key: 'updatedAt', label: 'Updated', type: 'datetime' },
   { key: 'sourceType', label: 'Source type', type: 'text' },
   { key: 'workflowId', label: 'Workflow context', type: 'text' },
-  { key: 'ticketId', label: 'Linked ticket', type: 'text' },
+  { key: 'workflowItemId', label: 'Linked work item', type: 'text' },
+  { key: 'recordId', label: 'Linked Record', type: 'text' },
   { key: 'contentHash', label: 'Content hash', type: 'text' },
   { key: 'contextLabel', label: 'Context label', type: 'text' },
   { key: 'pageCount', label: 'Page count', type: 'number' },
   { key: 'language', label: 'Language', type: 'text' }
 ];
 
-/** Built-in ticket columns, matching `TicketSystemFields` on the server. */
-export const TICKET_SYSTEM_FIELDS: ReadonlyArray<{ key: string; label: string; type: string }> = [
+/**
+ * Record-level and work-level built-ins, matching `WorkflowItemSystemFields` on
+ * the server. Record fields (key, title, priority, object type) and process fields
+ * (state, owner, due date) live in one namespace because a work item is the union.
+ */
+export const RECORD_SYSTEM_FIELDS: ReadonlyArray<{ key: string; label: string; type: string }> = [
   { key: 'key', label: 'Key', type: 'text' },
   { key: 'number', label: 'Number', type: 'number' },
   { key: 'title', label: 'Title', type: 'text' },
+  { key: 'displayName', label: 'Display name', type: 'text' },
   { key: 'description', label: 'Description', type: 'text' },
   { key: 'priority', label: 'Priority', type: 'text' },
+  { key: 'objectTypeId', label: 'Object Type', type: 'text' },
+  { key: 'recordId', label: 'Record', type: 'text' },
+  { key: 'recordCreatedAt', label: 'Record created', type: 'datetime' },
+  { key: 'recordUpdatedAt', label: 'Record updated', type: 'datetime' },
+  { key: 'stateId', label: 'State id', type: 'text' },
   { key: 'stateName', label: 'State', type: 'text' },
+  { key: 'stateKind', label: 'State kind', type: 'text' },
+  { key: 'stateCategory', label: 'State category', type: 'text' },
   { key: 'workflowId', label: 'Workflow', type: 'text' },
   { key: 'ownerUserId', label: 'Owner', type: 'text' },
   { key: 'ownerTeamId', label: 'Team', type: 'text' },
@@ -200,8 +213,12 @@ export const TICKET_SYSTEM_FIELDS: ReadonlyArray<{ key: string; label: string; t
   { key: 'createdAt', label: 'Created', type: 'datetime' },
   { key: 'updatedAt', label: 'Updated', type: 'datetime' },
   { key: 'enteredStateAt', label: 'Entered state at', type: 'datetime' },
+  { key: 'lastActivityAt', label: 'Last activity', type: 'datetime' },
   { key: 'dueAt', label: 'Due', type: 'datetime' },
   { key: 'closedAt', label: 'Closed', type: 'datetime' },
+  { key: 'completedAt', label: 'Completed', type: 'datetime' },
+  { key: 'waitingOn', label: 'Waiting on', type: 'text' },
+  { key: 'participation', label: 'Participation', type: 'text' },
   { key: 'runStatus', label: 'Run status', type: 'text' },
   { key: 'approvalStatus', label: 'Approval status', type: 'text' },
   { key: 'sourceType', label: 'Source type', type: 'text' }

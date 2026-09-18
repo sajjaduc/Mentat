@@ -2,7 +2,7 @@
  * Typed API client.
  *
  * One place knows how to talk to the router: JSON in/out, error shaping, request
- * ids. Browser code calls `api.get('/tickets')` and gets either data or a thrown
+ * ids. Browser code calls `api.get('/workflow-items')` and gets either data or a thrown
  * `ApiError` with a stable code, which is what lets every screen render the same
  * quality of error state.
  *

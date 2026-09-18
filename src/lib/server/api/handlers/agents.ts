@@ -431,11 +431,11 @@ export const agentRoutes = [
       const limit = queryInt({ query } as never, 'limit', 50, { min: 1, max: 200 });
       const rows = await db.all(
         // Drizzle's query builder would need five joins for a view this shallow; a
-        // projection over the run table plus agent name is clearer as SQL.
-        sql`select r.*, a.name as agent_name, t.key as ticket_key
+        // projection over the run table plus agent/record identity is clearer as SQL.
+        sql`select r.*, a.name as agent_name, rec.key as record_key, rec.display_name as record_name
             from agent_runs r
             left join agents a on a.id = r.agent_id
-            left join tickets t on t.id = r.ticket_id
+            left join records rec on rec.id = r.record_id
             where r.workspace_id = ${actor.workspaceId}
             order by r.created_at desc
             limit ${limit}`

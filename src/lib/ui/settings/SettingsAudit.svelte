@@ -31,7 +31,7 @@ let events = $state<AuditEventRecord[]>([]);
 let loading = $state(true);
 let error = $state<string | null>(null);
 let actionFilter = $state('');
-let ticketFilter = $state('');
+let workItemFilter = $state('');
 let entityTypeFilter = $state('');
 let entityIdFilter = $state('');
 let summaryFilter = $state('');
@@ -45,7 +45,7 @@ async function load() {
   try {
     const response = await api.get<{ events: AuditEventRecord[] }>('/audit', {
       action: actionFilter || undefined,
-      ticketId: ticketFilter || undefined,
+      workflowItemId: workItemFilter || undefined,
       entityType: entityTypeFilter || undefined,
       entityId: entityIdFilter || undefined,
       limit: 200
@@ -60,7 +60,7 @@ async function load() {
 
 $effect(() => {
   void actionFilter;
-  void ticketFilter;
+  void workItemFilter;
   void entityTypeFilter;
   void entityIdFilter;
   void load();
@@ -119,8 +119,8 @@ function hasPayload(data: unknown): boolean {
   <Card class="space-y-3">
     <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
       <Select label="Action" options={actionOptions} bind:value={actionFilter} />
-      <Input label="Ticket id" bind:value={ticketFilter} placeholder="Optional" />
-      <Input label="Entity type" bind:value={entityTypeFilter} placeholder="ticket, file, job…" />
+      <Input label="Work item id" bind:value={workItemFilter} placeholder="Optional" />
+      <Input label="Entity type" bind:value={entityTypeFilter} placeholder="work item, file, job…" />
       <Input label="Entity id" bind:value={entityIdFilter} placeholder="Optional" />
       <Input label="Summary contains" bind:value={summaryFilter} placeholder="Client-side over loaded rows" />
       <div class="grid grid-cols-2 gap-2">
@@ -129,7 +129,7 @@ function hasPayload(data: unknown): boolean {
       </div>
     </div>
     <p class="text-[11px] leading-relaxed text-[var(--color-ink-subtle)]">
-      Action, ticket, entity and the row limit are applied by the ledger query. Date range and summary
+      Action, work item, entity and the row limit are applied by the ledger query. Date range and summary
       text are applied in the interface over the loaded page, because the query takes sequence
       ordinals rather than timestamps.
     </p>
@@ -140,7 +140,7 @@ function hasPayload(data: unknown): boolean {
         variant="ghost"
         onclick={() => {
           actionFilter = '';
-          ticketFilter = '';
+          workItemFilter = '';
           entityTypeFilter = '';
           entityIdFilter = '';
           summaryFilter = '';
@@ -161,7 +161,7 @@ function hasPayload(data: unknown): boolean {
     <Card>
       <EmptyState
         title="No audit entries match"
-        description="The ledger records workspace, ticket, file, job, secret, configuration and analytics changes. Clear a filter to see more."
+        description="The ledger records workspace, work item, file, job, secret, configuration and analytics changes. Clear a filter to see more."
       />
     </Card>
   {:else}
@@ -235,10 +235,10 @@ function hasPayload(data: unknown): boolean {
           <dt class="text-[var(--color-ink-subtle)]">Actor id</dt>
           <dd class="font-mono text-[11px]">{selected.actorId ?? '—'}</dd>
         </div>
-        {#if selected.ticketId}
+        {#if selected.workflowItemId}
           <div>
-            <dt class="text-[var(--color-ink-subtle)]">Ticket</dt>
-            <dd class="font-mono text-[11px]">{selected.ticketId}</dd>
+            <dt class="text-[var(--color-ink-subtle)]">Work item</dt>
+            <dd class="font-mono text-[11px]">{selected.workflowItemId}</dd>
           </div>
         {/if}
         {#if selected.fileId}

@@ -98,9 +98,11 @@ PATCH  /api/states/:id                   DELETE /api/states/:id
 PUT    /api/workflows/:id/states/order {stateIds}
 GET    /api/workflows/:id/transitions    POST /api/workflows/:id/transitions
 DELETE /api/transitions/:id              GET  /api/states/:id/transitions
-GET    /api/fields?scope=ticket|file     POST /api/fields
+GET    /api/fields?scope=workflowItem|record|file   POST /api/fields
 PATCH  /api/fields/:id                   DELETE /api/fields/:id        GET /api/fields/:id/usage
 GET    /api/workflows/:id/fields         PUT /api/workflows/:id/fields {fields:[...]}
+PUT    /api/workflows/:id/zod-schema {source}    → overlay fields projected from Zod source
+POST   /api/schemas/test {source,sample?}        → {ok,compiled,issues,data,fields,invalidKeys}
 GET    /api/workflows/:id/transfer-rules PUT /api/workflows/:id/transfer-rules
 DELETE /api/transfer-rules/:id
 GET    /api/config?workflowId=
@@ -109,35 +111,55 @@ State body: `{name,description,kind:'manual'|'agent'|'system'|'terminal',categor
 isStart,isTerminal,agentId,autoExecute,maxAttempts,timeoutSeconds,failureStateId,
 humanGate:{enabled,allowedTransitionIds,requiredFieldKeys,requiredComment,allowedRoles,allowedTeamIds,instructions},
 config:{systemAction,context:{includeTitle,includeDescription,fieldKeys,includeRecentNotes,includeFileSummaries,
-includeFileFields,includeFullFileContent,includeHistory,includeStateHistory},allowedToolKeys,wipLimit,slaSeconds}}`
+includeFileFields,includeFullFileContent,includeHistory,includeStateHistory},allowedToolKeys,wipLimit,slaSeconds,
+zodSchema}}`
+`config.zodSchema` is validated against the submitted record while the item is in that state.
 
-### Tickets
+### Work items
+The former `/api/tickets` surface has been removed. Work is created, read and
+mutated through `/api/workflow-items` (and `/api/records` for durable identity),
+documented under **Object Types, Records and WorkflowItems** below.
+
+### Object Types, Records and WorkflowItems (universal model)
 ```
-GET    /api/tickets?workflowId=&filter=<json>&sort=<json>&limit=&cursor=&search=&stateIds=
-POST   /api/tickets {workflowId,stateId?,title,description?,priority?,ownerUserId?,ownerTeamId?,
-                     fields?,labelIds?,labelNames?,parentTicketId?,provenance?}
-GET    /api/tickets/:id            → ticket, state, workflow, fields, labels, notes, relationships,
-                                     files, runs, approvals, availableTransitions, humanGate,
-                                     gateDecisions, historySummary
-PATCH  /api/tickets/:id {title,description,priority,ownerUserId,ownerTeamId,dueAt,expectedVersion}
-GET    /api/tickets/:id/fields     PUT /api/tickets/:id/fields {values}
-GET    /api/tickets/:id/field-history
-POST   /api/tickets/:id/notes {body}      PATCH /api/notes/:id {body}   DELETE /api/notes/:id
-POST   /api/tickets/:id/transitions {transitionId|targetStateId,comment?,fieldValues?}
-POST   /api/tickets/:id/transfer {targetWorkflowId,targetStateId?,reason?,fieldMappings?,approved?}
-POST   /api/tickets/:id/transfer-preview {targetWorkflowId}
-POST   /api/tickets/:id/relationships {toTicketId,type,note?}   DELETE /api/relationships/:id
-POST   /api/tickets/:id/labels {labelIds?,labelNames?}          DELETE /api/tickets/:id/labels/:labelId
-POST   /api/tickets/:id/files {fileId,relationship?,caption?}   DELETE /api/tickets/:id/files/:fileId
-GET    /api/tickets/:id/runs       POST /api/tickets/:id/dispatch {stateId?,reason?,force?}
-GET    /api/runs/:id               POST /api/runs/:id/cancel
-GET    /api/tickets/:id/timeline?filter=all|human|agents|fields|states|tools|files&limit=&cursor=
-GET    /api/tickets/:id/events?since=
-GET    /api/my-work?limit=         → {assigned,waitingForMe,waitingForAgent,waitingForApproval,
-                                      needsAttention,createdByMe}
-GET    /api/search?q=&limit=       → {results:[{kind,id,key,title,subtitle,href}]}
-GET    /api/labels                 POST /api/labels {name,color,description}
+GET    /api/object-types                         POST /api/object-types {key?,name,pluralName?,description?,settings?}
+PATCH  /api/object-types/:id                     POST /api/object-types/:id/archive
+GET    /api/object-types/:id/fields              PUT  /api/object-types/:id/fields {fields:[...]}
+PUT    /api/object-types/:id/zod-schema {source} → authoritative Zod source + projected fields
+GET    /api/records?objectTypeId=|objectTypeKey=&search=&limit=&cursor=&includeArchived=
+POST   /api/records {objectTypeId|objectTypeKey,displayName?,fields?,structuredData?,externalIds?}
+GET    /api/records/:id                          → record, fields, effectiveFields, externalIds, notes
+PATCH  /api/records/:id {displayName?,fields?,structuredData?,expectedVersion?}
+POST   /api/records/:id/archive
+GET    /api/records/:id/history                  GET /api/records/:id/notes   POST /api/records/:id/notes {body}
+GET    /api/records/:id/files                    GET /api/records/:id/related
+POST   /api/records/:id/related {toRecordId,relationshipKey,note?}
+DELETE /api/records/:id/related/:relationshipId
+GET    /api/workflow-items?workflowId=&recordId=&search=&limit=&cursor=&includeCompleted=
+GET    /api/workflow-items/board?workflowId=      → {columns:[{state,items,count}]}
+POST   /api/workflow-items {workflowId,recordId|record,stateId?,ownerUserId?,fields?,reason?}
+GET    /api/workflow-items/:id                   → state, record, effective fields, transitions, notes, history
+PATCH  /api/workflow-items/:id/fields {values}    POST /api/workflow-items/:id/notes {body}
+POST   /api/workflow-items/:id/transition {transitionId|targetStateId,comment?,fields?}
+POST   /api/workflow-items/:id/transfer {targetWorkflowId,targetStateId?,reason?}
+POST   /api/workflow-items/:id/participation {workflowId,stateId?,fields?}
+POST   /api/workflow-items/:id/dispatch {stateId?,reason?,force?}
 ```
+`records.create` makes durable domain data; `workflowItems.create` puts a Record into
+a Workflow. They are separate operations, and they are the only work endpoints: the
+legacy Ticket API has been removed.
+
+### UI surfaces for the universal model
+```
+/records                     → RecordsBrowser (Object Type selector, search, list, create)
+/records/[id]?tab=overview|activity|work|files|related|history   → RecordSurface
+/settings/object-types       → ObjectTypeSettings (schema + field bindings)
+```
+The Record surface reuses `Tabs`, `DataTable`, `Pagination`, `FieldInput`/`FieldValue`
+(via `$ui/records/field-config.ts`) and the `WorkItemSurface` pattern: one component
+owns loading and every mutation, tabs render exclusively, and field writes are
+optimistic with rollback. Agent states can require a validated submission; the state
+editor exposes `requiredSubmission` through the workflow API.
 
 ### Agents / skills / tools / providers / models
 ```
@@ -148,12 +170,12 @@ GET/POST /api/providers         POST /api/providers/suggest {type}
 PATCH/DELETE /api/providers/:id
 POST     /api/providers/:id/health        POST /api/providers/:id/refresh-models
 GET/POST /api/models            PATCH/DELETE /api/models/:id
-GET      /api/runs?limit=       → recent runs with agent_name and ticket_key
+GET      /api/runs?limit=       → recent runs with agent_name and record_key
 ```
 Agent body: `{name,description,instructions,workflowId,providerId,modelId,skillIds,toolIds,
 outputSchema,executionConfig:{maxSteps,maxOutputTokens,temperature,topP,timeoutSeconds,
 continueOnToolError,retryOnProviderError,requireApprovalForMutations},
-permissions:{native:[],httpOperationIds:[],canTransferTickets,canCreateTickets,
+permissions:{native:[],httpOperationIds:[],canTransferWork,canCreateWork,
 canWriteWorkspaceState,canUploadFiles,writableFieldKeys:[]}}`
 
 ### HTTP platform / triggers
@@ -171,41 +193,41 @@ GET/PUT  /api/storage {provider,bucket,prefix,credentialsSecretId,localRoot,maxF
 
 ### Files / data / analytics / ops
 ```
-GET    /api/files?filename=&mimeType=&status=&workflowId=&ticketId=&content=&limit=&cursor=
-POST   /api/files            (multipart: file, ticketId?, workflowId?, sourceType?)
+GET    /api/files?filename=&mimeType=&status=&workflowId=&workflowItemId=&recordId=&content=&limit=&cursor=
+POST   /api/files            (multipart: file, workflowItemId?, workflowId?, sourceType?)
 GET    /api/files/:id        DELETE /api/files/:id
 GET    /api/files/:id/content
 GET    /api/files/:id/fields PUT /api/files/:id/fields {workflowId,values}
-POST   /api/files/:id/process {workflowId,force}    POST /api/files/:id/unlink {ticketId}
+POST   /api/files/:id/process {workflowId,force}    POST /api/files/:id/unlink {workflowItemId|recordId}
 POST   /api/files/:id/workflow-context {workflowId,contextLabel}
 DELETE /api/files/:id/workflow-context/:workflowId  GET /api/files/search?q=
 DELETE /api/blobs/:id
-GET    /api/approvals?status=&ticketId=&mine=&limit=   → approvals + pendingCount
+GET    /api/approvals?status=&workflowItemId=&recordId=&mine=&limit=   → approvals + pendingCount
 GET    /api/approvals/:id      POST /api/approvals/:id/decide {decision,comment,decisionData}
 GET/POST /api/views            PATCH/DELETE /api/views/:id     GET /api/views/:id/apply
 GET/POST /api/dashboards       GET/PATCH/DELETE /api/dashboards/:id
 POST   /api/dashboards/:id/widgets   PATCH/DELETE /api/widgets/:id   POST /api/dashboards/:id/run
 GET/POST /api/collections      GET/DELETE /api/collections/:id
-GET/POST /api/collections/:id/records    PATCH/DELETE /api/records/:id
+GET/POST /api/collections/:id/records    PATCH/DELETE /api/collections/:id/records/:recordId
 GET/PUT/DELETE /api/state      GET /api/state/value
 GET/PUT/DELETE /api/cache      GET /api/cache/value
 GET/POST /api/secrets          POST /api/secrets/:id/rotate {value}   DELETE /api/secrets/:id
 GET/PUT  /api/environment      DELETE /api/environment/:id
 GET/PUT  /api/overrides        DELETE /api/overrides/:id
-GET      /api/jobs?status=&type=&ticketId=&limit=      GET /api/jobs/:id/attempts
-GET      /api/audit?ticketId=&action=&limit=&cursor=
+GET      /api/jobs?status=&type=&workflowItemId=&recordId=&limit=      GET /api/jobs/:id/attempts
+GET      /api/audit?workflowItemId=&recordId=&action=&limit=&cursor=
 ```
 
 ### Live events (SSE)
 ```
-GET /api/events?runId=&ticketId=&since=<seq>
+GET /api/events?runId=&workflowItemId=&recordId=&since=<seq>
 ```
 Replays from `since` then streams live. Event types: `run.queued run.started
 run.output.delta run.reasoning.delta run.warning step.started step.completed tool.started
 tool.completed tool.failed approval.requested approval.decided retry.scheduled
-state.transition ticket.field.changed ticket.note.added ticket.file.attached
-run.paused run.resumed run.completed run.failed run.cancelled ticket.updated
-stream.ready`. Payload is `{seq,type,runId,ticketId,data,createdAt}`.
+state.transition workflow_item.field.changed workflow_item.note.added workflow_item.file.attached
+run.paused run.resumed run.completed run.failed run.cancelled
+stream.ready`. Payload is `{seq,type,runId,recordId,workflowItemId,data,createdAt}`.
 
 Use `EventSource` with `since` from the highest sequence already rendered. Because
 events are persisted first, a reconnect with the last sequence receives exactly the

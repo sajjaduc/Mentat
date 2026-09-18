@@ -23,8 +23,8 @@ import {
   type FilterGroup,
   isGroup,
   parseFilter,
-  serializeFilter,
-  TICKET_SYSTEM_FIELDS
+  RECORD_SYSTEM_FIELDS,
+  serializeFilter
 } from '$ui/filters';
 import Badge from '$ui/primitives/Badge.svelte';
 import Button from '$ui/primitives/Button.svelte';
@@ -38,8 +38,8 @@ interface Props {
   allow: FilterFieldKind[];
   /** File-scoped definitions from `GET /api/fields?scope=file`. */
   fileFields?: BuilderFieldOption[];
-  /** Ticket-scoped definitions from `GET /api/fields?scope=ticket`. */
-  ticketFields?: BuilderFieldOption[];
+  /** WorkItem-scoped definitions from `GET /api/fields?scope=workItem`. */
+  workItemFields?: BuilderFieldOption[];
   workflowOptions?: Array<{ value: string; label: string }>;
   stateOptions?: Array<{ value: string; label: string }>;
   onchange: (value: FilterGroup | null) => void;
@@ -50,7 +50,7 @@ let {
   value,
   allow,
   fileFields = [],
-  ticketFields = [],
+  workItemFields = [],
   workflowOptions = [],
   stateOptions = [],
   onchange,
@@ -75,7 +75,7 @@ function rootOf(ast: FilterAst | null): FilterGroup {
 }
 
 function fieldOptionsFor(kind: FilterFieldKind, current: string): BuilderFieldOption[] {
-  if (kind === 'field') return ticketFields;
+  if (kind === 'field') return workItemFields;
   if (kind === 'file_field') return fileFields;
   if (kind === 'state') {
     return stateOptions.map((option) => ({ key: option.value, label: option.label, type: 'text' }));
@@ -88,7 +88,7 @@ function fieldOptionsFor(kind: FilterFieldKind, current: string): BuilderFieldOp
     }));
   }
   if (kind === 'collection') return [];
-  const builtins = kind === 'system' ? [...FILE_SYSTEM_FIELDS, ...TICKET_SYSTEM_FIELDS] : [];
+  const builtins = kind === 'system' ? [...FILE_SYSTEM_FIELDS, ...RECORD_SYSTEM_FIELDS] : [];
   if (current && !builtins.some((field) => field.key === current)) {
     // Preserve a key the option list does not know about rather than blanking it.
     return [...builtins, { key: current, label: current, type: 'text' }];

@@ -1,12 +1,28 @@
 /**
- * Ticket filter compiler.
+ * WorkflowItem filter compiler.
  *
- * This is the single place where the serializable filter AST becomes SQL. Ticket
- * lists, saved views and dashboard widgets all call it, so a saved view and a
- * widget can never disagree about what a filter means (ADR-0012). The module
- * deliberately owns *all* dialect knowledge for filtering — including the few
- * JSON and correlated-subquery expressions — behind portable Drizzle `SQL`
- * chunks.
+ * This is the single place where the serializable filter AST becomes SQL.
+ * Workflow-item lists, boards, saved views and dashboard widgets all call it, so
+ * a saved view and a widget can never disagree about what a filter means
+ * (ADR-0012). The module deliberately owns *all* dialect knowledge for filtering
+ * — including the few JSON and correlated-subquery expressions — behind portable
+ * Drizzle `SQL` chunks.
+ *
+ * ## The universal work model (ADR-0021)
+ *
+ * Filters compile against `workflow_items` joined to `records`; there is no
+ * `tickets` table any more. A condition therefore draws on three sources:
+ *
+ *  - **Record facts** — `key`, `number`, `displayName`, object type, record
+ *    timestamps, and base field values in `record_field_values`.
+ *  - **WorkflowItem process facts** — state, workflow, owner, entered/closed
+ *    timestamps, run/approval status, and workflow-overlay field values in
+ *    `workflow_item_field_values`.
+ *  - **Files** — linked either to the participation (`file_workflow_items`) or to
+ *    the durable Record (`file_records`); both are visible from the item.
+ *
+ * Work-overlay values win over Record base values when they exist, matching the
+ * merged read model in `workflow-items/fields.ts`.
  *
  * ## Failure mode for unknown keys
  *
@@ -21,9 +37,8 @@
  * spent in the *current* state; `now` is injectable so tests never read the wall
  * clock. `runStatus` and `approvalStatus` read the most recent related row
  * (`ORDER BY created_at DESC, id DESC LIMIT 1`). `sourceType` comes from the
- * ticket's `provenance` JSON; the SQLite form is
- * `json_extract(provenance, '$.sourceType')` and the PostgreSQL equivalent is
- * `provenance ->> 'sourceType'`.
+ * workflow item's `provenance` JSON; the SQLite form is
+ * `json_extract(provenance, '$.sourceType')`.
  *
  * ## Text matching
  *
@@ -33,7 +48,7 @@
  * `LIKE` metacharacters in a user value are escaped and the pattern uses an
  * explicit `ESCAPE '\'`, so a search for `%` matches a literal percent sign.
  */
-import { getTableColumns, type SQL, sql } from 'drizzle-orm';
+import { eq, getTableColumns, type SQL, sql } from 'drizzle-orm';
 import { errors } from '../core/errors';
 import type { Executor } from '../db/client';
 import {
@@ -44,16 +59,19 @@ import {
   fieldDefinitions,
   fileExtractedContent,
   fileFieldValues,
+  fileRecords,
   fileSources,
   files,
+  fileWorkflowItems,
   labels,
+  recordFieldValues,
+  records,
   type SavedViewSort,
-  type Ticket,
-  ticketFieldValues,
-  ticketFiles,
-  ticketLabels,
-  tickets,
+  type WorkflowItem,
   workflowFiles,
+  workflowItemFieldValues,
+  workflowItemLabels,
+  workflowItems,
   workflowStates
 } from '../db/schema';
 import {
@@ -64,7 +82,7 @@ import {
   type FilterOperator,
   isCondition,
   isGroup,
-  TicketSystemFields
+  WorkflowItemSystemFields
 } from './ast';
 
 /** A condition that matches nothing. */
@@ -74,11 +92,20 @@ const TRUE: SQL = sql`1 = 1`;
 
 type ValueType = 'text' | 'number' | 'date' | 'bool' | 'enum';
 
+/**
+ * Where a custom field's value lives.
+ *  - `record`       — durable base value on the Record (`record_field_values`);
+ *  - `workflowItem` — the merged work view: overlay value wins, base is the
+ *                     fallback (`workflow_item_field_values` ∪ `record_field_values`);
+ *  - `file`         — a file field on a file linked to the item or its record.
+ */
+type FieldSource = 'record' | 'workflowItem' | 'file';
+
 interface FieldRef {
   id: string;
   key: string;
   type: FieldType;
-  scope: 'ticket' | 'file';
+  scope: 'record' | 'file';
 }
 
 interface CompileContext {
@@ -312,85 +339,108 @@ function applyOperator(
  * System fields.
  * ------------------------------------------------------------------ */
 
+/** `records.structured_data` holds values without a field definition. */
+function structuredExpr(column: 'description' | 'priority'): SQL {
+  return sql`json_extract(${records.structuredData}, ${`$.${column}`})`;
+}
+
 function systemFieldExpression(
   key: string,
   workspaceId: string,
   now: number
 ): { expr: SQL; type: ValueType } | null {
   switch (key) {
-    case TicketSystemFields.key:
-      return { expr: sql`${tickets.key}`, type: 'text' };
-    case TicketSystemFields.number:
-      return { expr: sql`${tickets.number}`, type: 'number' };
-    case TicketSystemFields.title:
-      return { expr: sql`${tickets.title}`, type: 'text' };
-    case TicketSystemFields.description:
-      return { expr: sql`${tickets.description}`, type: 'text' };
-    case TicketSystemFields.priority:
-      return { expr: sql`${tickets.priority}`, type: 'enum' };
-    case TicketSystemFields.stateId:
-      return { expr: sql`${tickets.stateId}`, type: 'enum' };
-    case TicketSystemFields.workflowId:
-      return { expr: sql`${tickets.workflowId}`, type: 'enum' };
-    case TicketSystemFields.ownerUserId:
-      return { expr: sql`${tickets.ownerUserId}`, type: 'enum' };
-    case TicketSystemFields.ownerTeamId:
-      return { expr: sql`${tickets.ownerTeamId}`, type: 'enum' };
-    case TicketSystemFields.createdAt:
-      return { expr: sql`${tickets.createdAt}`, type: 'date' };
-    case TicketSystemFields.updatedAt:
-      return { expr: sql`${tickets.updatedAt}`, type: 'date' };
-    case TicketSystemFields.enteredStateAt:
-      return { expr: sql`${tickets.enteredStateAt}`, type: 'date' };
-    case TicketSystemFields.lastActivityAt:
-      return { expr: sql`${tickets.lastActivityAt}`, type: 'date' };
-    case TicketSystemFields.dueAt:
-      return { expr: sql`${tickets.dueAt}`, type: 'date' };
-    case TicketSystemFields.closedAt:
-      return { expr: sql`${tickets.closedAt}`, type: 'date' };
-    case TicketSystemFields.waitingOn:
-      return { expr: sql`${tickets.waitingOn}`, type: 'enum' };
-    case TicketSystemFields.originTicketId:
-      return { expr: sql`${tickets.originTicketId}`, type: 'enum' };
-    case TicketSystemFields.stateRunCount:
-      return { expr: sql`${tickets.stateRunCount}`, type: 'number' };
-    case TicketSystemFields.stateName:
+    // --- Record facts -------------------------------------------------
+    case WorkflowItemSystemFields.key:
+      return { expr: sql`${records.key}`, type: 'text' };
+    case WorkflowItemSystemFields.number:
+      return { expr: sql`${records.number}`, type: 'number' };
+    case WorkflowItemSystemFields.title:
+    case WorkflowItemSystemFields.displayName:
+      return { expr: sql`${records.displayName}`, type: 'text' };
+    case WorkflowItemSystemFields.description:
+      return { expr: structuredExpr('description'), type: 'text' };
+    case WorkflowItemSystemFields.priority:
+      // There is no priority column in the universal model: it is a Record field
+      // (or a structured value). Reading the structured projection keeps stored
+      // views working without inventing a process column.
+      return { expr: structuredExpr('priority'), type: 'enum' };
+    case WorkflowItemSystemFields.objectTypeId:
+      return { expr: sql`${records.objectTypeId}`, type: 'enum' };
+    case WorkflowItemSystemFields.recordId:
+      return { expr: sql`${workflowItems.recordId}`, type: 'enum' };
+    case WorkflowItemSystemFields.recordCreatedAt:
+      return { expr: sql`${records.createdAt}`, type: 'date' };
+    case WorkflowItemSystemFields.recordUpdatedAt:
+      return { expr: sql`${records.updatedAt}`, type: 'date' };
+    // --- WorkflowItem process facts -----------------------------------
+    case WorkflowItemSystemFields.stateId:
+      return { expr: sql`${workflowItems.stateId}`, type: 'enum' };
+    case WorkflowItemSystemFields.workflowId:
+      return { expr: sql`${workflowItems.workflowId}`, type: 'enum' };
+    case WorkflowItemSystemFields.ownerUserId:
+      return { expr: sql`${workflowItems.ownerUserId}`, type: 'enum' };
+    case WorkflowItemSystemFields.ownerTeamId:
+      return { expr: sql`${workflowItems.ownerTeamId}`, type: 'enum' };
+    case WorkflowItemSystemFields.createdAt:
+      return { expr: sql`${workflowItems.createdAt}`, type: 'date' };
+    case WorkflowItemSystemFields.updatedAt:
+      return { expr: sql`${workflowItems.updatedAt}`, type: 'date' };
+    case WorkflowItemSystemFields.enteredStateAt:
+      return { expr: sql`${workflowItems.enteredStateAt}`, type: 'date' };
+    case WorkflowItemSystemFields.lastActivityAt:
+      return { expr: sql`${workflowItems.lastActivityAt}`, type: 'date' };
+    case WorkflowItemSystemFields.dueAt:
+      return { expr: sql`${workflowItems.dueAt}`, type: 'date' };
+    case WorkflowItemSystemFields.closedAt:
+      return { expr: sql`${workflowItems.closedAt}`, type: 'date' };
+    case WorkflowItemSystemFields.completedAt:
+      return { expr: sql`${workflowItems.completedAt}`, type: 'date' };
+    case WorkflowItemSystemFields.waitingOn:
+      return { expr: sql`${workflowItems.waitingOn}`, type: 'enum' };
+    case WorkflowItemSystemFields.originWorkflowItemId:
+      return { expr: sql`${workflowItems.originWorkflowItemId}`, type: 'enum' };
+    case WorkflowItemSystemFields.participation:
+      return { expr: sql`${workflowItems.participation}`, type: 'enum' };
+    case WorkflowItemSystemFields.stateRunCount:
+      return { expr: sql`${workflowItems.stateRunCount}`, type: 'number' };
+    case WorkflowItemSystemFields.stateName:
       return {
-        expr: sql`(SELECT ${workflowStates.name} FROM ${workflowStates} WHERE ${workflowStates.id} = ${tickets.stateId} AND ${workflowStates.workspaceId} = ${workspaceId})`,
+        expr: sql`(SELECT ${workflowStates.name} FROM ${workflowStates} WHERE ${workflowStates.id} = ${workflowItems.stateId} AND ${workflowStates.workspaceId} = ${workspaceId})`,
         type: 'text'
       };
-    case TicketSystemFields.stateKind:
+    case WorkflowItemSystemFields.stateKind:
       return {
-        expr: sql`(SELECT ${workflowStates.kind} FROM ${workflowStates} WHERE ${workflowStates.id} = ${tickets.stateId} AND ${workflowStates.workspaceId} = ${workspaceId})`,
+        expr: sql`(SELECT ${workflowStates.kind} FROM ${workflowStates} WHERE ${workflowStates.id} = ${workflowItems.stateId} AND ${workflowStates.workspaceId} = ${workspaceId})`,
         type: 'enum'
       };
-    case TicketSystemFields.stateCategory:
+    case WorkflowItemSystemFields.stateCategory:
       return {
-        expr: sql`(SELECT ${workflowStates.category} FROM ${workflowStates} WHERE ${workflowStates.id} = ${tickets.stateId} AND ${workflowStates.workspaceId} = ${workspaceId})`,
+        expr: sql`(SELECT ${workflowStates.category} FROM ${workflowStates} WHERE ${workflowStates.id} = ${workflowItems.stateId} AND ${workflowStates.workspaceId} = ${workspaceId})`,
         type: 'enum'
       };
-    case TicketSystemFields.isUnassigned:
+    case WorkflowItemSystemFields.isUnassigned:
       return {
-        expr: sql`(CASE WHEN ${tickets.ownerUserId} IS NULL AND ${tickets.ownerTeamId} IS NULL THEN 1 ELSE 0 END)`,
+        expr: sql`(CASE WHEN ${workflowItems.ownerUserId} IS NULL AND ${workflowItems.ownerTeamId} IS NULL THEN 1 ELSE 0 END)`,
         type: 'bool'
       };
-    case TicketSystemFields.timeInStateSeconds:
+    case WorkflowItemSystemFields.timeInStateSeconds:
       return {
-        expr: sql`CAST((${now} - ${tickets.enteredStateAt}) / 1000 AS INTEGER)`,
+        expr: sql`CAST((${now} - ${workflowItems.enteredStateAt}) / 1000 AS INTEGER)`,
         type: 'number'
       };
-    case TicketSystemFields.runStatus:
+    case WorkflowItemSystemFields.runStatus:
       return {
-        expr: sql`(SELECT ${agentRuns.status} FROM ${agentRuns} WHERE ${agentRuns.ticketId} = ${tickets.id} AND ${agentRuns.workspaceId} = ${workspaceId} ORDER BY ${agentRuns.createdAt} DESC, ${agentRuns.id} DESC LIMIT 1)`,
+        expr: sql`(SELECT ${agentRuns.status} FROM ${agentRuns} WHERE ${agentRuns.workflowItemId} = ${workflowItems.id} AND ${agentRuns.workspaceId} = ${workspaceId} ORDER BY ${agentRuns.createdAt} DESC, ${agentRuns.id} DESC LIMIT 1)`,
         type: 'enum'
       };
-    case TicketSystemFields.approvalStatus:
+    case WorkflowItemSystemFields.approvalStatus:
       return {
-        expr: sql`(SELECT ${approvalRequests.status} FROM ${approvalRequests} WHERE ${approvalRequests.ticketId} = ${tickets.id} AND ${approvalRequests.workspaceId} = ${workspaceId} ORDER BY ${approvalRequests.createdAt} DESC, ${approvalRequests.id} DESC LIMIT 1)`,
+        expr: sql`(SELECT ${approvalRequests.status} FROM ${approvalRequests} WHERE ${approvalRequests.workflowItemId} = ${workflowItems.id} AND ${approvalRequests.workspaceId} = ${workspaceId} ORDER BY ${approvalRequests.createdAt} DESC, ${approvalRequests.id} DESC LIMIT 1)`,
         type: 'enum'
       };
-    case TicketSystemFields.sourceType:
-      return { expr: sql`json_extract(${tickets.provenance}, '$.sourceType')`, type: 'enum' };
+    case WorkflowItemSystemFields.sourceType:
+      return { expr: sql`json_extract(${workflowItems.provenance}, '$.sourceType')`, type: 'enum' };
     default:
       return null;
   }
@@ -411,7 +461,7 @@ function valueTypeForField(type: FieldType): ValueType {
   }
 }
 
-/** Typed column name inside a `ticket_field_values`/`file_field_values` alias. */
+/** Typed column name inside a field-value store alias. */
 function typedColumnName(type: FieldType, operator: FilterOperator): string {
   if (
     operator === 'contains' ||
@@ -438,13 +488,16 @@ function typedColumnName(type: FieldType, operator: FilterOperator): string {
   }
 }
 
-function columnRef(alias: 'tfv' | 'ffv', column: string): SQL {
+/** Store aliases: `wifv` = overlay, `rfv` = record base, `ffv` = file. */
+type FieldAlias = 'wifv' | 'rfv' | 'ffv';
+
+function columnRef(alias: FieldAlias, column: string): SQL {
   // The alias and column are chosen from fixed sets in this module, never from
   // user input, so `raw` here cannot become an injection vector.
   return sql.raw(`${alias}.${column}`);
 }
 
-function emptinessForColumn(alias: 'tfv' | 'ffv', type: FieldType): SQL {
+function emptinessForColumn(alias: FieldAlias, type: FieldType): SQL {
   if (type === 'multi_select') {
     const column = columnRef(alias, 'value_json');
     return sql`(${column} IS NOT NULL AND json_array_length(${column}) > 0)`;
@@ -466,11 +519,8 @@ function emptinessForColumn(alias: 'tfv' | 'ffv', type: FieldType): SQL {
  * Compilation.
  * ------------------------------------------------------------------ */
 
-function findField(
-  ctx: CompileContext,
-  scope: 'ticket' | 'file',
-  key: string
-): FieldRef | undefined {
+function findField(ctx: CompileContext, source: FieldSource, key: string): FieldRef | undefined {
+  const scope = source === 'file' ? 'file' : source;
   return ctx.fields.get(`${scope}:${key}`);
 }
 
@@ -504,13 +554,14 @@ function compileMembership(condition: FilterCondition, expr: SQL): SQL {
 }
 
 function compileOwnership(condition: FilterCondition, kind: 'owner' | 'team'): SQL {
-  const expr = kind === 'owner' ? sql`${tickets.ownerUserId}` : sql`${tickets.ownerTeamId}`;
+  const expr =
+    kind === 'owner' ? sql`${workflowItems.ownerUserId}` : sql`${workflowItems.ownerTeamId}`;
   return compileMembership(condition, expr);
 }
 
 function compileLabel(condition: FilterCondition, ctx: CompileContext): SQL {
   const labelExists = (inner: SQL): SQL =>
-    sql`EXISTS (SELECT 1 FROM ${ticketLabels} WHERE ${ticketLabels.ticketId} = ${tickets.id} AND ${ticketLabels.workspaceId} = ${ctx.workspaceId} AND ${inner})`;
+    sql`EXISTS (SELECT 1 FROM ${workflowItemLabels} WHERE ${workflowItemLabels.workflowItemId} = ${workflowItems.id} AND ${workflowItemLabels.workspaceId} = ${ctx.workspaceId} AND ${inner})`;
   const anyLabel = labelExists(sql`1 = 1`);
 
   if (condition.operator === 'is_empty') return sql`NOT (${anyLabel})`;
@@ -526,46 +577,74 @@ function compileLabel(condition: FilterCondition, ctx: CompileContext): SQL {
   if (ids.length === 0) {
     return condition.operator === 'not_in' || condition.operator === 'neq' ? TRUE : FALSE;
   }
-  const matching = labelExists(sql`${ticketLabels.labelId} IN ${inList(ids)}`);
+  const matching = labelExists(sql`${workflowItemLabels.labelId} IN ${inList(ids)}`);
   const negative = condition.operator === 'not_in' || condition.operator === 'neq';
   return existsClause(matching, negative);
 }
 
-function compileMultiSelect(
-  alias: 'tfv' | 'ffv',
-  condition: FilterCondition,
-  negative: boolean
-): SQL {
-  const values = asStringList(condition.value);
-  if (values.length === 0) return negative ? TRUE : FALSE;
-  const column = columnRef(alias, 'value_json');
-  const matching = sql`EXISTS (SELECT 1 FROM json_each(${column}) AS je WHERE je.value IN ${inList(values)})`;
-  return negative ? sql`NOT (${matching})` : matching;
+/** EXISTS against one field-value store for the current workflow item. */
+function storeExists(alias: 'wifv' | 'rfv', ctx: CompileContext, refId: string, inner: SQL): SQL {
+  if (alias === 'wifv') {
+    return sql`EXISTS (SELECT 1 FROM ${workflowItemFieldValues} wifv WHERE wifv.workflow_item_id = ${workflowItems.id} AND wifv.workspace_id = ${ctx.workspaceId} AND wifv.field_definition_id = ${refId} AND ${inner})`;
+  }
+  return sql`EXISTS (SELECT 1 FROM ${recordFieldValues} rfv WHERE rfv.record_id = ${workflowItems.recordId} AND rfv.workspace_id = ${ctx.workspaceId} AND rfv.field_definition_id = ${refId} AND ${inner})`;
 }
 
-function compileField(
-  condition: FilterCondition,
-  ctx: CompileContext,
-  scope: 'ticket' | 'file'
+/**
+ * EXISTS against the files linked to the item *or* to its Record, restricted to
+ * one field definition so a file field filter can see both attachment levels.
+ */
+function fileFieldExists(ctx: CompileContext, refId: string, inner: SQL): SQL {
+  const workBranch = sql`EXISTS (SELECT 1 FROM ${files} f JOIN ${fileFieldValues} ffv ON ffv.file_id = f.id AND ffv.workspace_id = f.workspace_id JOIN ${fileWorkflowItems} fwi ON fwi.file_id = f.id AND fwi.workspace_id = f.workspace_id WHERE fwi.workflow_item_id = ${workflowItems.id} AND fwi.workspace_id = ${ctx.workspaceId} AND fwi.removed_at IS NULL AND f.deleted_at IS NULL AND ffv.field_definition_id = ${refId} AND ${inner})`;
+  const recordBranch = sql`EXISTS (SELECT 1 FROM ${files} f JOIN ${fileFieldValues} ffv ON ffv.file_id = f.id AND ffv.workspace_id = f.workspace_id JOIN ${fileRecords} fr ON fr.file_id = f.id AND fr.workspace_id = f.workspace_id WHERE fr.record_id = ${workflowItems.recordId} AND fr.workspace_id = ${ctx.workspaceId} AND fr.removed_at IS NULL AND f.deleted_at IS NULL AND ffv.field_definition_id = ${refId} AND ${inner})`;
+  return sql`(${workBranch} OR ${recordBranch})`;
+}
+
+/** Scalar read of one typed column from one field-value store. */
+function storeValueSubquery(
+  alias: 'wifv' | 'rfv',
+  column: string,
+  refId: string,
+  ctx: CompileContext
 ): SQL {
-  const ref = findField(ctx, scope, condition.key);
+  if (alias === 'wifv') {
+    return sql`(SELECT wifv.${sql.raw(column)} FROM ${workflowItemFieldValues} wifv WHERE wifv.workflow_item_id = ${workflowItems.id} AND wifv.workspace_id = ${ctx.workspaceId} AND wifv.field_definition_id = ${refId} LIMIT 1)`;
+  }
+  return sql`(SELECT rfv.${sql.raw(column)} FROM ${recordFieldValues} rfv WHERE rfv.record_id = ${workflowItems.recordId} AND rfv.workspace_id = ${ctx.workspaceId} AND rfv.field_definition_id = ${refId} LIMIT 1)`;
+}
+
+function compileMultiSelectInner(alias: FieldAlias, condition: FilterCondition): SQL {
+  const values = asStringList(condition.value);
+  if (values.length === 0) return FALSE;
+  const column = columnRef(alias, 'value_json');
+  return sql`EXISTS (SELECT 1 FROM json_each(${column}) AS je WHERE je.value IN ${inList(values)})`;
+}
+
+/**
+ * Compile a custom-field condition. `workflowItem` merges the overlay and the
+ * Record base store (overlay value wins when present); `record` reads only the
+ * base store; `file` reads file field values at both link levels.
+ */
+function compileField(condition: FilterCondition, ctx: CompileContext, source: FieldSource): SQL {
+  const ref = findField(ctx, source, condition.key);
   if (!ref) {
     ctx.unresolved.add(condition.key);
     return FALSE;
   }
-  const alias = scope === 'ticket' ? 'tfv' : 'ffv';
 
-  const wrap = (inner: SQL, negative: boolean): SQL => {
-    if (scope === 'ticket') {
-      const query = sql`EXISTS (SELECT 1 FROM ${ticketFieldValues} tfv WHERE tfv.ticket_id = ${tickets.id} AND tfv.workspace_id = ${ctx.workspaceId} AND tfv.field_definition_id = ${ref.id} AND ${inner})`;
-      return existsClause(query, negative);
-    }
-    const query = sql`EXISTS (SELECT 1 FROM ${ticketFiles} tfl JOIN ${files} f ON f.id = tfl.file_id AND f.workspace_id = tfl.workspace_id JOIN ${fileFieldValues} ffv ON ffv.file_id = f.id AND ffv.workspace_id = f.workspace_id WHERE tfl.ticket_id = ${tickets.id} AND tfl.workspace_id = ${ctx.workspaceId} AND tfl.removed_at IS NULL AND f.deleted_at IS NULL AND ffv.field_definition_id = ${ref.id} AND ${inner})`;
-    return existsClause(query, negative);
+  const stores: FieldAlias[] =
+    source === 'workflowItem' ? ['wifv', 'rfv'] : source === 'record' ? ['rfv'] : ['ffv'];
+
+  const build = (alias: FieldAlias, inner: SQL): SQL => {
+    if (alias === 'ffv') return fileFieldExists(ctx, ref.id, inner);
+    return storeExists(alias, ctx, ref.id, inner);
   };
 
   if (condition.operator === 'is_empty' || condition.operator === 'is_not_empty') {
-    const positive = wrap(emptinessForColumn(alias, ref.type), false);
+    const positive = sql`(${sql.join(
+      stores.map((alias) => build(alias, emptinessForColumn(alias, ref.type))),
+      sql` OR `
+    )})`;
     return condition.operator === 'is_empty' ? sql`NOT (${positive})` : positive;
   }
 
@@ -573,22 +652,54 @@ function compileField(
   const operator = positiveOperator(condition.operator);
 
   if (ref.type === 'multi_select') {
-    return wrap(compileMultiSelect(alias, { ...condition, operator }, false), negative);
+    // A multi-value array cannot be merged column-wise, so membership is the
+    // union of the overlay and base arrays.
+    const matching = sql`(${sql.join(
+      stores.map((alias) =>
+        build(alias, compileMultiSelectInner(alias, { ...condition, operator }))
+      ),
+      sql` OR `
+    )})`;
+    return existsClause(matching, negative);
   }
 
+  if (source === 'file') {
+    const columnName = typedColumnName(ref.type, operator);
+    const type: ValueType = columnName === 'search_text' ? 'text' : valueTypeForField(ref.type);
+    const value =
+      columnName === 'search_text'
+        ? (asString(condition.value)?.toLowerCase() ?? condition.value)
+        : condition.value;
+    const matching = sql`(${sql.join(
+      stores.map((alias) => {
+        const inner = applyOperator(columnRef(alias, columnName), type, operator, value, ctx.now);
+        return build(alias, inner);
+      }),
+      sql` OR `
+    )})`;
+    return existsClause(matching, negative);
+  }
+
+  // Scalar fields compare the *merged* value: the workflow overlay shadows the
+  // Record base, which is the same rule the read model uses. An item with no
+  // value at all still satisfies a negative operator (legacy behaviour).
   const columnName = typedColumnName(ref.type, operator);
-  const column = columnRef(alias, columnName);
   const type: ValueType = columnName === 'search_text' ? 'text' : valueTypeForField(ref.type);
   const value =
     columnName === 'search_text'
       ? (asString(condition.value)?.toLowerCase() ?? condition.value)
       : condition.value;
-  const inner = applyOperator(column, type, operator, value, ctx.now);
-  return wrap(inner, negative);
+  const merged =
+    source === 'workflowItem'
+      ? sql`COALESCE(${storeValueSubquery('wifv', columnName, ref.id, ctx)}, ${storeValueSubquery('rfv', columnName, ref.id, ctx)})`
+      : storeValueSubquery('rfv', columnName, ref.id, ctx);
+  const hasValue = notEmptyPredicate(merged, type);
+  const matched = sql`(${hasValue} AND ${applyOperator(merged, type, operator, value, ctx.now)})`;
+  return negative ? sql`NOT (${matched})` : matched;
 }
 
 /* ------------------------------------------------------------------ *
- * File-kind filters: files linked to the ticket through `ticket_files`.
+ * File-kind filters: files linked to the item or its Record.
  * ------------------------------------------------------------------ */
 
 interface FileAccess {
@@ -617,8 +728,18 @@ function fileProperty(key: string): FileAccess | null {
       return { expr: sql`f.updated_at`, type: 'date', extraJoin: NO_JOIN };
     case 'workflowId':
       return { expr: sql`f.primary_workflow_id`, type: 'enum', extraJoin: NO_JOIN };
-    case 'ticketId':
-      return { expr: sql`tfl.ticket_id`, type: 'enum', extraJoin: NO_JOIN };
+    case 'workflowItemId':
+      return {
+        expr: sql`(SELECT fwi.workflow_item_id FROM ${fileWorkflowItems} fwi WHERE fwi.file_id = f.id AND fwi.removed_at IS NULL LIMIT 1)`,
+        type: 'enum',
+        extraJoin: NO_JOIN
+      };
+    case 'recordId':
+      return {
+        expr: sql`(SELECT fr.record_id FROM ${fileRecords} fr WHERE fr.file_id = f.id AND fr.removed_at IS NULL LIMIT 1)`,
+        type: 'enum',
+        extraJoin: NO_JOIN
+      };
     case 'pageCount':
       return {
         expr: sql`json_extract(f.metadata, '$.pageCount')`,
@@ -660,10 +781,19 @@ function fileProperty(key: string): FileAccess | null {
   }
 }
 
+/**
+ * UNION of the two attachment levels: a participation link or a Record link.
+ */
+function fileLinkUnion(extraJoin: SQL, inner: SQL, ctx: CompileContext, negative: boolean): SQL {
+  const work = sql`EXISTS (SELECT 1 FROM ${fileWorkflowItems} fwi JOIN ${files} f ON f.id = fwi.file_id AND f.workspace_id = fwi.workspace_id ${extraJoin} WHERE fwi.workflow_item_id = ${workflowItems.id} AND fwi.workspace_id = ${ctx.workspaceId} AND fwi.removed_at IS NULL AND f.deleted_at IS NULL AND ${inner})`;
+  const record = sql`EXISTS (SELECT 1 FROM ${fileRecords} fr JOIN ${files} f ON f.id = fr.file_id AND f.workspace_id = fr.workspace_id ${extraJoin} WHERE fr.record_id = ${workflowItems.recordId} AND fr.workspace_id = ${ctx.workspaceId} AND fr.removed_at IS NULL AND f.deleted_at IS NULL AND ${inner})`;
+  return existsClause(sql`(${work} OR ${record})`, negative);
+}
+
 function compileFile(condition: FilterCondition, ctx: CompileContext): SQL {
-  const filesExist = sql`EXISTS (SELECT 1 FROM ${ticketFiles} tfl JOIN ${files} f ON f.id = tfl.file_id AND f.workspace_id = tfl.workspace_id WHERE tfl.ticket_id = ${tickets.id} AND tfl.workspace_id = ${ctx.workspaceId} AND tfl.removed_at IS NULL AND f.deleted_at IS NULL)`;
-  if (condition.operator === 'is_empty') return sql`NOT (${filesExist})`;
-  if (condition.operator === 'is_not_empty') return filesExist;
+  const any = sql`((SELECT 1 FROM ${files} f JOIN ${fileWorkflowItems} fwi ON fwi.file_id = f.id AND fwi.workspace_id = f.workspace_id WHERE fwi.workflow_item_id = ${workflowItems.id} AND fwi.workspace_id = ${ctx.workspaceId} AND fwi.removed_at IS NULL AND f.deleted_at IS NULL LIMIT 1) IS NOT NULL OR (SELECT 1 FROM ${files} f JOIN ${fileRecords} fr ON fr.file_id = f.id AND fr.workspace_id = f.workspace_id WHERE fr.record_id = ${workflowItems.recordId} AND fr.workspace_id = ${ctx.workspaceId} AND fr.removed_at IS NULL AND f.deleted_at IS NULL LIMIT 1) IS NOT NULL)`;
+  if (condition.operator === 'is_empty') return sql`NOT (${any})`;
+  if (condition.operator === 'is_not_empty') return any;
 
   const access = fileProperty(condition.key);
   if (!access) {
@@ -673,8 +803,7 @@ function compileFile(condition: FilterCondition, ctx: CompileContext): SQL {
   const negative = isNegativeOperator(condition.operator);
   const operator = positiveOperator(condition.operator);
   const inner = applyOperator(access.expr, access.type, operator, condition.value, ctx.now);
-  const query = sql`EXISTS (SELECT 1 FROM ${ticketFiles} tfl JOIN ${files} f ON f.id = tfl.file_id AND f.workspace_id = tfl.workspace_id ${access.extraJoin} WHERE tfl.ticket_id = ${tickets.id} AND tfl.workspace_id = ${ctx.workspaceId} AND tfl.removed_at IS NULL AND f.deleted_at IS NULL AND ${inner})`;
-  return existsClause(query, negative);
+  return fileLinkUnion(access.extraJoin, inner, ctx, negative);
 }
 
 function compileRelated(
@@ -683,22 +812,22 @@ function compileRelated(
   kind: 'run' | 'approval'
 ): SQL {
   if (kind === 'run') {
-    const any = sql`EXISTS (SELECT 1 FROM ${agentRuns} WHERE ${agentRuns.ticketId} = ${tickets.id} AND ${agentRuns.workspaceId} = ${ctx.workspaceId})`;
+    const any = sql`EXISTS (SELECT 1 FROM ${agentRuns} WHERE ${agentRuns.workflowItemId} = ${workflowItems.id} AND ${agentRuns.workspaceId} = ${ctx.workspaceId})`;
     if (condition.operator === 'is_empty') return sql`NOT (${any})`;
     if (condition.operator === 'is_not_empty') return any;
     const values = valuesOf(condition);
     if (values.length === 0) return condition.operator === 'not_in' ? TRUE : FALSE;
     const negative = condition.operator === 'not_in' || condition.operator === 'neq';
-    const query = sql`EXISTS (SELECT 1 FROM ${agentRuns} WHERE ${agentRuns.ticketId} = ${tickets.id} AND ${agentRuns.workspaceId} = ${ctx.workspaceId} AND ${agentRuns.status} IN ${inList(values)})`;
+    const query = sql`EXISTS (SELECT 1 FROM ${agentRuns} WHERE ${agentRuns.workflowItemId} = ${workflowItems.id} AND ${agentRuns.workspaceId} = ${ctx.workspaceId} AND ${agentRuns.status} IN ${inList(values)})`;
     return existsClause(query, negative);
   }
-  const any = sql`EXISTS (SELECT 1 FROM ${approvalRequests} WHERE ${approvalRequests.ticketId} = ${tickets.id} AND ${approvalRequests.workspaceId} = ${ctx.workspaceId})`;
+  const any = sql`EXISTS (SELECT 1 FROM ${approvalRequests} WHERE ${approvalRequests.workflowItemId} = ${workflowItems.id} AND ${approvalRequests.workspaceId} = ${ctx.workspaceId})`;
   if (condition.operator === 'is_empty') return sql`NOT (${any})`;
   if (condition.operator === 'is_not_empty') return any;
   const values = valuesOf(condition);
   if (values.length === 0) return condition.operator === 'not_in' ? TRUE : FALSE;
   const negative = condition.operator === 'not_in' || condition.operator === 'neq';
-  const query = sql`EXISTS (SELECT 1 FROM ${approvalRequests} WHERE ${approvalRequests.ticketId} = ${tickets.id} AND ${approvalRequests.workspaceId} = ${ctx.workspaceId} AND ${approvalRequests.status} IN ${inList(values)})`;
+  const query = sql`EXISTS (SELECT 1 FROM ${approvalRequests} WHERE ${approvalRequests.workflowItemId} = ${workflowItems.id} AND ${approvalRequests.workspaceId} = ${ctx.workspaceId} AND ${approvalRequests.status} IN ${inList(values)})`;
   return existsClause(query, negative);
 }
 
@@ -707,7 +836,9 @@ function compileCondition(condition: FilterCondition, ctx: CompileContext): SQL 
     case 'system':
       return compileSystem(condition, ctx);
     case 'field':
-      return compileField(condition, ctx, 'ticket');
+      return compileField(condition, ctx, 'workflowItem');
+    case 'record_field':
+      return compileField(condition, ctx, 'record');
     case 'file_field':
       return compileField(condition, ctx, 'file');
     case 'label':
@@ -717,9 +848,9 @@ function compileCondition(condition: FilterCondition, ctx: CompileContext): SQL 
     case 'team':
       return compileOwnership(condition, 'team');
     case 'workflow':
-      return compileMembership(condition, sql`${tickets.workflowId}`);
+      return compileMembership(condition, sql`${workflowItems.workflowId}`);
     case 'state':
-      return compileMembership(condition, sql`${tickets.stateId}`);
+      return compileMembership(condition, sql`${workflowItems.stateId}`);
     case 'run':
       return compileRelated(condition, ctx, 'run');
     case 'approval':
@@ -727,7 +858,7 @@ function compileCondition(condition: FilterCondition, ctx: CompileContext): SQL 
     case 'file':
       return compileFile(condition, ctx);
     default:
-      // `collection` has no ticket-side representation in this milestone.
+      // `relationship`/`collection` have no filter representation in this milestone.
       ctx.unresolved.add(condition.key);
       return FALSE;
   }
@@ -770,7 +901,7 @@ function collectLabelIdentifiers(node: FilterNode | null, out = new Set<string>(
 
 async function createContext(
   db: Executor,
-  options: CompileTicketFilterOptions
+  options: CompileWorkflowItemFilterOptions
 ): Promise<CompileContext> {
   const ctx: CompileContext = {
     workspaceId: options.workspaceId,
@@ -795,11 +926,20 @@ async function createContext(
       )
       .all();
     for (const row of rows) {
-      const ref: FieldRef = { id: row.id, key: row.key, type: row.type, scope: row.scope };
-      // Key wins over id when a definition happens to be addressed by both.
-      if (!ctx.fields.has(`${ref.scope}:${ref.key}`))
-        ctx.fields.set(`${ref.scope}:${ref.key}`, ref);
-      ctx.fields.set(`${ref.scope}:${ref.id}`, ref);
+      // Non-file definitions are Record fields. They are registered under both
+      // `record` (base store) and `workflowItem` (merged overlay/base view) so a
+      // `field` condition sees the work overlay while `record_field` sees base.
+      if (row.scope === 'file') {
+        const ref: FieldRef = { id: row.id, key: row.key, type: row.type, scope: 'file' };
+        if (!ctx.fields.has(`file:${ref.key}`)) ctx.fields.set(`file:${ref.key}`, ref);
+        ctx.fields.set(`file:${ref.id}`, ref);
+        continue;
+      }
+      const ref: FieldRef = { id: row.id, key: row.key, type: row.type, scope: 'record' };
+      for (const source of ['record', 'workflowItem'] as const) {
+        if (!ctx.fields.has(`${source}:${ref.key}`)) ctx.fields.set(`${source}:${ref.key}`, ref);
+        ctx.fields.set(`${source}:${ref.id}`, ref);
+      }
     }
   }
 
@@ -821,14 +961,14 @@ async function createContext(
   return ctx;
 }
 
-export interface CompileTicketFilterOptions {
+export interface CompileWorkflowItemFilterOptions {
   workspaceId: string;
   filter: FilterAst | null;
   /** Injectable clock for `timeInStateSeconds` and relative date operators. */
   now?: number;
 }
 
-export interface CompiledTicketFilter {
+export interface CompiledWorkflowItemFilter {
   sql: SQL;
   /**
    * Keys that could not be resolved (unknown field keys, unknown system keys,
@@ -840,24 +980,60 @@ export interface CompiledTicketFilter {
 
 /**
  * Compile a filter and report unresolvable keys. Use this at boundaries that can
- * show a warning; use `compileTicketFilter` when only the condition is needed.
+ * show a warning; use `compileWorkflowItemFilter` when only the condition is needed.
  */
-export async function compileTicketFilterDetailed(
+export async function compileWorkflowItemFilterDetailed(
   db: Executor,
-  options: CompileTicketFilterOptions
-): Promise<CompiledTicketFilter> {
+  options: CompileWorkflowItemFilterOptions
+): Promise<CompiledWorkflowItemFilter> {
   const ctx = await createContext(db, options);
   const condition = options.filter ? compileNode(options.filter, ctx) : TRUE;
   return { sql: condition, unresolved: [...ctx.unresolved].sort() };
 }
 
-/** Compile a ticket filter into a Drizzle condition usable in `.where(...)`. */
-export async function compileTicketFilter(
+/** Compile a workflow-item filter into a Drizzle condition usable in `.where(...)`. */
+export async function compileWorkflowItemFilter(
   db: Executor,
-  options: CompileTicketFilterOptions
+  options: CompileWorkflowItemFilterOptions
 ): Promise<SQL> {
-  const compiled = await compileTicketFilterDetailed(db, options);
+  const compiled = await compileWorkflowItemFilterDetailed(db, options);
   return compiled.sql;
+}
+
+/* ------------------------------------------------------------------ *
+ * Injectable seam.
+ *
+ * The board/list surface depends on the filter language but must not import
+ * analytics directly, so it resolves the active compiler through this registry.
+ * Bootstrap installs the canonical implementation; tests may swap it.
+ * ------------------------------------------------------------------ */
+
+export interface WorkflowItemFilterCompiler {
+  /**
+   * Compile a filter AST into a Drizzle condition. May be asynchronous: the
+   * canonical implementation resolves field definitions before building conditions.
+   */
+  compile(
+    db: Executor,
+    options: { workspaceId: string; filter: FilterAst | null }
+  ): CompiledWorkflowItemFilter | Promise<CompiledWorkflowItemFilter>;
+}
+
+/** The default compiler; replaceable through {@link setWorkflowItemFilterCompiler}. */
+export const defaultWorkflowItemFilterCompiler: WorkflowItemFilterCompiler = {
+  compile(db, options) {
+    return compileWorkflowItemFilterDetailed(db, options);
+  }
+};
+
+let activeCompiler: WorkflowItemFilterCompiler = defaultWorkflowItemFilterCompiler;
+
+export function setWorkflowItemFilterCompiler(compiler: WorkflowItemFilterCompiler | null): void {
+  activeCompiler = compiler ?? defaultWorkflowItemFilterCompiler;
+}
+
+export function getWorkflowItemFilterCompiler(): WorkflowItemFilterCompiler {
+  return activeCompiler;
 }
 
 /* ------------------------------------------------------------------ *
@@ -882,6 +1058,19 @@ function sortCoalesce(expr: SQL, type: ValueType): SQL {
     : sql`COALESCE(${expr}, 0)`;
 }
 
+/** Merged overlay/base scalar read for one field definition (overlay wins). */
+function fieldValueSubquery(
+  alias: 'wifv' | 'rfv',
+  column: string,
+  workspaceId: string,
+  fieldId: string
+): SQL {
+  if (alias === 'wifv') {
+    return sql`(SELECT wifv.${sql.raw(column)} FROM ${workflowItemFieldValues} wifv WHERE wifv.workflow_item_id = ${workflowItems.id} AND wifv.workspace_id = ${workspaceId} AND wifv.field_definition_id = ${fieldId} LIMIT 1)`;
+  }
+  return sql`(SELECT rfv.${sql.raw(column)} FROM ${recordFieldValues} rfv WHERE rfv.record_id = ${workflowItems.recordId} AND rfv.workspace_id = ${workspaceId} AND rfv.field_definition_id = ${fieldId} LIMIT 1)`;
+}
+
 async function resolveSortPlan(
   db: Executor,
   workspaceId: string,
@@ -889,14 +1078,16 @@ async function resolveSortPlan(
   now: number
 ): Promise<ResolvedSortPlan> {
   const requested: SavedViewSort[] =
-    sort && sort.length > 0 ? sort : [{ field: TicketSystemFields.updatedAt, direction: 'desc' }];
+    sort && sort.length > 0
+      ? sort
+      : [{ field: WorkflowItemSystemFields.updatedAt, direction: 'desc' }];
 
   // `updatedAt` is always the pagination identity, so a caller-supplied
   // `updatedAt` sort only chooses the tail direction; it is not duplicated.
   let tailDirection: 'asc' | 'desc' = 'desc';
   const remaining: SavedViewSort[] = [];
   for (const entry of requested) {
-    if (entry.field === TicketSystemFields.updatedAt) {
+    if (entry.field === WorkflowItemSystemFields.updatedAt) {
       tailDirection = entry.direction === 'asc' ? 'asc' : 'desc';
       continue;
     }
@@ -904,7 +1095,7 @@ async function resolveSortPlan(
   }
 
   const customKeys = remaining
-    .filter((entry) => !(entry.field in TicketSystemFields))
+    .filter((entry) => !(entry.field in WorkflowItemSystemFields))
     .map((entry) => entry.field);
   const fieldRows =
     customKeys.length > 0
@@ -916,7 +1107,7 @@ async function resolveSortPlan(
           })
           .from(fieldDefinitions)
           .where(
-            sql`${fieldDefinitions.workspaceId} = ${workspaceId} AND ${fieldDefinitions.scope} = 'ticket' AND (${fieldDefinitions.key} IN ${inList(customKeys)} OR ${fieldDefinitions.id} IN ${inList(customKeys)})`
+            sql`${fieldDefinitions.workspaceId} = ${workspaceId} AND ${fieldDefinitions.scope} <> 'file' AND (${fieldDefinitions.key} IN ${inList(customKeys)} OR ${fieldDefinitions.id} IN ${inList(customKeys)})`
           )
           .all()
       : [];
@@ -928,7 +1119,7 @@ async function resolveSortPlan(
 
   const sorts: ResolvedSort[] = [];
   for (const entry of remaining) {
-    if (entry.field in TicketSystemFields) {
+    if (entry.field in WorkflowItemSystemFields) {
       const field = systemFieldExpression(entry.field, workspaceId, now);
       if (!field) {
         throw errors.validation(`Unknown sort field: ${entry.field}`, { field: entry.field });
@@ -946,8 +1137,8 @@ async function resolveSortPlan(
       throw errors.validation(`Unknown sort field: ${entry.field}`, { field: entry.field });
     }
     const type = valueTypeForField(definition.type);
-    const column = columnRef('tfv', typedColumnName(definition.type, 'eq'));
-    const expr = sql`(SELECT ${column} FROM ${ticketFieldValues} tfv WHERE tfv.ticket_id = ${tickets.id} AND tfv.workspace_id = ${workspaceId} AND tfv.field_definition_id = ${definition.id} LIMIT 1)`;
+    const column = typedColumnName(definition.type, 'eq');
+    const expr = sql`COALESCE(${fieldValueSubquery('wifv', column, workspaceId, definition.id)}, ${fieldValueSubquery('rfv', column, workspaceId, definition.id)})`;
     sorts.push({
       field: entry.field,
       expr: sortCoalesce(expr, type),
@@ -959,20 +1150,20 @@ async function resolveSortPlan(
   return { sorts, tailDirection };
 }
 
-export interface TicketCursor {
+export interface WorkflowItemCursor {
   /** Sort-key values for the custom part of the ordering tuple. */
   keys: Array<string | number | null>;
   updatedAt: number;
   id: string;
 }
 
-export function encodeTicketCursor(cursor: TicketCursor): string {
+export function encodeWorkflowItemCursor(cursor: WorkflowItemCursor): string {
   return Buffer.from(
     JSON.stringify({ k: cursor.keys, u: cursor.updatedAt, i: cursor.id })
   ).toString('base64url');
 }
 
-export function decodeTicketCursor(value: string): TicketCursor {
+export function decodeWorkflowItemCursor(value: string): WorkflowItemCursor {
   let parsed: unknown;
   try {
     parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
@@ -998,9 +1189,9 @@ export function decodeTicketCursor(value: string): TicketCursor {
 /**
  * Lexicographic keyset predicate over `[...sorts, updatedAt, id]`, honouring a
  * per-field direction. The default ordering is exactly `(updatedAt, id)`, which
- * is what the index on `tickets(workspace_id, updated_at)` wants.
+ * is what the index on `workflow_items(workspace_id, updated_at)` wants.
  */
-function keysetPredicate(plan: ResolvedSortPlan, cursor: TicketCursor): SQL {
+function keysetPredicate(plan: ResolvedSortPlan, cursor: WorkflowItemCursor): SQL {
   const alternatives: SQL[] = [];
   const prefix: SQL[] = [];
   for (let index = 0; index < plan.sorts.length; index++) {
@@ -1013,18 +1204,18 @@ function keysetPredicate(plan: ResolvedSortPlan, cursor: TicketCursor): SQL {
   }
   const idComparison =
     plan.tailDirection === 'asc'
-      ? sql`${tickets.id} > ${cursor.id}`
-      : sql`${tickets.id} < ${cursor.id}`;
+      ? sql`${workflowItems.id} > ${cursor.id}`
+      : sql`${workflowItems.id} < ${cursor.id}`;
   const updatedComparison =
     plan.tailDirection === 'asc'
-      ? sql`${tickets.updatedAt} > ${cursor.updatedAt}`
-      : sql`${tickets.updatedAt} < ${cursor.updatedAt}`;
-  const tail = sql`(${updatedComparison} OR (${tickets.updatedAt} = ${cursor.updatedAt} AND ${idComparison}))`;
+      ? sql`${workflowItems.updatedAt} > ${cursor.updatedAt}`
+      : sql`${workflowItems.updatedAt} < ${cursor.updatedAt}`;
+  const tail = sql`(${updatedComparison} OR (${workflowItems.updatedAt} = ${cursor.updatedAt} AND ${idComparison}))`;
   alternatives.push(sql`(${sql.join([...prefix, tail], sql` AND `)})`);
   return sql`(${sql.join(alternatives, sql` OR `)})`;
 }
 
-export interface FilterTicketsOptions {
+export interface FilterWorkflowItemsOptions {
   workspaceId: string;
   filter: FilterAst | null;
   sort?: SavedViewSort[] | null;
@@ -1033,34 +1224,37 @@ export interface FilterTicketsOptions {
   now?: number;
 }
 
-export interface TicketListPage {
-  rows: Ticket[];
+export interface WorkflowItemListPage {
+  rows: WorkflowItem[];
   /** `null` when the last page was reached. */
   nextCursor: string | null;
   unresolved: string[];
 }
 
 /**
- * List tickets for a workspace with the shared filter language, validated
+ * List workflow items for a workspace with the shared filter language, validated
  * sorting and keyset pagination by `(updatedAt, id)` (with custom sort keys
  * folded into the cursor so a non-default sort is still exact).
  */
-export async function filterTickets(
+export async function filterWorkflowItems(
   db: Executor,
-  options: FilterTicketsOptions
-): Promise<TicketListPage> {
+  options: FilterWorkflowItemsOptions
+): Promise<WorkflowItemListPage> {
   const now = options.now ?? Date.now();
   const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
-  const compiled = await compileTicketFilterDetailed(db, {
+  const compiled = await compileWorkflowItemFilterDetailed(db, {
     workspaceId: options.workspaceId,
     filter: options.filter,
     now
   });
   const plan = await resolveSortPlan(db, options.workspaceId, options.sort, now);
 
-  const conditions: SQL[] = [sql`${tickets.workspaceId} = ${options.workspaceId}`, compiled.sql];
+  const conditions: SQL[] = [
+    sql`${workflowItems.workspaceId} = ${options.workspaceId}`,
+    compiled.sql
+  ];
   if (options.cursor) {
-    conditions.push(keysetPredicate(plan, decodeTicketCursor(options.cursor)));
+    conditions.push(keysetPredicate(plan, decodeWorkflowItemCursor(options.cursor)));
   }
   const where = sql.join(conditions, sql` AND `);
 
@@ -1068,9 +1262,13 @@ export async function filterTickets(
     sort.direction === 'asc' ? sql`${sort.expr} ASC` : sql`${sort.expr} DESC`
   );
   orderParts.push(
-    plan.tailDirection === 'asc' ? sql`${tickets.updatedAt} ASC` : sql`${tickets.updatedAt} DESC`
+    plan.tailDirection === 'asc'
+      ? sql`${workflowItems.updatedAt} ASC`
+      : sql`${workflowItems.updatedAt} DESC`
   );
-  orderParts.push(plan.tailDirection === 'asc' ? sql`${tickets.id} ASC` : sql`${tickets.id} DESC`);
+  orderParts.push(
+    plan.tailDirection === 'asc' ? sql`${workflowItems.id} ASC` : sql`${workflowItems.id} DESC`
+  );
 
   const keysExpression =
     plan.sorts.length === 0
@@ -1080,9 +1278,12 @@ export async function filterTickets(
           sql`, `
         )})`;
 
+  // The Record join is required because the compiled filter may reference
+  // record-level columns or base field values.
   const selected = await db
-    .select({ ...getTableColumns(tickets), sortKeys: keysExpression })
-    .from(tickets)
+    .select({ ...getTableColumns(workflowItems), sortKeys: keysExpression })
+    .from(workflowItems)
+    .innerJoin(records, eq(records.id, workflowItems.recordId))
     .where(where)
     .orderBy(...orderParts)
     // One extra row detects "there is another page" without a second query.
@@ -1091,13 +1292,13 @@ export async function filterTickets(
 
   const hasMore = selected.length > limit;
   const page = hasMore ? selected.slice(0, limit) : selected;
-  const rows: Ticket[] = [];
+  const rows: WorkflowItem[] = [];
   let nextCursor: string | null = null;
   for (const selectedRow of page) {
-    const { sortKeys, ...ticket } = selectedRow;
-    rows.push(ticket as Ticket);
+    const { sortKeys, ...item } = selectedRow;
+    rows.push(item as WorkflowItem);
     const keys = normalizeSortKeys(sortKeys);
-    nextCursor = encodeTicketCursor({ keys, updatedAt: ticket.updatedAt, id: ticket.id });
+    nextCursor = encodeWorkflowItemCursor({ keys, updatedAt: item.updatedAt, id: item.id });
   }
   if (!hasMore) nextCursor = null;
 

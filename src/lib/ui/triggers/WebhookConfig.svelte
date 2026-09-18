@@ -196,7 +196,7 @@ const secretOptions = $derived.by(() => {
     <div>
       <p class="text-sm font-semibold text-[var(--color-ink)]">Payload mapping</p>
       <p class="text-xs leading-relaxed text-[var(--color-ink-subtle)]">
-        Decide how an incoming payload becomes a ticket.
+        Decide how an incoming payload becomes a work item.
       </p>
     </div>
     <TriggerMappingEditor bind:mapping {workflows} />

@@ -8,6 +8,7 @@
  */
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { bool, createdAt, epochMs, json, primaryId, updatedAt } from './_helpers';
+import { objectTypes } from './records';
 import { users, workspaces } from './tenancy';
 
 export type StateKind = 'manual' | 'agent' | 'system' | 'terminal';
@@ -37,6 +38,29 @@ export interface StateConfig {
   runOncePerEntry?: boolean;
   wipLimit?: number;
   slaSeconds?: number;
+  /**
+   * Enforced structured submission (ADR-0023). For record-bound runs, the agent
+   * must successfully call this tool with a payload validated against the record's
+   * Object Type schema before the run may succeed; otherwise the runner nudges it
+   * and, after `maxNudges`, fails the run.
+   */
+  requiredSubmission?: RequiredSubmissionConfig;
+  /**
+   * A Zod schema authored as source that applies while work is in this state. It is
+   * validated against the submitted record in addition to the Object Type contract,
+   * so a step can demand data the record schema does not (ADR-0023). The same
+   * source is compiled on every submission, which is what makes it reusable.
+   */
+  zodSchema?: string;
+}
+
+export interface RequiredSubmissionConfig {
+  /** Defaults to `workflowItems.submit`. */
+  toolKey?: string;
+  /** Corrective nudges before the run fails. Defaults to 2. */
+  maxNudges?: number;
+  /** Allow the submission to name a different target Workflow. Defaults to true. */
+  allowWorkflowChange?: boolean;
 }
 
 export interface AgentContextConfig {
@@ -49,13 +73,15 @@ export interface AgentContextConfig {
   includeFullFileContent?: boolean;
   includeHistory?: boolean;
   includeStateHistory?: boolean;
+  /** Include the effective Object Type schema and submission contract. */
+  includeRecordSchema?: boolean;
 }
 
 export type SystemAction =
   | { type: 'transition'; targetStateId?: string }
   | { type: 'setFields'; values: Record<string, unknown> }
   | { type: 'emitEvent'; name: string }
-  | { type: 'createTicket'; workflowId: string; titleTemplate: string }
+  | { type: 'createWorkItem'; workflowId: string; titleTemplate: string }
   | { type: 'http'; operationId: string }
   | { type: 'wait'; seconds: number };
 
@@ -71,7 +97,15 @@ export const workflows = sqliteTable(
     description: text('description'),
     icon: text('icon'),
     color: text('color'),
-    /** Default state for tickets created without an explicit state. */
+    /**
+     * The Object Type this Workflow processes (ADR-0021). Null is tolerated only
+     * for rows written before the universal model; the service resolves them to
+     * the workspace's Ticket object type.
+     */
+    objectTypeId: text('object_type_id').references(() => objectTypes.id, {
+      onDelete: 'restrict'
+    }),
+    /** Default state for items created without an explicit state. */
     defaultStateId: text('default_state_id'),
     settings: json<WorkflowSettings>('settings'),
     position: integer('position').notNull().default(0),
@@ -93,9 +127,19 @@ export interface WorkflowSettings {
   transfer?: TransferSettings;
   defaultTimezone?: string;
   /** Allow agents in this workflow to create tickets at all. */
-  allowAgentTicketCreation?: boolean;
-  allowHumanTicketCreation?: boolean;
+  allowAgentWorkCreation?: boolean;
+  allowHumanWorkCreation?: boolean;
   requiresApprovalToClose?: boolean;
+  /**
+   * Whether one Record may have more than one *active* WorkflowItem in this
+   * workflow. Defaults to false (at most one active participation).
+   */
+  allowMultipleActiveItems?: boolean;
+  /**
+   * The authoritative Zod contract for this workflow's overlay fields, authored as
+   * source (ADR-0023). Bound `workflow_fields` are a projection of it.
+   */
+  zodSchema?: string;
 }
 
 export interface TransferSettings {
@@ -242,7 +286,7 @@ export const labels = sqliteTable(
   (table) => [uniqueIndex('labels_unique').on(table.workspaceId, table.name)]
 );
 
-export type SavedViewScope = 'tickets' | 'files';
+export type SavedViewScope = 'workflowItems' | 'files';
 
 export interface SavedViewSort {
   field: string;
@@ -263,7 +307,7 @@ export const savedViews = sqliteTable(
       .references(() => workspaces.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     description: text('description'),
-    scope: text('scope').$type<SavedViewScope>().notNull().default('tickets'),
+    scope: text('scope').$type<SavedViewScope>().notNull().default('workflowItems'),
     workflowId: text('workflow_id'),
     filterAst: json<unknown>('filter_ast'),
     sort: json<SavedViewSort[]>('sort'),

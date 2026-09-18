@@ -17,7 +17,7 @@ export interface WebhookTriggerConfig {
   signatureRequired?: boolean;
   signatureHeader?: string;
   signatureSecretId?: string;
-  /** How the incoming payload maps onto a ticket. */
+  /** How the incoming payload maps onto a Record + WorkflowItem. */
   mapping?: TriggerMapping;
   /** Reject payloads larger than this. */
   maxPayloadBytes?: number;
@@ -38,9 +38,10 @@ export interface ManualTriggerConfig {
 }
 
 /**
- * Declarative mapping from an external payload to a ticket. Mapping is data, not
- * code, so an incoming email/webhook can populate typed fields, attach files and
- * request an initial state without bespoke database work.
+ * Declarative mapping from an external payload to a Record and the WorkflowItem
+ * that starts work on it. Mapping is data, not code, so an incoming
+ * email/webhook can populate typed fields, attach files and request an initial
+ * state without bespoke database work.
  */
 export interface TriggerMapping {
   /** Dot-path into the payload, e.g. `data.customer.email`. */
@@ -56,13 +57,14 @@ export interface TriggerMapping {
   /** `{ fieldKey: dotPath | { template } }` */
   fieldPaths?: Record<string, string>;
   fieldTemplates?: Record<string, string>;
+  /** @deprecated Labels are a legacy Ticket concept; ignored by the universal mapper. */
   labels?: string[];
   /** `payload.attachments[]` entries become ingested files. */
   attachmentPaths?: string[];
-  /** Dedupe key template; prevents duplicate tickets on webhook redelivery. */
+  /** Dedupe key template; prevents duplicate records/work on webhook redelivery. */
   dedupeTemplate?: string;
-  /** When true the created ticket is a child of the ticket in `parentTicketPath`. */
-  parentTicketPath?: string;
+  /** When true the created work item is a child of the work item for the record at `parentRecordPath`. */
+  parentRecordPath?: string;
 }
 
 export const triggers = sqliteTable(
@@ -80,9 +82,9 @@ export const triggers = sqliteTable(
     /** Opaque path segment for webhook URLs; not a credential by itself. */
     webhookToken: text('webhook_token'),
     config: json<WebhookTriggerConfig | CronTriggerConfig | ManualTriggerConfig>('config'),
-    /** State a created/updated ticket should enter; null means the workflow default. */
+    /** State created/updated work should enter; null means the workflow default. */
     targetStateId: text('target_state_id'),
-    /** When true an existing ticket matching the dedupe key is updated, not duplicated. */
+    /** When true existing work matching the dedupe key is updated, not duplicated. */
     upsertOnDedupe: bool('upsert_on_dedupe'),
     createdByUserId: text('created_by_user_id').references(() => users.id, {
       onDelete: 'set null'
@@ -122,7 +124,9 @@ export const triggerEvents = sqliteTable(
     /** Redacted payload snapshot for inspection and replay. */
     payload: json<unknown>('payload'),
     payloadBytes: integer('payload_bytes'),
-    ticketId: text('ticket_id'),
+    /** Universal-model subject the event produced, when it created/found work. */
+    recordId: text('record_id'),
+    workflowItemId: text('workflow_item_id'),
     jobId: text('job_id'),
     error: text('error'),
     receivedAt: integer('received_at').notNull(),

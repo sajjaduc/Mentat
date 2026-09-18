@@ -43,7 +43,9 @@ async function load() {
   loading = true;
   error = null;
   try {
-    const response = await api.get<{ views: SavedView[] }>('/api/views', { scope: 'tickets' });
+    const response = await api.get<{ views: SavedView[] }>('/api/views', {
+      scope: 'workflowItems'
+    });
     views = response.views;
   } catch (failure) {
     error = describeApiError(failure);
@@ -81,7 +83,7 @@ async function saveCurrent() {
   try {
     const created = await api.post<{ view: SavedView }>('/api/views', {
       name,
-      scope: 'tickets',
+      scope: 'workflowItems',
       workflowId,
       filter: filterStateToAst(filter),
       sort,

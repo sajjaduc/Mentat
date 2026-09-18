@@ -3,25 +3,26 @@
  *
  * Agents never receive storage credentials and never address a blob directly. They
  * work with *files*: read a summary, read extracted content on demand, query file
- * fields, correct a field, or link a file to a ticket. Content is fetched only when
- * the agent asks for it, which is the token-efficiency rule from the follow-up
- * brief (§18) expressed as an API shape.
+ * fields, correct a field, or link a file to a Record or WorkflowItem. Content is
+ * fetched only when the agent asks for it, which is the token-efficiency rule from
+ * the follow-up brief (§18) expressed as an API shape.
  */
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { assertNativeCapability } from '../../agents/permissions';
 import { errors } from '../../core/errors';
+import { uuidv7 } from '../../core/ids';
 import {
   blobs,
   fieldDefinitions,
   fileExtractedContent,
   fileFieldValues,
+  fileRecords,
   fileSources,
   files,
-  ticketFiles
+  fileWorkflowItems
 } from '../../db/schema';
 import { displayFieldValue, normalizeFieldValue } from '../../fields/values';
-import { fileService, hasFileService } from '../../files/contracts';
 import { defineNativeTool, type NativeToolHandler, toolFailure, toolSuccess } from '../types';
 
 const FILES_GET = 'files.get';
@@ -32,7 +33,7 @@ const FILES_READ = 'files.read';
 const FILES_SUMMARY = 'files.getSummary';
 const FILES_FIELDS_GET = 'files.getFields';
 const FILES_FIELDS_SET = 'files.setFields';
-const FILES_LINK = 'files.linkToTicket';
+const FILES_LINK = 'files.linkToWorkItem';
 
 const objectSchema = (
   properties: Record<string, unknown>,
@@ -55,25 +56,37 @@ function resolveFileId(
 ): string {
   if (explicitId) return explicitId;
   if (context.fileIds && context.fileIds.length === 1) return context.fileIds[0] as string;
-  if (!context.ticketId) {
+  if (!context.workflowItemId && !context.recordId) {
     throw errors.validation('Provide a fileId: no file is in scope for this call');
   }
-  const linked = context.db
-    .select({ fileId: ticketFiles.fileId })
-    .from(ticketFiles)
-    .where(
-      and(
-        eq(ticketFiles.workspaceId, context.actor.workspaceId),
-        eq(ticketFiles.ticketId, context.ticketId),
-        isNull(ticketFiles.removedAt)
-      )
-    )
-    .all();
+  const linked = context.workflowItemId
+    ? context.db
+        .select({ fileId: fileWorkflowItems.fileId })
+        .from(fileWorkflowItems)
+        .where(
+          and(
+            eq(fileWorkflowItems.workspaceId, context.actor.workspaceId),
+            eq(fileWorkflowItems.workflowItemId, context.workflowItemId),
+            isNull(fileWorkflowItems.removedAt)
+          )
+        )
+        .all()
+    : context.db
+        .select({ fileId: fileRecords.fileId })
+        .from(fileRecords)
+        .where(
+          and(
+            eq(fileRecords.workspaceId, context.actor.workspaceId),
+            eq(fileRecords.recordId, context.recordId as string),
+            isNull(fileRecords.removedAt)
+          )
+        )
+        .all();
   if (linked.length === 1) return linked[0]!.fileId;
   if (linked.length === 0) {
-    throw errors.validation('This ticket has no linked files; provide a fileId explicitly');
+    throw errors.validation('This work item has no linked files; provide a fileId explicitly');
   }
-  throw errors.validation('This ticket has several linked files; provide a fileId explicitly', {
+  throw errors.validation('This work item has several linked files; provide a fileId explicitly', {
     fileIds: linked.map((row) => row.fileId)
   });
 }
@@ -114,10 +127,18 @@ export const filesGetTool = defineNativeTool({
       .orderBy(desc(fileSources.occurredAt))
       .all();
     const blob = context.db.select().from(blobs).where(eq(blobs.id, file.blobId)).limit(1).all()[0];
-    const tickets = context.db
-      .select({ ticketId: ticketFiles.ticketId, relationship: ticketFiles.relationship })
-      .from(ticketFiles)
-      .where(and(eq(ticketFiles.fileId, fileId), isNull(ticketFiles.removedAt)))
+    const linkedRecords = context.db
+      .select({ recordId: fileRecords.recordId, relationship: fileRecords.relationship })
+      .from(fileRecords)
+      .where(and(eq(fileRecords.fileId, fileId), isNull(fileRecords.removedAt)))
+      .all();
+    const linkedWorkItems = context.db
+      .select({
+        workflowItemId: fileWorkflowItems.workflowItemId,
+        relationship: fileWorkflowItems.relationship
+      })
+      .from(fileWorkflowItems)
+      .where(and(eq(fileWorkflowItems.fileId, fileId), isNull(fileWorkflowItems.removedAt)))
       .all();
 
     return toolSuccess({
@@ -140,50 +161,82 @@ export const filesGetTool = defineNativeTool({
         occurredAt: source.occurredAt,
         deduplicated: source.deduplicated
       })),
-      linkedTickets: tickets
+      linkedRecords,
+      linkedWorkItems
     });
   }
 });
 
 export const filesListTool = defineNativeTool({
   key: FILES_LIST,
-  name: 'List files for a ticket',
-  description: 'List the files linked to a ticket with their summaries and processing status.',
+  name: 'List files for a record or work item',
+  description:
+    'List the files linked to a Record or WorkflowItem with their summaries and processing status.',
   inputSchema: objectSchema({
-    ticketId: { type: 'string', description: 'Ticket id. Defaults to the ticket in scope.' }
+    recordId: { type: 'string', description: 'Record id. Defaults to the record in scope.' },
+    workflowItemId: {
+      type: 'string',
+      description: 'Workflow item id. Defaults to the work item in scope.'
+    }
   }),
   permission: 'file:read',
-  async execute(input: { ticketId?: string } | undefined, context) {
-    const ticketId = input?.ticketId ?? context.ticketId;
-    if (!ticketId) {
-      return toolFailure({
-        code: 'validation_failed',
-        message: 'Provide a ticketId or call this from a ticket-scoped run'
-      });
-    }
-    const rows = context.db
-      .select({
-        id: files.id,
-        filename: files.originalFilename,
-        mimeType: files.mimeType,
-        size: files.size,
-        status: files.status,
-        summary: files.summary,
-        relationship: ticketFiles.relationship,
-        addedAt: ticketFiles.createdAt
-      })
-      .from(ticketFiles)
-      .innerJoin(files, eq(files.id, ticketFiles.fileId))
-      .where(
-        and(
-          eq(ticketFiles.workspaceId, context.actor.workspaceId),
-          eq(ticketFiles.ticketId, ticketId),
-          isNull(ticketFiles.removedAt),
-          isNull(files.deletedAt)
+  async execute(input: { recordId?: string; workflowItemId?: string } | undefined, context) {
+    const workflowItemId = input?.workflowItemId ?? context.workflowItemId;
+    const recordId = input?.recordId ?? context.recordId;
+    if (workflowItemId) {
+      const rows = context.db
+        .select({
+          id: files.id,
+          filename: files.originalFilename,
+          mimeType: files.mimeType,
+          size: files.size,
+          status: files.status,
+          summary: files.summary,
+          relationship: fileWorkflowItems.relationship,
+          addedAt: fileWorkflowItems.createdAt
+        })
+        .from(fileWorkflowItems)
+        .innerJoin(files, eq(files.id, fileWorkflowItems.fileId))
+        .where(
+          and(
+            eq(fileWorkflowItems.workspaceId, context.actor.workspaceId),
+            eq(fileWorkflowItems.workflowItemId, workflowItemId),
+            isNull(fileWorkflowItems.removedAt),
+            isNull(files.deletedAt)
+          )
         )
-      )
-      .all();
-    return toolSuccess({ files: rows });
+        .all();
+      return toolSuccess({ files: rows });
+    }
+    if (recordId) {
+      const rows = context.db
+        .select({
+          id: files.id,
+          filename: files.originalFilename,
+          mimeType: files.mimeType,
+          size: files.size,
+          status: files.status,
+          summary: files.summary,
+          relationship: fileRecords.relationship,
+          addedAt: fileRecords.createdAt
+        })
+        .from(fileRecords)
+        .innerJoin(files, eq(files.id, fileRecords.fileId))
+        .where(
+          and(
+            eq(fileRecords.workspaceId, context.actor.workspaceId),
+            eq(fileRecords.recordId, recordId),
+            isNull(fileRecords.removedAt),
+            isNull(files.deletedAt)
+          )
+        )
+        .all();
+      return toolSuccess({ files: rows });
+    }
+    return toolFailure({
+      code: 'validation_failed',
+      message: 'Provide a recordId or workflowItemId, or call this from a scoped run'
+    });
   }
 });
 
@@ -197,7 +250,8 @@ export const filesFindTool = defineNativeTool({
     mimeType: { type: 'string', description: 'Exact MIME type, e.g. application/pdf.' },
     status: { type: 'string', description: 'pending | processing | ready | failed' },
     workflowId: { type: 'string', description: 'Only files contextualised to this workflow.' },
-    ticketId: { type: 'string', description: 'Only files linked to this ticket.' },
+    recordId: { type: 'string', description: 'Only files linked to this Record.' },
+    workflowItemId: { type: 'string', description: 'Only files linked to this WorkflowItem.' },
     fields: {
       type: 'object',
       description: 'Field key to expected value. Values are matched exactly after normalisation.'
@@ -212,7 +266,8 @@ export const filesFindTool = defineNativeTool({
           mimeType?: string;
           status?: string;
           workflowId?: string;
-          ticketId?: string;
+          recordId?: string;
+          workflowItemId?: string;
           fields?: Record<string, unknown>;
           limit?: number;
         }
@@ -229,9 +284,13 @@ export const filesFindTool = defineNativeTool({
     if (input?.mimeType) conditions.push(eq(files.mimeType, input.mimeType));
     if (input?.status) conditions.push(eq(files.status, input.status as never));
     if (input?.workflowId) conditions.push(eq(files.primaryWorkflowId, input.workflowId));
-    if (input?.ticketId) {
+    if (input?.workflowItemId) {
       conditions.push(
-        sql`exists (select 1 from ${ticketFiles} where ${ticketFiles.fileId} = ${files.id} and ${ticketFiles.ticketId} = ${input.ticketId} and ${ticketFiles.removedAt} is null)`
+        sql`exists (select 1 from ${fileWorkflowItems} where ${fileWorkflowItems.fileId} = ${files.id} and ${fileWorkflowItems.workflowItemId} = ${input.workflowItemId} and ${fileWorkflowItems.removedAt} is null)`
+      );
+    } else if (input?.recordId) {
+      conditions.push(
+        sql`exists (select 1 from ${fileRecords} where ${fileRecords.fileId} = ${files.id} and ${fileRecords.recordId} = ${input.recordId} and ${fileRecords.removedAt} is null)`
       );
     }
 
@@ -562,12 +621,6 @@ export const filesFieldsSetTool = defineNativeTool({
       [FILES_FIELDS_SET, 'files.setFields'],
       'correct file fields'
     );
-    if (!hasFileService()) {
-      return toolFailure({
-        code: 'unsupported',
-        message: 'File field writes are unavailable because the file service is not installed'
-      });
-    }
     const fileId = resolveFileId(context, input.fileId);
     const workspaceId = context.actor.workspaceId;
 
@@ -666,15 +719,19 @@ export const filesFieldsSetTool = defineNativeTool({
   }
 });
 
-export const filesLinkToTicketTool = defineNativeTool({
+export const filesLinkToWorkItemTool = defineNativeTool({
   key: FILES_LINK,
-  name: 'Link a file to a ticket',
+  name: 'Link a file to work',
   description:
-    'Attach an existing file to a ticket. Files are shared objects: linking never copies bytes and never removes other links.',
+    'Attach an existing file to a Record or WorkflowItem. Files are shared objects: linking never copies bytes and never removes other links.',
   inputSchema: objectSchema(
     {
       fileId: { type: 'string', description: 'File id.' },
-      ticketId: { type: 'string', description: 'Ticket id. Defaults to the ticket in scope.' },
+      recordId: { type: 'string', description: 'Record id. Defaults to the record in scope.' },
+      workflowItemId: {
+        type: 'string',
+        description: 'Workflow item id. Defaults to the work item in scope.'
+      },
       relationship: { type: 'string', description: 'attachment | reference | output | evidence' },
       caption: { type: 'string', description: 'Optional caption.' }
     },
@@ -682,42 +739,110 @@ export const filesLinkToTicketTool = defineNativeTool({
   ),
   permission: 'file:write',
   async execute(
-    input: { fileId: string; ticketId?: string; relationship?: string; caption?: string },
+    input: {
+      fileId: string;
+      recordId?: string;
+      workflowItemId?: string;
+      relationship?: string;
+      caption?: string;
+    },
     context
   ) {
     assertNativeCapability(
       context.actor.permissions,
-      [FILES_LINK, 'files.linkToTicket'],
-      'link files to tickets'
+      [FILES_LINK, 'files.linkToWorkItem'],
+      'link files to work'
     );
     const fileId = resolveFileId(context, input.fileId);
-    const ticketId = input.ticketId ?? context.ticketId;
-    if (!ticketId) {
+    const workflowItemId = input.workflowItemId ?? context.workflowItemId;
+    const recordId = input.recordId ?? context.recordId;
+    if (!workflowItemId && !recordId) {
       return toolFailure({
         code: 'validation_failed',
-        message: 'Provide a ticketId or call this from a ticket-scoped run'
-      });
-    }
-    if (!hasFileService()) {
-      return toolFailure({
-        code: 'unsupported',
-        message: 'File linking is unavailable because the file service is not installed'
+        message: 'Provide a recordId or workflowItemId, or call this from a scoped run'
       });
     }
     const allowed = ['attachment', 'reference', 'output', 'evidence'] as const;
     const relationship = allowed.find((entry) => entry === input.relationship) ?? 'attachment';
-    await fileService().linkToTicket(
-      context.actor,
-      {
-        fileId,
-        ticketId,
-        relationship,
-        caption: input.caption ?? null,
-        runId: context.runId ?? null
-      },
+    const now = Date.now();
+
+    if (workflowItemId) {
+      const existing = context.db
+        .select({ id: fileWorkflowItems.id })
+        .from(fileWorkflowItems)
+        .where(
+          and(
+            eq(fileWorkflowItems.workspaceId, context.actor.workspaceId),
+            eq(fileWorkflowItems.fileId, fileId),
+            eq(fileWorkflowItems.workflowItemId, workflowItemId),
+            eq(fileWorkflowItems.relationship, relationship)
+          )
+        )
+        .all()[0];
+      if (existing) {
+        context.db
+          .update(fileWorkflowItems)
+          .set({ removedAt: null })
+          .where(eq(fileWorkflowItems.id, existing.id))
+          .run();
+      } else {
+        context.db
+          .insert(fileWorkflowItems)
+          .values({
+            id: uuidv7(now),
+            workspaceId: context.actor.workspaceId,
+            fileId,
+            workflowItemId,
+            relationship,
+            caption: input.caption ?? null,
+            addedByType: context.actor.actorType,
+            addedById: context.actor.actorId,
+            addedByLabel: context.actor.actorLabel,
+            runId: context.runId ?? null,
+            createdAt: now
+          })
+          .run();
+      }
+      return toolSuccess({ fileId, workflowItemId, relationship });
+    }
+
+    const existing = context.db
+      .select({ id: fileRecords.id })
+      .from(fileRecords)
+      .where(
+        and(
+          eq(fileRecords.workspaceId, context.actor.workspaceId),
+          eq(fileRecords.fileId, fileId),
+          eq(fileRecords.recordId, recordId as string),
+          eq(fileRecords.relationship, relationship)
+        )
+      )
+      .all()[0];
+    if (existing) {
       context.db
-    );
-    return toolSuccess({ fileId, ticketId, relationship });
+        .update(fileRecords)
+        .set({ removedAt: null })
+        .where(eq(fileRecords.id, existing.id))
+        .run();
+    } else {
+      context.db
+        .insert(fileRecords)
+        .values({
+          id: uuidv7(now),
+          workspaceId: context.actor.workspaceId,
+          fileId,
+          recordId: recordId as string,
+          relationship,
+          caption: input.caption ?? null,
+          addedByType: context.actor.actorType,
+          addedById: context.actor.actorId,
+          addedByLabel: context.actor.actorLabel,
+          runId: context.runId ?? null,
+          createdAt: now
+        })
+        .run();
+    }
+    return toolSuccess({ fileId, recordId, relationship });
   }
 });
 
@@ -730,7 +855,7 @@ export const fileTools: NativeToolHandler[] = [
   filesSummaryTool,
   filesFieldsGetTool,
   filesFieldsSetTool,
-  filesLinkToTicketTool
+  filesLinkToWorkItemTool
 ];
 
 export const fileToolKeys = fileTools.map((tool) => tool.key);
@@ -741,13 +866,15 @@ export const fileApiSchemas = {
     mimeType: z.string().max(120).optional(),
     status: z.string().max(40).optional(),
     workflowId: z.string().optional(),
-    ticketId: z.string().optional(),
+    recordId: z.string().optional(),
+    workflowItemId: z.string().optional(),
     fields: z.record(z.string(), z.unknown()).optional(),
     limit: z.number().int().min(1).max(100).optional()
   }),
   link: z.object({
     fileId: z.string(),
-    ticketId: z.string(),
+    recordId: z.string().optional(),
+    workflowItemId: z.string().optional(),
     relationship: z.enum(['attachment', 'reference', 'output', 'evidence']).optional(),
     caption: z.string().max(500).optional()
   })

@@ -21,7 +21,7 @@ describe('job queue: enqueue and complete', () => {
     const job = await queue.enqueue({
       workspaceId,
       type: 'agent.run',
-      payload: { ticketId: 't1' },
+      payload: { workflowItemId: 'wi-1' },
       priority: 5
     });
     expect(job.status).toBe('pending');
@@ -111,14 +111,14 @@ describe('job queue: idempotent enqueue', () => {
     const first = await queue.enqueue({
       workspaceId,
       type: 'state.enter',
-      payload: { ticketId: 't1' },
-      dedupeKey: 'state-enter:t1:state-a:entry-1'
+      payload: { workflowItemId: 'wi-1' },
+      dedupeKey: 'state-enter:wi-1:state-a:entry-1'
     });
     const second = await queue.enqueue({
       workspaceId,
       type: 'state.enter',
-      payload: { ticketId: 't1' },
-      dedupeKey: 'state-enter:t1:state-a:entry-1'
+      payload: { workflowItemId: 'wi-1' },
+      dedupeKey: 'state-enter:wi-1:state-a:entry-1'
     });
     expect(second.id).toBe(first.id);
     const all = await listJobs(handle.db, { workspaceId });
@@ -345,7 +345,7 @@ describe('job queue: observability', () => {
       workspaceId,
       type: 'agent.run',
       payload: {},
-      ticketId: 'ticket-1'
+      workflowItemId: 'wi-1'
     });
     await queue.lease({ workerId: 'worker-a' });
     await queue.fail(job.id, { error: new Error('nope'), availableAt: Date.now() });
@@ -356,11 +356,11 @@ describe('job queue: observability', () => {
     expect(events.map((event) => event.action)).toEqual(['job.enqueued', 'job.retry_scheduled']);
   });
 
-  test('lists jobs filtered by ticket and run', async () => {
-    await queue.enqueue({ workspaceId, type: 'agent.run', payload: {}, ticketId: 'ticket-1' });
+  test('lists jobs filtered by work item and run', async () => {
+    await queue.enqueue({ workspaceId, type: 'agent.run', payload: {}, workflowItemId: 'wi-1' });
     await queue.enqueue({ workspaceId, type: 'agent.run', payload: {}, runId: 'run-1' });
-    const byTicket = await listJobs(handle.db, { workspaceId, ticketId: 'ticket-1' });
-    expect(byTicket).toHaveLength(1);
+    const byWorkItem = await listJobs(handle.db, { workspaceId, workflowItemId: 'wi-1' });
+    expect(byWorkItem).toHaveLength(1);
     const byRun = await listJobs(handle.db, { workspaceId, runId: 'run-1' });
     expect(byRun).toHaveLength(1);
   });

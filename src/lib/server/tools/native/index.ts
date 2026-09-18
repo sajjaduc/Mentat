@@ -2,18 +2,24 @@
  * The native Mentat tool surface owned by this workstream: state, structured data
  * and cache.
  *
- * Ticket, file and HTTP tools are owned by other workstreams and register on the
- * *same* registry instance through their own `register*Tools` functions. This module
- * therefore registers only its own handlers and relies on `ToolRegistry.register`
- * throwing on duplicate keys so a collision (two workstreams claiming one key, or
- * bootstrap running twice) fails loudly instead of silently shadowing a tool.
+ * Work-item, record, file and HTTP tools are owned by other workstreams and register
+ * on the *same* registry instance through `registerCoreNativeTools` (or their own
+ * `register*Tools` functions). This module therefore registers only its own handlers
+ * and relies on `ToolRegistry.register` throwing on duplicate keys so a collision
+ * (two workstreams claiming one key, or bootstrap running twice) fails loudly instead
+ * of silently shadowing a tool.
+ *
+ * The work-item surface lives in `./workflow-items`; it is re-exported here so the
+ * complete native capability set is discoverable from one place.
  */
 import type { NativeToolHandler, ToolRegistry } from '../types';
 import { cacheTools } from './cache';
 import { dataTools } from './data';
 import { stateTools } from './state';
 
-/** Every handler this workstream contributes, in registration order. */
+export { workflowItemToolKeys, workflowItemTools } from './workflow-items';
+
+/** Every handler this workstream contributes directly, in registration order. */
 export const nativeTools: NativeToolHandler[] = [...stateTools, ...dataTools, ...cacheTools];
 
 /**

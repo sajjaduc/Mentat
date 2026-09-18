@@ -28,7 +28,8 @@ export interface AuditInput {
   actorLabel?: string | null;
   entityType?: string | null;
   entityId?: string | null;
-  ticketId?: string | null;
+  recordId?: string | null;
+  workflowItemId?: string | null;
   workflowId?: string | null;
   runId?: string | null;
   jobId?: string | null;
@@ -56,7 +57,8 @@ export function writeAudit(executor: Executor, input: AuditInput): number {
       actorLabel: input.actorLabel ? redactor.string(input.actorLabel) : null,
       entityType: input.entityType ?? null,
       entityId: input.entityId ?? null,
-      ticketId: input.ticketId ?? null,
+      recordId: input.recordId ?? null,
+      workflowItemId: input.workflowItemId ?? null,
       workflowId: input.workflowId ?? null,
       runId: input.runId ?? null,
       jobId: input.jobId ?? null,
@@ -74,7 +76,8 @@ export function writeAudit(executor: Executor, input: AuditInput): number {
 
 export interface AuditQuery {
   workspaceId: string;
-  ticketId?: string;
+  recordId?: string;
+  workflowItemId?: string;
   entityType?: string;
   entityId?: string;
   runId?: string;
@@ -91,7 +94,8 @@ export interface AuditQuery {
 /** Keyset-paginated ledger query. Ordered by the monotonic `seq` ordinal. */
 export async function queryAudit(executor: Executor, query: AuditQuery): Promise<AuditEvent[]> {
   const conditions: SQL[] = [eq(auditEvents.workspaceId, query.workspaceId)];
-  if (query.ticketId) conditions.push(eq(auditEvents.ticketId, query.ticketId));
+  if (query.recordId) conditions.push(eq(auditEvents.recordId, query.recordId));
+  if (query.workflowItemId) conditions.push(eq(auditEvents.workflowItemId, query.workflowItemId));
   if (query.entityType) conditions.push(eq(auditEvents.entityType, query.entityType));
   if (query.entityId) conditions.push(eq(auditEvents.entityId, query.entityId));
   if (query.runId) conditions.push(eq(auditEvents.runId, query.runId));
@@ -120,10 +124,11 @@ export async function queryAudit(executor: Executor, query: AuditQuery): Promise
     .all();
 }
 
-/** Count ledger rows matching a filter; used by ticket/analytics summaries. */
+/** Count ledger rows matching a filter; used by record/work-item summaries. */
 export async function countAudit(executor: Executor, query: AuditQuery): Promise<number> {
   const conditions: SQL[] = [eq(auditEvents.workspaceId, query.workspaceId)];
-  if (query.ticketId) conditions.push(eq(auditEvents.ticketId, query.ticketId));
+  if (query.recordId) conditions.push(eq(auditEvents.recordId, query.recordId));
+  if (query.workflowItemId) conditions.push(eq(auditEvents.workflowItemId, query.workflowItemId));
   if (query.actions && query.actions.length > 0) {
     conditions.push(inArray(auditEvents.action, query.actions));
   }

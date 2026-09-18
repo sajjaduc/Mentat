@@ -13,7 +13,9 @@
  */
 import { expect, test } from '@playwright/test';
 import {
-  apiCall,
+  createObjectType,
+  createWorkflow as createWorkflowFixture,
+  createWorkItem,
   gotoApp,
   projectBaseUrl,
   registerAndSignIn,
@@ -61,41 +63,49 @@ test('1. a person can sign in through the form', async ({ page }) => {
 test('2. a workflow can be created from a template and lands on its board', async ({ page }) => {
   await signInThroughForm(page, account);
 
+  // Every workflow processes an Object Type (ADR-0021); make sure one exists so the
+  // dialog has a schema to offer, then reload so the page's loader picks it up.
+  const objectType = await createObjectType(
+    page.request,
+    `Smoke Object ${Date.now().toString(36)}`
+  );
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Workflows', exact: true })).toBeVisible();
+
   await page.getByRole('button', { name: 'Create workflow' }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
 
   const name = `Smoke workflow ${Date.now().toString(36)}`;
   await dialog.getByLabel('Name', { exact: true }).first().fill(name);
+  await dialog.getByLabel('Object Type (required)').selectOption(objectType.id);
   await dialog.getByRole('button', { name: /create and open board/i }).click();
 
   // The board is the primary surface: columns must be visible immediately, even with
-  // no tickets, because the per-column + is how the first ticket gets created.
+  // no work items, because the per-column + is how the first item gets created.
   await expect(page.getByTestId('board-column').first()).toBeVisible({ timeout: 20_000 });
   const columns = page.getByTestId('board-column');
   expect(await columns.count()).toBeGreaterThanOrEqual(3);
   await expect(columns.first()).toContainText('Backlog');
 });
 
-test('3. a ticket is created in a column and can be moved from the card menu', async ({ page }) => {
+test('3. a work item is created in a column and can be moved from the card menu', async ({
+  page
+}) => {
   await signInThroughForm(page, account);
 
   // Seeded through the API so the test focuses on the board interaction itself.
-  const name = `Board ${Date.now().toString(36)}`;
-  const created = await apiCall<{
-    workflow: { id: string };
-    states: Array<{ id: string; name: string }>;
-  }>(page.request, 'POST', '/workflows', { data: { name, template: 'basic' } });
-  const workflowId = created.workflow.id;
+  const workflow = await createWorkflowFixture(page.request, `Board ${Date.now().toString(36)}`);
+  const workflowId = workflow.id;
 
   await page.goto(`/workflows/${workflowId}?tab=board`);
   await expect(page.getByTestId('board-column').first()).toBeVisible({ timeout: 20_000 });
 
   // Create inline from the first column.
   const firstColumn = page.getByTestId('board-column').first();
-  await firstColumn.getByRole('button', { name: /^Add ticket to/ }).click();
-  const title = `Smoke ticket ${Date.now().toString(36)}`;
-  await firstColumn.getByLabel('New ticket title').fill(title);
+  await firstColumn.getByRole('button', { name: /^Add .+ to / }).click();
+  const title = `Smoke item ${Date.now().toString(36)}`;
+  await firstColumn.getByLabel('New item title').fill(title);
   await firstColumn.getByRole('button', { name: /^(Add|Create)$/ }).click();
   const card = page.getByTestId('board-card').filter({ hasText: title });
   await expect(card).toBeVisible({ timeout: 15_000 });
@@ -115,43 +125,30 @@ test('3. a ticket is created in a column and can be moved from the card menu', a
   ).toBeVisible({ timeout: 15_000 });
 });
 
-test('4. the ticket drawer is URL-addressed and its tabs work', async ({ page }) => {
+test('4. the work item drawer is URL-addressed and its tabs work', async ({ page }) => {
   await signInThroughForm(page, account);
 
-  const created = await apiCall<{
-    workflow: { id: string };
-    states: Array<{ id: string; name: string }>;
-  }>(page.request, 'POST', '/workflows', {
-    data: { name: `Drawer ${Date.now().toString(36)}`, template: 'basic' }
+  const workflow = await createWorkflowFixture(page.request, `Drawer ${Date.now().toString(36)}`);
+  const item = await createWorkItem(page.request, {
+    workflowId: workflow.id,
+    title: 'Drawer smoke item'
   });
-  const ticket = await apiCall<{ ticket: { id: string; key: string } }>(
-    page.request,
-    'POST',
-    '/tickets',
-    {
-      data: {
-        workflowId: created.workflow.id,
-        stateId: created.states[0]?.id,
-        title: 'Drawer smoke ticket'
-      }
-    }
-  );
 
-  await page.goto(`/workflows/${created.workflow.id}?tab=board`);
+  await page.goto(`/workflows/${workflow.id}?tab=board`);
   // The title is the card's primary action; clicking the card body is not.
   await page
     .getByTestId('board-card')
-    .filter({ hasText: 'Drawer smoke ticket' })
+    .filter({ hasText: 'Drawer smoke item' })
     .first()
     .getByRole('button')
     .first()
     .click();
 
-  // The open ticket lives in the URL, so a reload restores it.
-  await expect(page).toHaveURL(new RegExp(`ticket=${ticket.ticket.id}`));
+  // The open work item lives in the URL, so a reload restores it.
+  await expect(page).toHaveURL(new RegExp(`workItem=${item.id}`));
   const drawer = page.getByRole('dialog');
   await expect(drawer).toBeVisible();
-  await expect(drawer).toContainText(ticket.ticket.key);
+  await expect(drawer).toContainText(item.key);
 
   for (const tab of ['Overview', 'Agent Work', 'Activity', 'Artifacts']) {
     await drawer.getByRole('tab', { name: tab }).click();
@@ -159,7 +156,7 @@ test('4. the ticket drawer is URL-addressed and its tabs work', async ({ page })
   }
 
   await page.reload();
-  await expect(page.getByRole('dialog')).toContainText(ticket.ticket.key);
+  await expect(page.getByRole('dialog')).toContainText(item.key);
 });
 
 test('5. the other primary surfaces load without an error state', async ({ page }) => {

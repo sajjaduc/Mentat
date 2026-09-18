@@ -20,7 +20,9 @@ import { type FilterState, filterStateToQuery, isFilterActive } from '$ui/work/f
 import {
   type BoardColumn as BoardColumnData,
   moveRow,
-  optimisticTicketRow,
+  normalizeWorkItemRow,
+  optimisticWorkItemRow,
+  type RawWorkItemRow,
   reconcileRow
 } from '$ui/work/rows';
 import type {
@@ -28,12 +30,12 @@ import type {
   Label,
   MemberOption,
   TeamOption,
-  Ticket,
-  TicketListRow,
   Workflow,
   WorkflowFieldView,
   WorkflowState,
-  WorkflowTransition
+  WorkflowTransition,
+  WorkItem,
+  WorkItemListRow
 } from '$ui/work/types';
 
 interface Props {
@@ -49,7 +51,7 @@ interface Props {
   refreshKey?: number;
   onFilterChange: (filter: FilterState) => void;
   onApplyView: (view: AppliedSavedView) => void;
-  onOpenTicket: (ticketId: string) => void;
+  onOpenWorkItem: (workflowItemId: string) => void;
   onConfigure: () => void;
 }
 
@@ -65,21 +67,21 @@ let {
   refreshKey = 0,
   onFilterChange,
   onApplyView,
-  onOpenTicket,
+  onOpenWorkItem,
   onConfigure
 }: Props = $props();
 
 let columns = $state<BoardColumnData[] | null>(null);
 let loading = $state(true);
 let error = $state<string | null>(null);
-let dragging = $state<{ ticketId: string; fromStateId: string } | null>(null);
+let dragging = $state<{ workflowItemId: string; fromStateId: string } | null>(null);
 let dropStateId = $state<string | null>(null);
 let pendingIds = $state<string[]>([]);
 let moveErrors = $state<Record<string, string>>({});
 let creatingFor = $state<string | null>(null);
 let transitions = $state<Record<string, WorkflowTransition[]>>({});
 let ambiguous = $state<{
-  ticketId: string;
+  workflowItemId: string;
   fromStateId: string;
   toStateId: string;
   options: WorkflowTransition[];
@@ -88,19 +90,70 @@ let ambiguous = $state<{
 const cardFields = $derived(fieldConfig.filter((view) => view.showOnCard && view.visible));
 const filterQuery = $derived(filterStateToQuery(filter));
 
+/** The Object Type's plural name, so the board speaks the workspace's nouns. */
+const nounPlural = $derived((workflow.objectTypePluralName ?? 'work item').toLowerCase());
+const nounSingular = $derived(nounPlural.endsWith('s') ? nounPlural.slice(0, -1) : nounPlural);
+
+interface BoardResponseColumn {
+  state: {
+    id: string;
+    name: string;
+    kind: string;
+    category: string;
+    color: string | null;
+    position: number;
+    wipLimit: number | null;
+  };
+  items: RawWorkItemRow[];
+  count: number;
+}
+
+/** Prefer the fully-configured state (gates, agent binding) from the loader. */
+function resolveState(summary: BoardResponseColumn['state']): WorkflowState {
+  const configured = states.find((state) => state.id === summary.id);
+  if (configured) return configured;
+  return {
+    id: summary.id,
+    workspaceId: '',
+    workflowId: workflow.id,
+    name: summary.name,
+    description: null,
+    kind: summary.kind as WorkflowState['kind'],
+    category: summary.category as WorkflowState['category'],
+    color: summary.color,
+    position: summary.position,
+    isStart: false,
+    isTerminal: false,
+    agentId: null,
+    agentVersionId: null,
+    autoExecute: false,
+    maxAttempts: 1,
+    timeoutSeconds: null,
+    failureStateId: null,
+    humanGate: null,
+    config: null,
+    createdAt: 0,
+    updatedAt: 0
+  };
+}
+
 async function load(query: string | null, options: { silent?: boolean } = {}) {
   if (!options.silent) loading = true;
   error = null;
   try {
-    const response = await api.get<{ columns: BoardColumnData[]; unresolvedFields: string[] }>(
-      `/api/workflows/${workflow.id}/board`,
-      { filter: query, limit: 50 }
+    const response = await api.get<{ columns: BoardResponseColumn[] }>(
+      '/api/workflow-items/board',
+      { workflowId: workflow.id, filter: query, limit: 50 }
     );
-    columns = response.columns;
+    columns = response.columns.map((column) => ({
+      state: resolveState(column.state),
+      items: column.items.map(normalizeWorkItemRow),
+      count: column.count
+    }));
     // Fetch each column's outgoing transitions as soon as the board renders. Without
     // this the card's "Move to…" menu is empty until a card has been dragged, so the
     // keyboard-accessible move path silently does nothing.
-    await Promise.all(response.columns.map((column) => ensureTransitions(column.state.id)));
+    await Promise.all(columns.map((column) => ensureTransitions(column.state.id)));
   } catch (failure) {
     if (!options.silent) error = describeApiError(failure);
   } finally {
@@ -129,14 +182,14 @@ async function ensureTransitions(stateId: string): Promise<WorkflowTransition[]>
   }
 }
 
-function setMoveError(ticketId: string, message: string) {
-  moveErrors = { ...moveErrors, [ticketId]: message };
+function setMoveError(workflowItemId: string, message: string) {
+  moveErrors = { ...moveErrors, [workflowItemId]: message };
 }
 
-function clearMoveError(ticketId: string) {
-  if (!moveErrors[ticketId]) return;
+function clearMoveError(workflowItemId: string) {
+  if (!moveErrors[workflowItemId]) return;
   const next = { ...moveErrors };
-  delete next[ticketId];
+  delete next[workflowItemId];
   moveErrors = next;
 }
 
@@ -152,36 +205,36 @@ function refusalMessage(failure: unknown, fromStateId: string): string {
 }
 
 async function performMove(
-  ticketId: string,
+  workflowItemId: string,
   fromStateId: string,
   toStateId: string,
   transitionId?: string
 ) {
   const previous = columns;
   if (!previous) return;
-  columns = moveRow(previous, ticketId, toStateId);
-  pendingIds = [...pendingIds, ticketId];
-  clearMoveError(ticketId);
+  columns = moveRow(previous, workflowItemId, toStateId);
+  pendingIds = [...pendingIds, workflowItemId];
+  clearMoveError(workflowItemId);
   try {
     await api.post(
-      `/api/tickets/${ticketId}/transitions`,
+      `/api/workflow-items/${workflowItemId}/transitions`,
       transitionId ? { transitionId } : { targetStateId: toStateId }
     );
-    pendingIds = pendingIds.filter((id) => id !== ticketId);
+    pendingIds = pendingIds.filter((id) => id !== workflowItemId);
     void load(filterQuery, { silent: true });
   } catch (failure) {
     columns = previous;
-    pendingIds = pendingIds.filter((id) => id !== ticketId);
-    setMoveError(ticketId, refusalMessage(failure, fromStateId));
+    pendingIds = pendingIds.filter((id) => id !== workflowItemId);
+    setMoveError(workflowItemId, refusalMessage(failure, fromStateId));
   }
 }
 
-function onCardDragStart(event: DragEvent, ticketId: string, fromStateId: string) {
+function onCardDragStart(event: DragEvent, workflowItemId: string, fromStateId: string) {
   if (event.dataTransfer) {
     event.dataTransfer.effectAllowed = 'move';
-    event.dataTransfer.setData('text/plain', ticketId);
+    event.dataTransfer.setData('text/plain', workflowItemId);
   }
-  dragging = { ticketId, fromStateId };
+  dragging = { workflowItemId, fromStateId };
   void ensureTransitions(fromStateId);
 }
 
@@ -212,7 +265,7 @@ async function onDrop(event: DragEvent, toStateId: string) {
   );
   if (options.length > 1) {
     ambiguous = {
-      ticketId: source.ticketId,
+      workflowItemId: source.workflowItemId,
       fromStateId: source.fromStateId,
       toStateId,
       options
@@ -220,52 +273,64 @@ async function onDrop(event: DragEvent, toStateId: string) {
     return;
   }
   const chosen = options[0];
-  await performMove(source.ticketId, source.fromStateId, toStateId, chosen?.id);
+  await performMove(source.workflowItemId, source.fromStateId, toStateId, chosen?.id);
 }
 
-async function createTicket(stateId: string, title: string): Promise<boolean> {
+async function createWorkItem(stateId: string, title: string): Promise<boolean> {
   const state = states.find((entry) => entry.id === stateId);
   const previous = columns;
   if (!state || !previous) return false;
   const tempId = `optimistic-${Math.random().toString(36).slice(2)}`;
-  const optimistic = optimisticTicketRow({
+  const optimistic = optimisticWorkItemRow({
     id: tempId,
     workflowId: workflow.id,
     stateId,
     stateName: state.name,
     stateKind: state.kind,
     stateCategory: state.category,
-    title
+    title,
+    objectTypeId: workflow.objectTypeId ?? undefined
   });
   columns = previous.map((column) =>
     column.state.id === stateId
-      ? { ...column, tickets: [optimistic, ...column.tickets], total: column.total + 1 }
+      ? { ...column, items: [optimistic, ...column.items], count: column.count + 1 }
       : column
   );
   creatingFor = stateId;
   try {
-    const response = await api.post<{ ticket: Ticket }>('/api/tickets', {
+    const response = await api.post<{
+      workflowItem?: WorkItem;
+      workItem?: WorkItem;
+    }>('/api/workflow-items', {
       workflowId: workflow.id,
       stateId,
-      title
+      title,
+      record: {
+        displayName: title,
+        objectTypeId: workflow.objectTypeId ?? undefined
+      }
     });
-    columns = (columns ?? []).map((column) =>
-      column.state.id === stateId
-        ? {
-            ...column,
-            tickets: column.tickets.map(
-              (row): TicketListRow =>
-                row.ticket.id === tempId ? reconcileRow(row, response.ticket) : row
-            )
-          }
-        : column
-    );
+    const created = response.workflowItem ?? response.workItem;
+    if (created) {
+      columns = (columns ?? []).map((column) =>
+        column.state.id === stateId
+          ? {
+              ...column,
+              items: column.items.map(
+                (row): WorkItemListRow =>
+                  row.workItem.id === tempId ? reconcileRow(row, created) : row
+              )
+            }
+          : column
+      );
+    }
+    void load(filterQuery, { silent: true });
     return true;
   } catch (failure) {
     columns = previous;
     pushToast({
       tone: 'error',
-      title: 'Could not create ticket',
+      title: `Could not create ${nounSingular}`,
       description: describeApiError(failure)
     });
     return false;
@@ -274,7 +339,7 @@ async function createTicket(stateId: string, title: string): Promise<boolean> {
   }
 }
 
-const isEmpty = $derived(columns?.every((column) => column.total === 0));
+const isEmpty = $derived(columns?.every((column) => column.count === 0));
 const hasStates = $derived(states.length > 0);
 </script>
 
@@ -308,13 +373,13 @@ const hasStates = $derived(states.length > 0);
     {:else if !hasStates}
       <EmptyState
         title="No states configured"
-        description="A workflow is a state machine: add states in Configuration before tickets can move through it."
+        description={`A workflow is a state machine: add states in Configuration before ${nounPlural} can move through it.`}
       >
         <Button variant="primary" onclick={onConfigure}>Open configuration</Button>
       </EmptyState>
     {:else if columns}
-      <!-- Columns always render, including when they hold no tickets: an empty board
-           with visible columns is how a first ticket gets created (the + is on the
+      <!-- Columns always render, including when they hold no items: an empty board
+           with visible columns is how the first one gets created (the + is on the
            column), and it keeps the state machine legible from the start. The empty
            hint appears above the columns rather than replacing them. -->
       {#if isEmpty}
@@ -323,8 +388,8 @@ const hasStates = $derived(states.length > 0);
         >
           <p class="text-xs text-[var(--color-ink-muted)]">
             {isFilterActive(filter)
-              ? 'Filters hide every ticket in this workflow.'
-              : 'No tickets yet. Use the + on any column to create the first one, or send one in through a trigger.'}
+              ? `Filters hide every ${nounSingular} in this workflow.`
+              : `No ${nounPlural} yet. Use the + on any column to create the first one, or send one in through a trigger.`}
           </p>
           {#if isFilterActive(filter)}
             <Button
@@ -351,28 +416,30 @@ const hasStates = $derived(states.length > 0);
             agentName={column.state.agentId ? (agentNames[column.state.agentId] ?? null) : null}
             {members}
             {teams}
-            draggingTicketId={dragging?.ticketId ?? null}
+            draggingWorkItemId={dragging?.workflowItemId ?? null}
             dropActive={dropStateId === column.state.id}
             {pendingIds}
             errors={moveErrors}
             creating={creatingFor === column.state.id}
-            onOpenTicket={(ticketId) => {
-              clearMoveError(ticketId);
-              onOpenTicket(ticketId);
+            onOpenWorkItem={(workflowItemId) => {
+              clearMoveError(workflowItemId);
+              onOpenWorkItem(workflowItemId);
             }}
-            onMoveTicket={(ticketId, targetStateId, transitionId) => {
+            onMoveWorkItem={(workflowItemId, targetStateId, transitionId) => {
               const owner = columns?.find((entry) =>
-                entry.tickets.some((row) => row.ticket.id === ticketId)
+                entry.items.some((row) => row.workItem.id === workflowItemId)
               );
               if (!owner) return;
-              void performMove(ticketId, owner.state.id, targetStateId, transitionId);
+              void performMove(workflowItemId, owner.state.id, targetStateId, transitionId);
             }}
             onCardDragStart={onCardDragStart}
             onCardDragEnd={onCardDragEnd}
             onDragOver={onDragOver}
             onDragLeave={onDragLeave}
             onDrop={onDrop}
-            onCreateTicket={createTicket}
+            onCreateWorkItem={createWorkItem}
+            {nounPlural}
+            {nounSingular}
           />
         {/each}
       </div>
@@ -395,7 +462,7 @@ const hasStates = $derived(states.length > 0);
           const pending = ambiguous;
           ambiguous = null;
           if (pending) {
-            void performMove(pending.ticketId, pending.fromStateId, pending.toStateId, option.id);
+            void performMove(pending.workflowItemId, pending.fromStateId, pending.toStateId, option.id);
           }
         }}
       >

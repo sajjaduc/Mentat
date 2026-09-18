@@ -1,17 +1,19 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { eq } from 'drizzle-orm';
 import {
   cycleTimeReport,
   throughputSeries,
   timeInStateReport
 } from '../../../src/lib/server/analytics/aging';
 import type { Executor } from '../../../src/lib/server/db/client';
+import { workflowItemStateHistory } from '../../../src/lib/server/db/schema';
 import { createTestDatabase, type TestDatabase } from '../../helpers/db';
 import {
-  createTicket,
-  createTicketStateInterval,
   createWorkflow,
+  createWorkflowItem,
+  createWorkflowItemStateInterval,
   createWorkspace,
-  updateTicketRow,
+  updateWorkflowItemRow,
   type WorkflowFixture
 } from '../../helpers/factories';
 
@@ -26,14 +28,20 @@ let workflow: WorkflowFixture;
 const ids: Record<string, string> = {};
 
 async function ticket(key: string): Promise<string> {
-  const created = await createTicket(db, { workspaceId, workflow, title: key });
+  const created = await createWorkflowItem(db, { workspaceId, workflow, title: key });
   ids[key] = created.id;
-  await updateTicketRow(db, created.id, {
+  await updateWorkflowItemRow(db, created.id, {
     createdAt: BASE,
     updatedAt: BASE,
     enteredStateAt: BASE,
     lastActivityAt: BASE
   });
+  // The factory records the item's initial state entry; this suite seeds the exact
+  // interval history it asserts on, so drop the automatic one.
+  await db
+    .delete(workflowItemStateHistory)
+    .where(eq(workflowItemStateHistory.workflowItemId, created.id))
+    .run();
   return created.id;
 }
 
@@ -43,9 +51,9 @@ async function interval(
   enteredAt: number,
   exitedAt: number | null
 ): Promise<void> {
-  await createTicketStateInterval(db, {
+  await createWorkflowItemStateInterval(db, {
     workspaceId,
-    ticketId: ids[key]!,
+    workflowItemId: ids[key]!,
     workflowId: workflow.id,
     stateId: workflow.stateIds[state]!,
     stateName: state,

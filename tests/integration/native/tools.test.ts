@@ -28,7 +28,7 @@ interface ContextOptions {
   workspaceId?: string;
   permissions?: Iterable<string>;
   actorId?: string;
-  ticketId?: string;
+  workflowItemId?: string;
   workflowId?: string;
   runId?: string;
 }
@@ -47,7 +47,7 @@ function context(options: ContextOptions = {}): ToolInvocationContext {
   return {
     actor,
     db: handle.db,
-    ticketId: options.ticketId ?? null,
+    workflowItemId: options.workflowItemId ?? null,
     workflowId: options.workflowId ?? null,
     runId: options.runId ?? null
   };
@@ -63,29 +63,35 @@ async function seedCollection(key = 'customers'): Promise<string> {
 
 describe('mentat.state tools', () => {
   test('set, get, list and delete round-trip through a hand-built context', async () => {
-    const ctx = context({ ticketId: 'tk-1' });
+    const ctx = context({ workflowItemId: 'wi-1' });
     const set = await tool('mentat.state.set').execute(
-      { scope: 'ticket', key: 'cursor', value: { step: 3 } },
+      { scope: 'workflowItem', key: 'cursor', value: { step: 3 } },
       ctx
     );
     expect(set.ok).toBe(true);
 
-    const got = await tool('mentat.state.get').execute({ scope: 'ticket', key: 'cursor' }, ctx);
+    const got = await tool('mentat.state.get').execute(
+      { scope: 'workflowItem', key: 'cursor' },
+      ctx
+    );
     expect(got.ok).toBe(true);
     expect((got.output as { found: boolean }).found).toBe(true);
     expect((got.output as { entry: { value: unknown } }).entry.value).toEqual({ step: 3 });
 
-    const listed = await tool('mentat.state.list').execute({ scope: 'ticket' }, ctx);
+    const listed = await tool('mentat.state.list').execute({ scope: 'workflowItem' }, ctx);
     expect((listed.output as { entries: unknown[] }).entries).toHaveLength(1);
 
     const deleted = await tool('mentat.state.delete').execute(
-      { scope: 'ticket', key: 'cursor' },
+      { scope: 'workflowItem', key: 'cursor' },
       ctx
     );
     expect(deleted.ok).toBe(true);
     expect((deleted.output as { deleted: boolean }).deleted).toBe(true);
 
-    const missing = await tool('mentat.state.get').execute({ scope: 'ticket', key: 'cursor' }, ctx);
+    const missing = await tool('mentat.state.get').execute(
+      { scope: 'workflowItem', key: 'cursor' },
+      ctx
+    );
     expect((missing.output as { found: boolean }).found).toBe(false);
   });
 
@@ -126,8 +132,8 @@ describe('mentat.state tools', () => {
   });
 
   test('state writes emit no service-level audit rows by design', async () => {
-    const ctx = context({ ticketId: 'tk-1' });
-    await tool('mentat.state.set').execute({ scope: 'ticket', key: 'k', value: 1 }, ctx);
+    const ctx = context({ workflowItemId: 'wi-1' });
+    await tool('mentat.state.set').execute({ scope: 'workflowItem', key: 'k', value: 1 }, ctx);
     const rows = await queryAudit(handle.db, { workspaceId: workspaceA });
     expect(rows).toHaveLength(0);
   });

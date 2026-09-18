@@ -12,32 +12,33 @@ import { api, describeApiError } from '$ui/api';
 import ErrorState from '$ui/primitives/ErrorState.svelte';
 import Skeleton from '$ui/primitives/Skeleton.svelte';
 import Tabs from '$ui/primitives/Tabs.svelte';
-import TicketDrawer from '$ui/ticket/TicketDrawer.svelte';
-import TicketTable from '$ui/work/TicketTable.svelte';
-import type { MyWorkBucket, MyWorkResponse, TeamOption, TicketColumn } from '$ui/work/types';
-import { closeTicketInUrl, openTicketInUrl, replaceQuery } from '$ui/work/url';
+import { normalizeWorkItemRow, type RawWorkItemRow } from '$ui/work/rows';
+import type { MyWorkBucket, MyWorkResponse, TeamOption, WorkItemColumn } from '$ui/work/types';
+import { closeWorkItemInUrl, openWorkItemInUrl, replaceQuery } from '$ui/work/url';
+import WorkItemTable from '$ui/work/WorkItemTable.svelte';
+import WorkItemDrawer from '$ui/work-item/WorkItemDrawer.svelte';
 
 const BUCKETS: Array<{ id: MyWorkBucket; label: string; empty: string }> = [
   {
     id: 'assigned',
     label: 'Assigned',
     empty:
-      'Nothing is assigned to you. Tickets you own appear here regardless of who is working them.'
+      'Nothing is assigned to you. Work items you own appear here regardless of who is working them.'
   },
   {
     id: 'waitingForMe',
     label: 'Waiting for me',
-    empty: 'No ticket is waiting on a human right now.'
+    empty: 'No work item is waiting on a human right now.'
   },
   {
     id: 'waitingForAgent',
     label: 'Waiting for agent',
-    empty: 'No ticket is waiting on an agent run.'
+    empty: 'No work item is waiting on an agent run.'
   },
   {
     id: 'waitingForApproval',
     label: 'Waiting for approval',
-    empty: 'No ticket has a pending approval.'
+    empty: 'No work item has a pending approval.'
   },
   {
     id: 'needsAttention',
@@ -46,7 +47,7 @@ const BUCKETS: Array<{ id: MyWorkBucket; label: string; empty: string }> = [
   }
 ];
 
-const COLUMNS: TicketColumn[] = [
+const COLUMNS: WorkItemColumn[] = [
   { key: 'key', label: 'Key', width: '7rem' },
   { key: 'title', label: 'Title' },
   { key: 'state', label: 'State' },
@@ -65,7 +66,7 @@ const rawBucket = $derived(page.url.searchParams.get('bucket'));
 const activeBucket = $derived<MyWorkBucket>(
   BUCKETS.some((bucket) => bucket.id === rawBucket) ? (rawBucket as MyWorkBucket) : 'assigned'
 );
-const openTicketId = $derived(page.url.searchParams.get('ticket'));
+const openWorkItemId = $derived(page.url.searchParams.get('workItem'));
 
 const tabs = $derived(
   BUCKETS.map((bucket) => ({
@@ -82,7 +83,15 @@ async function load() {
   loading = true;
   error = null;
   try {
-    data = await api.get<MyWorkResponse>('/api/my-work', { limit: 100 });
+    const response = await api.get<Record<string, RawWorkItemRow[]>>('/api/my-work', {
+      limit: 100
+    });
+    data = Object.fromEntries(
+      Object.entries(response).map(([bucket, rows]) => [
+        bucket,
+        Array.isArray(rows) ? rows.map(normalizeWorkItemRow) : []
+      ])
+    ) as unknown as MyWorkResponse;
   } catch (failure) {
     error = describeApiError(failure);
   } finally {
@@ -122,10 +131,10 @@ loadTeams();
     {:else if error}
       <ErrorState message={error} onRetry={load} />
     {:else}
-      <TicketTable
+      <WorkItemTable
         {rows}
         columns={COLUMNS}
-        onRowClick={openTicketInUrl}
+        onRowClick={openWorkItemInUrl}
         {teams}
         emptyTitle={`Nothing in “${activeConfig?.label ?? activeBucket}”`}
         emptyDescription={activeConfig?.empty}
@@ -134,14 +143,14 @@ loadTeams();
   </div>
 </div>
 
-{#if openTicketId}
-  <TicketDrawer
-    ticketId={openTicketId}
+{#if openWorkItemId}
+  <WorkItemDrawer
+    workflowItemId={openWorkItemId}
     {workspaceId}
     onclose={() => {
-      closeTicketInUrl();
+      closeWorkItemInUrl();
       void load();
     }}
-    onOpenTicket={openTicketInUrl}
+    onOpenWorkItem={openWorkItemInUrl}
   />
 {/if}

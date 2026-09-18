@@ -1,9 +1,10 @@
 /**
  * Trigger job handlers.
  *
- * The handler is the boundary between "an event was persisted" and "a ticket
- * exists". It must mark the event processed with the ticket id, be safe to run
- * twice, and record failures visibly without losing the event.
+ * The handler is the boundary between "an event was persisted" and "work
+ * exists". It must mark the event processed with the created Record/WorkflowItem
+ * ids (ADR-0021), be safe to run twice, and record failures visibly without
+ * losing the event.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { queryAudit } from '../../../src/lib/server/audit/ledger';
@@ -12,14 +13,12 @@ import type { Executor } from '../../../src/lib/server/db/client';
 import { setFileService } from '../../../src/lib/server/files/contracts';
 import { clearJobHandlers, requireJobHandler } from '../../../src/lib/server/jobs/handlers';
 import { SqliteJobQueue } from '../../../src/lib/server/jobs/queue';
-import { setTicketService } from '../../../src/lib/server/tickets/contracts';
 import { scheduleDueTriggers } from '../../../src/lib/server/triggers/cron';
 import { registerTriggerJobHandlers } from '../../../src/lib/server/triggers/handlers';
 import { receiveWebhook } from '../../../src/lib/server/triggers/webhook';
 import { createTestDatabase, type TestDatabase } from '../../helpers/db';
 import {
   createFakeFileService,
-  createFakeTicketService,
   createTriggerRecord,
   createWorkflow,
   createWorkspace,
@@ -30,22 +29,18 @@ import { runPendingJobs } from './support';
 let handle: TestDatabase;
 let workspaceId: string;
 let workflow: WorkflowFixture;
-let tickets: ReturnType<typeof createFakeTicketService>;
 
 beforeEach(async () => {
   handle = createTestDatabase();
   const workspace = await createWorkspace(handle.db, 'Handlers');
   workspaceId = workspace.id;
   workflow = await createWorkflow(handle.db, workspaceId);
-  tickets = createFakeTicketService({ defaultStateId: workflow.states[0] });
-  setTicketService(tickets.service);
   setFileService(createFakeFileService().service);
   clearJobHandlers();
   registerTriggerJobHandlers();
 });
 
 afterEach(() => {
-  setTicketService(null);
   setFileService(null);
   clearJobHandlers();
   handle.cleanup();
@@ -62,8 +57,14 @@ async function createWebhookTrigger(mapping: Record<string, unknown>) {
   });
 }
 
+function count(table: 'records' | 'workflow_items'): number {
+  return Number(
+    handle.sqlite.query<{ n: number }, []>(`SELECT count(*) AS n FROM ${table}`).get()?.n ?? 0
+  );
+}
+
 describe('triggers/handlers', () => {
-  test('marks an event processed with the created ticket id', async () => {
+  test('marks an event processed with the created record and work item ids', async () => {
     const trigger = await createWebhookTrigger({ titlePath: 'subject' });
     await receiveWebhook(handle.db, systemActor(workspaceId), {
       token: trigger.webhookToken ?? '',
@@ -73,21 +74,30 @@ describe('triggers/handlers', () => {
 
     expect(await runPendingJobs(handle.db)).toBe(1);
     const event = handle.sqlite
-      .query<{ status: string; ticket_id: string | null; processed_at: number | null }, []>(
-        'SELECT status, ticket_id, processed_at FROM trigger_events'
-      )
+      .query<
+        {
+          status: string;
+          record_id: string | null;
+          workflow_item_id: string | null;
+          processed_at: number | null;
+        },
+        []
+      >('SELECT status, record_id, workflow_item_id, processed_at FROM trigger_events')
       .get();
     expect(event?.status).toBe('processed');
-    expect(event?.ticket_id).toBeTruthy();
+    expect(event?.record_id).toBeTruthy();
+    expect(event?.workflow_item_id).toBeTruthy();
     expect(event?.processed_at).toBeTruthy();
-    expect(tickets.createCalls).toHaveLength(1);
+    expect(count('records')).toBe(1);
+    expect(count('workflow_items')).toBe(1);
 
     const processed = await queryAudit(handle.db, {
       workspaceId,
       actions: ['trigger.processed']
     });
     expect(processed).toHaveLength(1);
-    expect(processed[0]?.ticketId).toBe(event?.ticket_id ?? null);
+    expect(processed[0]?.recordId).toBe(event?.record_id ?? null);
+    expect(processed[0]?.workflowItemId).toBe(event?.workflow_item_id ?? null);
   });
 
   test('processing the same event twice is idempotent', async () => {
@@ -98,9 +108,9 @@ describe('triggers/handlers', () => {
       headers: {}
     });
     expect(await runPendingJobs(handle.db)).toBe(1);
-    expect(tickets.createCalls).toHaveLength(1);
+    expect(count('workflow_items')).toBe(1);
 
-    // A second delivery of the same event must not create a second ticket.
+    // A second delivery of the same event must not create a second unit of work.
     const queue = new SqliteJobQueue(handle.db);
     await queue.enqueue({
       workspaceId,
@@ -119,7 +129,8 @@ describe('triggers/handlers', () => {
       signal: new AbortController().signal
     });
     expect(result?.skipRetry).toBe(true);
-    expect(tickets.createCalls).toHaveLength(1);
+    expect(count('records')).toBe(1);
+    expect(count('workflow_items')).toBe(1);
     expect(handle.sqlite.query('SELECT count(*) AS n FROM jobs').get()).toMatchObject({ n: 2 });
   });
 
@@ -162,7 +173,8 @@ describe('triggers/handlers', () => {
 
     const failed = await queryAudit(handle.db, { workspaceId, actions: ['trigger.failed'] });
     expect(failed).toHaveLength(1);
-    expect(tickets.createCalls).toHaveLength(0);
+    expect(count('records')).toBe(0);
+    expect(count('workflow_items')).toBe(0);
   });
 
   test('rejects a job whose payload lacks an eventId', async () => {
@@ -200,12 +212,17 @@ describe('triggers/handlers', () => {
 
     expect(await runPendingJobs(handle.db)).toBe(1);
     const event = handle.sqlite
-      .query<{ status: string; ticket_id: string | null }, []>(
-        'SELECT status, ticket_id FROM trigger_events'
+      .query<{ status: string; record_id: string | null; workflow_item_id: string | null }, []>(
+        'SELECT status, record_id, workflow_item_id FROM trigger_events'
       )
       .get();
     expect(event?.status).toBe('processed');
-    expect(event?.ticket_id).toBeTruthy();
-    expect(tickets.createCalls[0]?.title).toBe('Scheduled run');
+    expect(event?.record_id).toBeTruthy();
+    expect(event?.workflow_item_id).toBeTruthy();
+
+    const record = handle.sqlite
+      .query<{ display_name: string }, []>('SELECT display_name FROM records LIMIT 1')
+      .get();
+    expect(record?.display_name).toBe('Scheduled run');
   });
 });

@@ -3,28 +3,34 @@
  *
  * These tests pin the invariants the files brief treats as non-negotiable: bytes
  * are hashed and stored once per workspace, every appearance keeps its provenance,
- * tenant isolation survives hash equality, and ticket links are written in the
- * same transaction as the file.
+ * tenant isolation survives hash equality, and work-item/record links are written in
+ * the same transaction as the file.
  */
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { and, eq } from 'drizzle-orm';
 import { AuditActions } from '../../../src/lib/server/audit/ledger';
 import { createActorContext } from '../../../src/lib/server/core/context';
 import { sha256Hex } from '../../../src/lib/server/core/hash';
-import { blobs, fileSources, files, ticketFiles } from '../../../src/lib/server/db/schema';
+import {
+  blobs,
+  fileRecords,
+  fileSources,
+  files,
+  fileWorkflowItems
+} from '../../../src/lib/server/db/schema';
 import { createFileService, type FileService } from '../../../src/lib/server/files/service';
 import { LocalBlobStore } from '../../../src/lib/server/storage/local-blob-store';
 import { configureLocalStorage } from '../../helpers/blobs';
 import { createTestDatabase, type TestDatabase } from '../../helpers/db';
 import {
-  createTicket,
   createUser,
   createWorkflow,
+  createWorkflowItem,
   createWorkspace,
   memberActor,
   ownerActor,
-  type TicketFixture,
-  type WorkflowFixture
+  type WorkflowFixture,
+  type WorkflowItemFixture
 } from '../../helpers/factories';
 
 const encoder = new TextEncoder();
@@ -34,7 +40,7 @@ let service: FileService;
 let workspaceId: string;
 let actor: ReturnType<typeof ownerActor>;
 let workflow: WorkflowFixture;
-let ticket: TicketFixture;
+let workItem: WorkflowItemFixture;
 
 async function counts() {
   const blobRows = await handle.db
@@ -63,7 +69,7 @@ beforeEach(async () => {
   const user = await createUser(handle.db);
   actor = ownerActor(workspaceId, user.id);
   workflow = await createWorkflow(handle.db, workspaceId);
-  ticket = await createTicket(handle.db, { workspaceId, workflow });
+  workItem = await createWorkflowItem(handle.db, { workspaceId, workflow });
   service = createFileService({ db: handle.db });
 });
 
@@ -232,36 +238,65 @@ describe('file ingestion', () => {
   });
 });
 
-describe('ticket and workflow linkage', () => {
-  test('ingest with a ticket link writes file and link in one transaction', async () => {
+describe('work item, record and workflow linkage', () => {
+  test('ingest with a work item link writes file and link in one transaction', async () => {
     const result = await service.ingest(actor, {
       filename: 'evidence.txt',
       bytes: encoder.encode('evidence'),
       source: { type: 'incoming_email', reference: 'msg-9' },
-      ticketId: ticket.id,
+      workflowItemId: workItem.id,
       relationship: 'evidence',
       process: false
     });
 
     const links = await handle.db
       .select()
-      .from(ticketFiles)
-      .where(and(eq(ticketFiles.fileId, result.fileId), eq(ticketFiles.ticketId, ticket.id)))
+      .from(fileWorkflowItems)
+      .where(
+        and(
+          eq(fileWorkflowItems.fileId, result.fileId),
+          eq(fileWorkflowItems.workflowItemId, workItem.id)
+        )
+      )
       .all();
     expect(links).toHaveLength(1);
     expect(links[0]?.relationship).toBe('evidence');
 
     const view = await service.requireFile(actor, result.fileId);
-    expect(view.ticketIds).toEqual([ticket.id]);
+    expect(view.workflowItemIds).toEqual([workItem.id]);
   });
 
-  test('a failing ticket link rolls the whole ingest back', async () => {
+  test('ingest with a record link writes the durable association in one transaction', async () => {
+    const result = await service.ingest(actor, {
+      filename: 'policy.txt',
+      bytes: encoder.encode('policy evidence'),
+      source: { type: 'incoming_email', reference: 'msg-10' },
+      recordId: workItem.recordId,
+      relationship: 'source',
+      process: false
+    });
+
+    const links = await handle.db
+      .select()
+      .from(fileRecords)
+      .where(
+        and(eq(fileRecords.fileId, result.fileId), eq(fileRecords.recordId, workItem.recordId))
+      )
+      .all();
+    expect(links).toHaveLength(1);
+    expect(links[0]?.relationship).toBe('source');
+
+    const view = await service.requireFile(actor, result.fileId);
+    expect(view.recordIds).toEqual([workItem.recordId]);
+  });
+
+  test('a failing work item link rolls the whole ingest back', async () => {
     await expect(
       service.ingest(actor, {
         filename: 'orphan.txt',
         bytes: encoder.encode('should not persist'),
         source: { type: 'human_upload' },
-        ticketId: 'does-not-exist',
+        workflowItemId: 'does-not-exist',
         process: false
       })
     ).rejects.toThrow();
@@ -277,8 +312,8 @@ describe('ticket and workflow linkage', () => {
     expect(blobRows).toHaveLength(0);
   });
 
-  test('one file supports many tickets and one ticket many files', async () => {
-    const secondTicket = await createTicket(handle.db, { workspaceId, workflow });
+  test('one file supports many work items and records', async () => {
+    const secondItem = await createWorkflowItem(handle.db, { workspaceId, workflow });
     const fileA = await service.ingest(actor, {
       filename: 'a.txt',
       bytes: encoder.encode('file-a'),
@@ -292,16 +327,21 @@ describe('ticket and workflow linkage', () => {
       process: false
     });
 
-    await service.linkToTicket(actor, { fileId: fileA.fileId, ticketId: ticket.id });
-    await service.linkToTicket(actor, { fileId: fileA.fileId, ticketId: secondTicket.id });
-    await service.linkToTicket(actor, { fileId: fileB.fileId, ticketId: ticket.id });
+    await service.linkToWorkflowItem(actor, { fileId: fileA.fileId, workflowItemId: workItem.id });
+    await service.linkToWorkflowItem(actor, {
+      fileId: fileA.fileId,
+      workflowItemId: secondItem.id
+    });
+    await service.linkToWorkflowItem(actor, { fileId: fileB.fileId, workflowItemId: workItem.id });
+    await service.linkToRecord(actor, { fileId: fileA.fileId, recordId: workItem.recordId });
 
-    const ticketFilesForTicket = await service.listForTicket(actor, ticket.id);
-    expect(ticketFilesForTicket.map((view) => view.id).sort()).toEqual(
-      [fileA.fileId, fileB.fileId].sort()
-    );
+    const filesForItem = await service.listForWorkflowItem(actor, workItem.id);
+    expect(filesForItem.map((view) => view.id).sort()).toEqual([fileA.fileId, fileB.fileId].sort());
+    const filesForRecord = await service.listForRecord(actor, workItem.recordId);
+    expect(filesForRecord.map((view) => view.id)).toEqual([fileA.fileId]);
     const viewA = await service.requireFile(actor, fileA.fileId);
-    expect(viewA.ticketIds.sort()).toEqual([ticket.id, secondTicket.id].sort());
+    expect(viewA.workflowItemIds.sort()).toEqual([workItem.id, secondItem.id].sort());
+    expect(viewA.recordIds).toEqual([workItem.recordId]);
   });
 
   test('workflow context is recorded and never overwrites another workflow', async () => {

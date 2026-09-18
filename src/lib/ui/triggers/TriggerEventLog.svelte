@@ -127,8 +127,8 @@ function toggle(eventId: string) {
               <dd class="truncate font-mono text-[var(--color-ink-muted)]">{event.source ?? '—'}</dd>
             </div>
             <div class="flex min-w-0 items-center gap-1.5">
-              <dt class="text-[var(--color-ink-subtle)]">Ticket</dt>
-              <dd class="truncate font-mono text-[var(--color-ink-muted)]">{event.ticketId ?? '—'}</dd>
+              <dt class="text-[var(--color-ink-subtle)]">Work item</dt>
+              <dd class="truncate font-mono text-[var(--color-ink-muted)]">{event.workflowItemId ?? '—'}</dd>
             </div>
             <div class="flex min-w-0 items-center gap-1.5">
               <dt class="text-[var(--color-ink-subtle)]">Job</dt>

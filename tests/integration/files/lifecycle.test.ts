@@ -1,21 +1,27 @@
 /**
  * File and blob lifecycle.
  *
- * Unlinking a ticket, removing workflow context, deleting a logical file and
+ * Unlinking a work item, removing workflow context, deleting a logical file and
  * deleting a blob are distinct operations. These tests pin the safe semantics:
- * shared files survive one ticket being detached, and a blob is only physically
+ * shared files survive one work item being detached, and a blob is only physically
  * removed once no retained file references it.
  */
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { and, eq, isNull } from 'drizzle-orm';
 import { AuditActions } from '../../../src/lib/server/audit/ledger';
-import { blobs, files, ticketFiles, workflowFiles } from '../../../src/lib/server/db/schema';
+import {
+  blobs,
+  fileRecords,
+  files,
+  fileWorkflowItems,
+  workflowFiles
+} from '../../../src/lib/server/db/schema';
 import {
   deleteBlob,
   deleteFile,
   isBlobReferenced,
   removeWorkflowContext,
-  unlinkFromTicket
+  unlinkFromWorkflowItem
 } from '../../../src/lib/server/files/lifecycle';
 import { runProcessing } from '../../../src/lib/server/files/processing/pipeline';
 import { searchFileContent } from '../../../src/lib/server/files/retrieval';
@@ -25,13 +31,13 @@ import { LocalBlobStore } from '../../../src/lib/server/storage/local-blob-store
 import { configureLocalStorage } from '../../helpers/blobs';
 import { createTestDatabase, type TestDatabase } from '../../helpers/db';
 import {
-  createTicket,
   createUser,
   createWorkflow,
+  createWorkflowItem,
   createWorkspace,
   ownerActor,
-  type TicketFixture,
-  type WorkflowFixture
+  type WorkflowFixture,
+  type WorkflowItemFixture
 } from '../../helpers/factories';
 
 const encoder = new TextEncoder();
@@ -42,8 +48,8 @@ let workspaceId: string;
 let actor: ReturnType<typeof ownerActor>;
 let workflow: WorkflowFixture;
 let otherWorkflow: WorkflowFixture;
-let ticketA: TicketFixture;
-let ticketB: TicketFixture;
+let itemA: WorkflowItemFixture;
+let itemB: WorkflowItemFixture;
 
 async function auditActions(): Promise<string[]> {
   const rows = (await handle.sqlite
@@ -61,30 +67,34 @@ beforeEach(async () => {
   actor = ownerActor(workspaceId, user.id);
   workflow = await createWorkflow(handle.db, workspaceId);
   otherWorkflow = await createWorkflow(handle.db, workspaceId, { name: 'Compliance' });
-  ticketA = await createTicket(handle.db, { workspaceId, workflow });
-  ticketB = await createTicket(handle.db, { workspaceId, workflow });
+  itemA = await createWorkflowItem(handle.db, { workspaceId, workflow });
+  itemB = await createWorkflowItem(handle.db, { workspaceId, workflow });
   service = createFileService({ db: handle.db });
 });
 
 describe('unlinking', () => {
-  test('one ticket can be detached without affecting the other', async () => {
+  test('one work item can be detached without affecting the other', async () => {
     const result = await service.ingest(actor, {
       filename: 'shared.txt',
       bytes: encoder.encode('shared'),
       source: { type: 'human_upload' },
-      ticketId: ticketA.id,
+      workflowItemId: itemA.id,
       process: false
     });
-    await service.linkToTicket(actor, { fileId: result.fileId, ticketId: ticketB.id });
+    await service.linkToWorkflowItem(actor, { fileId: result.fileId, workflowItemId: itemB.id });
 
-    await unlinkFromTicket(actor, { fileId: result.fileId, ticketId: ticketA.id }, handle.db);
+    await unlinkFromWorkflowItem(
+      actor,
+      { fileId: result.fileId, workflowItemId: itemA.id },
+      handle.db
+    );
 
-    expect(await service.listForTicket(actor, ticketA.id)).toHaveLength(0);
-    expect(await service.listForTicket(actor, ticketB.id)).toHaveLength(1);
+    expect(await service.listForWorkflowItem(actor, itemA.id)).toHaveLength(0);
+    expect(await service.listForWorkflowItem(actor, itemB.id)).toHaveLength(1);
     // The file itself is untouched.
     const view = await service.requireFile(actor, result.fileId);
     expect(view.id).toBe(result.fileId);
-    expect(await auditActions()).toContain(AuditActions.fileUnlinkedFromTicket);
+    expect(await auditActions()).toContain(AuditActions.workflowItemFileUnlinked);
   });
 });
 
@@ -120,7 +130,8 @@ describe('logical file deletion', () => {
       bytes: encoder.encode('findable token xyzzy'),
       source: { type: 'human_upload' },
       workflowId: workflow.id,
-      ticketId: ticketA.id,
+      workflowItemId: itemA.id,
+      recordId: itemA.recordId,
       process: false
     });
     const blobStore = await resolveBlobStore(handle.db, workspaceId);
@@ -135,10 +146,18 @@ describe('logical file deletion', () => {
 
     const links = await handle.db
       .select()
-      .from(ticketFiles)
-      .where(eq(ticketFiles.fileId, result.fileId))
+      .from(fileWorkflowItems)
+      .where(eq(fileWorkflowItems.fileId, result.fileId))
       .all();
+    expect(links).toHaveLength(1);
     expect(links.every((link) => link.removedAt !== null)).toBe(true);
+    const recordLinks = await handle.db
+      .select()
+      .from(fileRecords)
+      .where(eq(fileRecords.fileId, result.fileId))
+      .all();
+    expect(recordLinks).toHaveLength(1);
+    expect(recordLinks.every((link) => link.removedAt !== null)).toBe(true);
     const contexts = await handle.db
       .select()
       .from(workflowFiles)

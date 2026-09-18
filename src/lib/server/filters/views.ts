@@ -3,7 +3,7 @@
  *
  * A saved view is a *named, permissioned reference to a filter AST* — not a
  * second query language. Storing the AST (rather than a rendered SQL string)
- * means a view can be re-applied to a ticket list and reused verbatim by a
+ * means a view can be re-applied to a workflow-item list and reused verbatim by a
  * dashboard widget, and that the same validation runs in both places.
  *
  * Privacy is two-dimensional and intentionally simple: a view is either shared
@@ -38,7 +38,7 @@ const sortSchema = z.array(
 const draftSchema = z.object({
   name: z.string().trim().min(1).max(120),
   description: z.string().max(4000).nullable().optional(),
-  scope: z.enum(['tickets', 'files']).optional(),
+  scope: z.enum(['workflowItems', 'files']).optional(),
   workflowId: z.string().nullable().optional(),
   filter: z.unknown().optional(),
   sort: sortSchema.nullable().optional(),
@@ -84,7 +84,7 @@ export interface AppliedSavedView {
 }
 
 function permissionForScope(scope: SavedViewScope): string {
-  return scope === 'files' ? Permissions.fileRead : Permissions.ticketRead;
+  return scope === 'files' ? Permissions.fileRead : Permissions.workflowItemRead;
 }
 
 function parseOrThrow<T>(schema: z.ZodType<T>, input: unknown, message: string): T {
@@ -171,7 +171,7 @@ export async function createSavedView(
   draft: SavedViewDraft
 ): Promise<SavedViewDetail> {
   const parsed = parseOrThrow(draftSchema, draft, 'Invalid saved view');
-  const scope = parsed.scope ?? 'tickets';
+  const scope = parsed.scope ?? 'workflowItems';
   assertPermission(actor, permissionForScope(scope));
   const filter = parseFilter(parsed.filter);
   await assertNameAvailable(db, actor, scope, parsed.name);
@@ -317,7 +317,7 @@ export async function listSavedViews(
   actor: ActorContext,
   options: SavedViewListOptions = {}
 ): Promise<SavedViewDetail[]> {
-  assertAnyPermission(actor, [Permissions.ticketRead, Permissions.fileRead]);
+  assertAnyPermission(actor, [Permissions.workflowItemRead, Permissions.fileRead]);
   const visibility = actor.actorId
     ? sql`(${savedViews.isShared} = 1 OR ${savedViews.createdByUserId} = ${actor.actorId})`
     : sql`${savedViews.isShared} = 1`;
@@ -336,7 +336,7 @@ export async function listSavedViews(
 /**
  * Resolve a view into the filter/sort/columns a list endpoint should apply.
  * The filter is parsed (and therefore validated) here, so a list can pass it
- * straight to `compileTicketFilter` or to a widget.
+ * straight to `compileWorkflowItemFilter` or to a widget.
  */
 export async function applySavedView(
   db: Executor,

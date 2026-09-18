@@ -17,7 +17,7 @@
  *    plainly that the numbers come from recorded history.
  *
  * The local filter reuses `FilterBuilder`, and the same AST is what `?filter=`
- * carries on the ticket list — there is no second filtering language.
+ * carries on the work item list — there is no second filtering language.
  */
 import { api, describeApiError } from '$ui/api';
 import FilterBuilder from '$ui/common/FilterBuilder.svelte';
@@ -100,7 +100,7 @@ function blankDraft(): WidgetDraft {
     description: '',
     type: 'kpi',
     size: 'md',
-    dataSourceKind: 'tickets',
+    dataSourceKind: 'workflow_items',
     workflowIds: [],
     funnelStages: [],
     agingStates: [],
@@ -374,7 +374,7 @@ const fieldPickerOptions = $derived([
 <Modal
   open={open}
   title={widget ? `Edit “${widget.title}”` : 'Add a widget'}
-  description="A widget is a declarative question. It re-runs against current data; the filter language is the same one the ticket list uses."
+  description="A widget is a declarative question. It re-runs against current data; the filter language is the same one the work item list uses."
   width="46rem"
   onclose={onclose}
 >
@@ -405,11 +405,12 @@ const fieldPickerOptions = $derived([
         <Select
           label="Source"
           options={[
-            { value: 'tickets', label: 'Tickets' },
+            { value: 'workflow_items', label: 'Workflow items' },
             { value: 'state_history', label: 'State history intervals' },
             { value: 'field_history', label: 'Field value history' },
             { value: 'runs', label: 'Agent runs' },
-            { value: 'files', label: 'Files' }
+            { value: 'files', label: 'Files' },
+            { value: 'records', label: 'Records (any Object Type)' }
           ]}
           bind:value={draft.dataSourceKind}
         />
@@ -499,8 +500,8 @@ const fieldPickerOptions = $derived([
       <fieldset class="space-y-2 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] p-3">
         <legend class="px-1 text-xs font-semibold">States to measure</legend>
         <p class="text-[11px] leading-relaxed text-[var(--color-ink-subtle)]">
-          Dwell time is read from <code class="font-mono">ticket_state_history</code> intervals, not
-          from current ticket rows. An interval still open is measured against now, so in-progress
+          Dwell time is read from <code class="font-mono">workflow_item_state_history</code> intervals, not
+          from current work item rows. An interval still open is measured against now, so in-progress
           work is counted rather than dropped.
         </p>
         <div class="flex flex-wrap gap-2">
@@ -561,13 +562,14 @@ const fieldPickerOptions = $derived([
             label="Group by"
             options={[
               { value: 'none', label: 'None' },
+              { value: 'objectType', label: 'Object Type' },
               { value: 'state', label: 'State' },
               { value: 'priority', label: 'Priority' },
               { value: 'owner', label: 'Owner' },
               { value: 'team', label: 'Team' },
               { value: 'label', label: 'Label' },
               { value: 'workflow', label: 'Workflow' },
-              { value: 'field', label: 'Ticket field' },
+              { value: 'field', label: 'Record / work item field' },
               { value: 'day', label: 'Day' },
               { value: 'week', label: 'Week' },
               { value: 'month', label: 'Month' }
@@ -617,7 +619,7 @@ const fieldPickerOptions = $derived([
     <fieldset class="space-y-2 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] p-3">
       <legend class="px-1 text-xs font-semibold">Local filter</legend>
       <p class="text-[11px] leading-relaxed text-[var(--color-ink-subtle)]">
-        The dashboard's global filter is ANDed with this one. Both are the same AST as the ticket
+        The dashboard's global filter is ANDed with this one. Both are the same AST as the work item
         list and a saved view.
       </p>
       <Button size="sm" variant="secondary" onclick={() => (filterOpen = !filterOpen)} aria-expanded={filterOpen}>
@@ -628,7 +630,7 @@ const fieldPickerOptions = $derived([
         <FilterBuilder
           value={draft.filter}
           allow={['system', 'field', 'state', 'workflow']}
-          ticketFields={fieldOptions}
+          workItemFields={fieldOptions}
           workflowOptions={workflowOptions}
           stateOptions={stateOptions}
           onchange={onFilterChange}

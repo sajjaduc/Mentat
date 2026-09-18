@@ -20,6 +20,8 @@ const destinations = [
   { label: 'Workflows', href: '/workflows', group: 'Go to' },
   { label: 'My Work', href: '/my-work', group: 'Go to' },
   { label: 'Approvals', href: '/approvals', group: 'Go to' },
+  { label: 'Records', href: '/records', group: 'Go to' },
+  { label: 'Object Types', href: '/settings/object-types', group: 'Go to' },
   { label: 'Agents', href: '/agents', group: 'Go to' },
   { label: 'Skills', href: '/skills', group: 'Go to' },
   { label: 'Tools', href: '/tools', group: 'Go to' },
@@ -99,7 +101,8 @@ $effect(() => {
       }>('/search', { q: term, limit: 8 });
       results = response.results.map((entry) => ({
         ...entry,
-        group: entry.kind === 'ticket' ? 'Tickets' : 'Results'
+        group:
+          entry.kind === 'workflowItem' || entry.kind === 'work_item' ? 'Work items' : 'Results'
       }));
       cursor = 0;
     } catch (failure) {
@@ -149,7 +152,7 @@ const groupOrder = $derived([...new Set(flat.map((entry) => entry.group))]);
           bind:this={input}
           bind:value={query}
           onkeydown={onKeydown}
-          placeholder="Search tickets, workflows and pages…"
+          placeholder="Search work items, workflows and pages…"
           class="flex-1 bg-transparent text-sm outline-none placeholder:text-[var(--color-ink-subtle)]"
           aria-label="Search"
         />

@@ -1,5 +1,5 @@
 /**
- * Declarative payload → ticket mapping.
+ * Declarative payload → Record + WorkflowItem mapping.
  *
  * Why this exists: an incoming webhook or email must be turned into work without
  * bespoke code per integration. `TriggerMapping` is *data*: dot-paths select
@@ -7,21 +7,36 @@
  * key. One templating language is used across the product — the helpers come from
  * the shared `format` module rather than a trigger-specific mini-language.
  *
- * Mapping deliberately delegates ticket creation to the `TicketService` locator:
- * triggers decide *what* the ticket should contain, the tickets domain decides
- * how to create it (states, key allocation, history, execution).
+ * Mapping deliberately routes creation through the records + workflow-items
+ * services: triggers decide *what* the work should contain, those domains decide
+ * how to create it (object-type schema, key allocation, state entry, history and
+ * execution, ADR-0021).
  */
+import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { interpolateTemplate, readPath } from '../../shared/format';
 import type { ActorContext } from '../core/context';
 import { systemActor } from '../core/context';
 import { errors } from '../core/errors';
 import type { Executor } from '../db/client';
+import { withTransaction } from '../db/client';
 import type { Trigger, TriggerMapping } from '../db/schema';
+import { recordExternalIds, records, workflowItems } from '../db/schema';
+import { listWorkflowFields } from '../fields/service';
 import type { FileService, FileSourceType } from '../files/contracts';
 import { fileService as installedFileService } from '../files/contracts';
-import type { TicketService } from '../tickets/contracts';
-import { TICKET_PRIORITIES, type TicketPriority } from '../tickets/types';
+import { listBaseFieldsSync, objectTypeForWorkflow } from '../records/object-types';
+import { createRecordSync } from '../records/service';
+import { PRIORITY_CHOICES } from '../records/types';
+import {
+  addWorkflowItemLabelsSync,
+  createWorkflowItemSync,
+  linkWorkItemsSync,
+  updateWorkflowItemSync
+} from '../workflow-items/service';
+
+/** External-id system under which a trigger's dedupe key is recorded. */
+export const TRIGGER_EXTERNAL_SYSTEM = 'trigger';
 
 /** Runtime validation for the declarative mapping stored on a trigger. */
 export const triggerMappingSchema = z.object({
@@ -39,32 +54,33 @@ export const triggerMappingSchema = z.object({
   labels: z.array(z.string().min(1)).optional(),
   attachmentPaths: z.array(z.string().min(1)).optional(),
   dedupeTemplate: z.string().min(1).optional(),
-  parentTicketPath: z.string().min(1).optional()
+  parentRecordPath: z.string().min(1).optional()
 });
 
 export interface ApplyTriggerMappingInput {
   trigger: Trigger;
   /** The redacted payload snapshot persisted on the trigger event. */
   payload: unknown;
-  ticketService: TicketService;
   /** Overridable so tests can record ingest calls without the global locator. */
   fileService?: FileService;
   actor?: ActorContext;
   /** Provenance for attachment ingest; defaults from the trigger type. */
   sourceType?: FileSourceType;
-  /** Stable external reference (delivery id, event id) recorded on the ticket. */
+  /** Stable external reference (delivery id, event id) recorded on the work. */
   reference?: string | null;
   triggerEventId?: string | null;
+  runId?: string | null;
 }
 
 export interface TriggerMappingResult {
-  ticketId: string;
+  recordId: string;
+  workflowItemId: string;
   workflowId: string;
   stateId: string;
   fieldKeysSet: string[];
   filesIngested: number;
   dedupeKey: string | null;
-  /** True when an existing ticket was refreshed instead of created. */
+  /** True when existing work was refreshed instead of created. */
   upserted: boolean;
 }
 
@@ -91,7 +107,7 @@ function isPresent(value: unknown): boolean {
 
 /**
  * Render a template. When `strict`, a referenced path that is absent is an error
- * rather than an empty string — silent empty values are how bad tickets get made.
+ * rather than an empty string — silent empty values are how bad records get made.
  */
 function evaluateTemplate(
   template: string,
@@ -130,14 +146,14 @@ function readPathText(
   return JSON.stringify(value);
 }
 
-function resolvePriority(payload: unknown, mapping: TriggerMapping): TicketPriority | undefined {
+function resolvePriority(payload: unknown, mapping: TriggerMapping): string | undefined {
   if (!mapping.priorityPath) return undefined;
   const value = readPath(payload, mapping.priorityPath);
   if (!isPresent(value)) return undefined;
-  const candidate = String(value).toLowerCase() as TicketPriority;
-  if (!TICKET_PRIORITIES.includes(candidate)) {
+  const candidate = String(value).toLowerCase();
+  if (!PRIORITY_CHOICES.some((choice) => choice.value === candidate)) {
     throw errors.validation(
-      `Priority "${String(value)}" is not one of ${TICKET_PRIORITIES.join(', ')}`,
+      `Priority "${String(value)}" is not one of ${PRIORITY_CHOICES.map((choice) => choice.value).join(', ')}`,
       { path: mapping.priorityPath, value }
     );
   }
@@ -163,16 +179,16 @@ function resolveFieldValues(
   return fields;
 }
 
-function resolveParentTicketId(payload: unknown, mapping: TriggerMapping): string | null {
-  if (!mapping.parentTicketPath) return null;
-  const value = readPath(payload, mapping.parentTicketPath);
+function resolveParentRecordId(payload: unknown, mapping: TriggerMapping): string | null {
+  if (!mapping.parentRecordPath) return null;
+  const value = readPath(payload, mapping.parentRecordPath);
   if (typeof value !== 'string' || value.trim().length === 0) {
     throw errors.validation(
-      `parentTicketPath "${mapping.parentTicketPath}" did not resolve to a ticket id`,
-      { path: mapping.parentTicketPath }
+      `parentRecordPath "${mapping.parentRecordPath}" did not resolve to a record id`,
+      { path: mapping.parentRecordPath }
     );
   }
-  return value;
+  return value.trim();
 }
 
 export interface DecodedAttachment {
@@ -360,7 +376,7 @@ function resolveDedupeKey(
   return key;
 }
 
-/** Ingest every declared attachment and link each one to the ticket. */
+/** Ingest every declared attachment and link it to the work item and record. */
 async function ingestMappingAttachments(options: {
   /** Resolved lazily: a trigger with no attachments does not need the files module. */
   files?: FileService;
@@ -368,7 +384,8 @@ async function ingestMappingAttachments(options: {
   trigger: Trigger;
   mapping: TriggerMapping;
   payload: unknown;
-  ticketId: string;
+  workflowItemId: string;
+  recordId: string;
   workflowId: string;
   reference?: string | null;
   triggerEventId?: string | null;
@@ -396,9 +413,10 @@ async function ingestMappingAttachments(options: {
         },
         kind: 'external',
         workflowId: options.workflowId,
-        // Linking in the ingest call keeps the file↔ticket link in the same
-        // transaction as the file row.
-        ticketId: options.ticketId,
+        // Linking in the ingest call keeps the work/evidence links in the same
+        // transaction as the file row (ADR-0009).
+        workflowItemId: options.workflowItemId,
+        recordId: options.recordId,
         relationship: 'attachment',
         process: true
       });
@@ -409,14 +427,16 @@ async function ingestMappingAttachments(options: {
 }
 
 /**
- * Apply a mapping to a payload and return the created (or refreshed) ticket.
+ * Apply a mapping to a payload and return the created (or refreshed) Record and
+ * WorkflowItem.
  *
- * Attachment bytes are ingested *after* ticket creation and linked in the same
- * ingest call (`ticketId` + `relationship`), which is what makes the link atomic
- * and the provenance durable (ADR-0009).
+ * Field values are routed by the workflow-items field engine: keys bound to the
+ * Object Type land on the Record, keys bound to the workflow become overlay
+ * values on the participation. Attachments are ingested after commit and linked
+ * to both the work item (context) and the Record (evidence).
  */
 export async function applyTriggerMapping(
-  _db: Executor,
+  db: Executor,
   input: ApplyTriggerMappingInput
 ): Promise<TriggerMappingResult> {
   const trigger = input.trigger;
@@ -425,7 +445,6 @@ export async function applyTriggerMapping(
   const payloadRecord = toRecord(payload);
   const actor =
     input.actor ?? systemActor(trigger.workspaceId, `trigger:${trigger.type}:${trigger.id}`);
-  const ticketService = input.ticketService;
 
   const title = resolveTitle(trigger, mapping, payload, payloadRecord);
   const description = resolveDescription(mapping, payload, payloadRecord);
@@ -433,41 +452,48 @@ export async function applyTriggerMapping(
   const stateId = mapping.targetStateId ?? trigger.targetStateId ?? null;
   const priority = resolvePriority(payload, mapping);
   const fields = resolveFieldValues(payload, payloadRecord, mapping);
-  const parentTicketId = resolveParentTicketId(payload, mapping);
+  const parentRecordId = resolveParentRecordId(payload, mapping);
   const dedupeKey = resolveDedupeKey(mapping, payloadRecord);
 
-  const created = await ticketService.create(actor, {
+  const objectType = objectTypeForWorkflow(db, workflowId);
+  if (!objectType) {
+    throw errors.precondition('This workflow has no Object Type configured', { workflowId });
+  }
+
+  const routed = routeMappedFields(db, actor, {
     workflowId,
-    stateId,
+    objectTypeId: objectType.id,
     title,
     description,
     priority,
-    ownerUserId: mapping.ownerUserId ?? null,
-    ownerTeamId: mapping.ownerTeamId ?? null,
-    fields,
-    labelNames: mapping.labels ?? [],
-    parentTicketId,
-    dedupeKey,
-    provenance: {
-      sourceType: trigger.type,
-      triggerId: trigger.id,
-      triggerEventId: input.triggerEventId ?? undefined,
-      sourceReference: input.reference ?? undefined,
-      externalRef: dedupeKey ?? undefined
-    }
+    fields
   });
 
-  // `create` is idempotent on `dedupeKey`; when upserting we re-apply the mapped
-  // fields so a later delivery with changed content refreshes the same ticket.
-  const upserted = Boolean(dedupeKey && trigger.upsertOnDedupe);
-  if (upserted) {
-    await ticketService.setFields(actor, {
-      ticketId: created.id,
-      values: fields,
-      source: 'system',
-      force: true
-    });
-  }
+  const provenance = {
+    sourceType: trigger.type,
+    triggerId: trigger.id,
+    triggerEventId: input.triggerEventId ?? undefined,
+    sourceReference: input.reference ?? undefined,
+    externalRef: dedupeKey ?? undefined
+  };
+
+  const outcome = await withTransaction(db, (tx) =>
+    runMappedWorkTransaction(tx, actor, {
+      trigger,
+      mapping,
+      objectTypeId: objectType.id,
+      workflowId,
+      stateId,
+      title,
+      fields: routed.fields,
+      recordFields: routed.recordFields,
+      structured: routed.structured,
+      provenance,
+      dedupeKey,
+      parentRecordId,
+      runId: input.runId ?? null
+    })
+  );
 
   const filesIngested = await ingestMappingAttachments({
     files: input.fileService,
@@ -475,20 +501,284 @@ export async function applyTriggerMapping(
     trigger,
     mapping,
     payload,
-    ticketId: created.id,
-    workflowId: created.workflowId,
+    workflowItemId: outcome.workflowItemId,
+    recordId: outcome.recordId,
+    workflowId,
     reference: input.reference,
     triggerEventId: input.triggerEventId,
     sourceType: input.sourceType ?? attachmentSourceType(trigger, input.reference)
   });
 
   return {
-    ticketId: created.id,
-    workflowId: created.workflowId,
-    stateId: created.stateId,
+    recordId: outcome.recordId,
+    workflowItemId: outcome.workflowItemId,
+    workflowId,
+    stateId: outcome.stateId,
     fieldKeysSet: Object.keys(fields),
     filesIngested,
     dedupeKey,
-    upserted
+    upserted: outcome.upserted
   };
+}
+
+interface RoutedMappedFields {
+  fields: Record<string, unknown>;
+  recordFields: Record<string, unknown>;
+  structured: Record<string, unknown> | undefined;
+}
+
+/**
+ * Route every mapped key before writing: an unknown key must fail the delivery,
+ * not silently disappear into JSON. Base keys land on the Record, overlay keys on
+ * the participation, and unbound description/priority go to structured data.
+ */
+function routeMappedFields(
+  db: Executor,
+  actor: ActorContext,
+  input: {
+    workflowId: string;
+    objectTypeId: string;
+    title: string;
+    description: string | null;
+    priority: string | undefined;
+    fields: Record<string, unknown>;
+  }
+): RoutedMappedFields {
+  const fields = { ...input.fields };
+  const baseFieldList = listBaseFieldsSync(db, actor.workspaceId, input.objectTypeId);
+  const baseKeys = new Set(baseFieldList.map((field) => field.key));
+  const overlayKeys = new Set(
+    listWorkflowFields(db, actor, input.workflowId).map((view) => view.definition.key)
+  );
+  const unknown = Object.keys(fields).filter((key) => !baseKeys.has(key) && !overlayKeys.has(key));
+  if (unknown.length > 0) {
+    throw errors.validation(`Unknown field key(s): ${unknown.join(', ')}`, { missing: unknown });
+  }
+
+  const recordFields: Record<string, unknown> = {};
+  for (const key of Object.keys(fields)) {
+    if (baseKeys.has(key)) recordFields[key] = fields[key];
+  }
+
+  // The Record's display name is the mapped title. When the Object Type has a
+  // primary display field, seed it too so required-field validation passes and
+  // later field edits keep the display name consistent.
+  const primaryDisplay = baseFieldList.find((field) => field.isPrimaryDisplay);
+  if (primaryDisplay && fields[primaryDisplay.key] === undefined) {
+    fields[primaryDisplay.key] = input.title;
+    recordFields[primaryDisplay.key] = input.title;
+  }
+
+  const structuredData: Record<string, unknown> = {};
+  if (input.description && !('description' in fields)) {
+    if (baseKeys.has('description') || overlayKeys.has('description')) {
+      fields.description = input.description;
+      if (baseKeys.has('description')) recordFields.description = input.description;
+    } else {
+      structuredData.description = input.description;
+    }
+  }
+  if (input.priority !== undefined && !('priority' in fields)) {
+    if (baseKeys.has('priority') || overlayKeys.has('priority')) {
+      fields.priority = input.priority;
+      if (baseKeys.has('priority')) recordFields.priority = input.priority;
+    } else {
+      structuredData.priority = input.priority;
+    }
+  }
+
+  return {
+    fields,
+    recordFields,
+    structured: Object.keys(structuredData).length > 0 ? structuredData : undefined
+  };
+}
+
+interface MappedWorkContext {
+  trigger: Trigger;
+  mapping: TriggerMapping;
+  objectTypeId: string;
+  workflowId: string;
+  stateId: string | null;
+  title: string;
+  fields: Record<string, unknown>;
+  recordFields: Record<string, unknown>;
+  structured: Record<string, unknown> | undefined;
+  provenance: {
+    sourceType: string;
+    triggerId: string;
+    triggerEventId?: string;
+    sourceReference?: string;
+    externalRef?: string;
+  };
+  dedupeKey: string | null;
+  parentRecordId: string | null;
+  runId: string | null;
+}
+
+interface MappedWorkOutcome {
+  recordId: string;
+  workflowItemId: string;
+  stateId: string;
+  upserted: boolean;
+}
+
+/**
+ * Resolve dedupe, then create (or refresh) the Record + WorkflowItem. Kept out of
+ * the mapping function so the payload→data translation and the write decision stay
+ * independently readable.
+ */
+function runMappedWorkTransaction(
+  tx: Executor,
+  actor: ActorContext,
+  context: MappedWorkContext
+): MappedWorkOutcome {
+  const { trigger, mapping, dedupeKey } = context;
+  const existing = dedupeKey
+    ? tx
+        .select({ recordId: recordExternalIds.recordId })
+        .from(recordExternalIds)
+        .where(
+          and(
+            eq(recordExternalIds.workspaceId, actor.workspaceId),
+            eq(recordExternalIds.system, TRIGGER_EXTERNAL_SYSTEM),
+            eq(recordExternalIds.externalId, dedupeKey)
+          )
+        )
+        .limit(1)
+        .all()[0]
+    : undefined;
+
+  if (existing) {
+    const active = tx
+      .select()
+      .from(workflowItems)
+      .where(
+        and(
+          eq(workflowItems.workspaceId, actor.workspaceId),
+          eq(workflowItems.workflowId, context.workflowId),
+          eq(workflowItems.recordId, existing.recordId),
+          isNull(workflowItems.completedAt),
+          isNull(workflowItems.archivedAt)
+        )
+      )
+      .limit(1)
+      .all()[0];
+
+    if (active && trigger.upsertOnDedupe) {
+      updateWorkflowItemSync(tx, actor, {
+        workflowItemId: active.id,
+        fields: context.fields,
+        structuredData: context.structured,
+        displayName: context.title,
+        runId: context.runId,
+        reason: `Trigger "${trigger.name}" re-delivered`
+      });
+    }
+    if (active) {
+      // A redelivery without upsert must not create a second unit of work.
+      return {
+        recordId: existing.recordId,
+        workflowItemId: active.id,
+        stateId: active.stateId,
+        upserted: true
+      };
+    }
+    // The record exists but has no active work in this workflow: start it.
+    const item = createWorkflowItemSync(tx, actor, {
+      workflowId: context.workflowId,
+      recordId: existing.recordId,
+      stateId: context.stateId,
+      ownerUserId: mapping.ownerUserId ?? null,
+      ownerTeamId: mapping.ownerTeamId ?? null,
+      fields: context.fields,
+      structuredData: context.structured,
+      provenance: context.provenance,
+      reason: `Trigger "${trigger.name}"`
+    });
+    return {
+      recordId: existing.recordId,
+      workflowItemId: item.id,
+      stateId: item.stateId,
+      upserted: true
+    };
+  }
+
+  const record = createRecordSync(tx, actor, {
+    objectTypeId: context.objectTypeId,
+    displayName: context.title,
+    fields: context.recordFields,
+    structuredData: context.structured,
+    externalIds: dedupeKey
+      ? [{ system: TRIGGER_EXTERNAL_SYSTEM, externalId: dedupeKey, label: trigger.name }]
+      : [],
+    provenance: context.provenance
+  });
+  const item = createWorkflowItemSync(tx, actor, {
+    workflowId: context.workflowId,
+    recordId: record.id,
+    stateId: context.stateId,
+    ownerUserId: mapping.ownerUserId ?? null,
+    ownerTeamId: mapping.ownerTeamId ?? null,
+    fields: context.fields,
+    structuredData: context.structured,
+    provenance: context.provenance,
+    reason: `Trigger "${trigger.name}"`
+  });
+  if (mapping.labels && mapping.labels.length > 0) {
+    addWorkflowItemLabelsSync(tx, actor, {
+      workflowItemId: item.id,
+      labelNames: mapping.labels
+    });
+  }
+  if (context.parentRecordId) {
+    linkParentWork(tx, actor, context.workflowId, item.id, context.parentRecordId);
+  }
+  return { recordId: record.id, workflowItemId: item.id, stateId: item.stateId, upserted: false };
+}
+
+/**
+ * Link created work to the work item of the Record named by `parentRecordPath`.
+ * A parent Record with no active work in the destination workflow has nothing to
+ * parent under, so the link is skipped rather than guessed.
+ */
+function linkParentWork(
+  tx: Executor,
+  actor: ActorContext,
+  workflowId: string,
+  childWorkflowItemId: string,
+  parentRecordId: string
+): void {
+  const parentRecord = tx
+    .select({ id: records.id })
+    .from(records)
+    .where(and(eq(records.workspaceId, actor.workspaceId), eq(records.id, parentRecordId)))
+    .limit(1)
+    .all()[0];
+  if (!parentRecord) {
+    throw errors.validation('parentRecordPath did not resolve to a known record', {
+      recordId: parentRecordId
+    });
+  }
+  const parentItem = tx
+    .select({ id: workflowItems.id })
+    .from(workflowItems)
+    .where(
+      and(
+        eq(workflowItems.workspaceId, actor.workspaceId),
+        eq(workflowItems.workflowId, workflowId),
+        eq(workflowItems.recordId, parentRecordId),
+        isNull(workflowItems.completedAt),
+        isNull(workflowItems.archivedAt)
+      )
+    )
+    .limit(1)
+    .all()[0];
+  if (!parentItem) return;
+  linkWorkItemsSync(tx, actor, {
+    fromWorkflowItemId: childWorkflowItemId,
+    toWorkflowItemId: parentItem.id,
+    type: 'parent',
+    note: 'Mapped from parentRecordPath'
+  });
 }

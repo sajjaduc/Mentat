@@ -39,7 +39,7 @@ function onUrlChange(next: Record<string, string>) {
   initialWorkflowId={read('workflowId')}
   initialStatus={read('status')}
   initialMimeType={read('mimeType')}
-  initialTicketId={read('ticketId')}
+  initialWorkItemId={read('workItem')}
   initialFilename={read('filename')}
   onurlchange={onUrlChange}
 />

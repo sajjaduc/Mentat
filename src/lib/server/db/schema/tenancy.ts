@@ -32,7 +32,7 @@ export const workspaces = sqliteTable(
 export interface WorkspaceSettings {
   defaultTimezone?: string;
   retentionDays?: number;
-  allowAgentTicketCreation?: boolean;
+  allowAgentWorkCreation?: boolean;
   allowAgentTransfer?: boolean;
   dailyRunLimit?: number;
   branding?: { accent?: string; logoUrl?: string };

@@ -47,7 +47,7 @@ const rawStatus = $derived(page.url.searchParams.get('status') ?? 'pending');
 const activeStatus = $derived(
   STATUS_FILTERS.some((filter) => filter.id === rawStatus) ? rawStatus : 'pending'
 );
-const ticketFilter = $derived(page.url.searchParams.get('ticketId'));
+const workItemFilter = $derived(page.url.searchParams.get('workflowItemId'));
 const selected = $derived(approvals?.find((approval) => approval.id === selectedId) ?? null);
 
 function statusQuery(): string {
@@ -62,9 +62,9 @@ async function load(selectFirst = false) {
   error = null;
   try {
     const query = statusQuery();
-    const ticketPart = ticketFilter ? `&ticketId=${ticketFilter}` : '';
+    const workItemPart = workItemFilter ? `&workflowItemId=${workItemFilter}` : '';
     const response = await api.get<{ approvals: ApprovalView[]; pendingCount: number }>(
-      `/api/approvals?${query}${ticketPart}&limit=100`
+      `/api/approvals?${query}${workItemPart}&limit=100`
     );
     approvals = response.approvals;
     pendingCount = response.pendingCount;
@@ -93,9 +93,9 @@ async function loadHistory(approvalId: string) {
 
 $effect(() => {
   const status = activeStatus;
-  const ticket = ticketFilter;
+  const workItem = workItemFilter;
   void status;
-  void ticket;
+  void workItem;
   selectedId = null;
   comment = '';
   void load(true);
@@ -191,7 +191,7 @@ const rejectBlocked = $derived(comment.trim() === '');
             onclick={() =>
               replaceQuery({
                 status: filter.id === 'pending' ? null : filter.id,
-                ticketId: null
+                workflowItemId: null
               })}
           >
             {filter.label}
@@ -199,13 +199,13 @@ const rejectBlocked = $derived(comment.trim() === '');
         {/each}
       </div>
     </div>
-    {#if ticketFilter}
+    {#if workItemFilter}
       <p class="mt-1 text-[11px] text-[var(--color-ink-subtle)]">
-        Filtered to one ticket.
+        Filtered to one workItem.
         <button
           type="button"
           class="underline decoration-dotted"
-          onclick={() => replaceQuery({ ticketId: null })}>Clear</button
+          onclick={() => replaceQuery({ workflowItemId: null })}>Clear</button
         >
       </p>
     {/if}
@@ -247,8 +247,8 @@ const rejectBlocked = $derived(comment.trim() === '');
                 </div>
                 <p class="mt-1 truncate text-sm font-medium">{approval.title}</p>
                 <p class="truncate text-[11px] text-[var(--color-ink-subtle)]">
-                  {#if approval.ticketKey}<span class="font-mono">{approval.ticketKey}</span>{/if}
-                  {approval.ticketTitle ?? approval.description ?? ''}
+                  {#if approval.recordKey}<span class="font-mono">{approval.recordKey}</span>{/if}
+                  {approval.recordTitle ?? approval.description ?? ''}
                 </p>
                 <p class="mt-1 text-[10px] text-[var(--color-ink-subtle)]">
                   Requested by {approval.requestedByLabel ?? approval.requestedByType}
@@ -282,9 +282,9 @@ const rejectBlocked = $derived(comment.trim() === '');
             {/if}
             <p class="text-xs text-[var(--color-ink-subtle)]">
               Requested by {selected.requestedByLabel ?? selected.requestedByType}
-              {#if selected.ticketKey}
-                · <a class="underline decoration-dotted" href={`/tickets/${selected.ticketId}`}
-                  >{selected.ticketKey}</a
+              {#if selected.recordKey}
+                · <a class="underline decoration-dotted" href={`/work-items/${selected.workflowItemId}`}
+                  >{selected.recordKey}</a
                 >
               {/if}
               {#if selected.runStatus}· run {selected.runStatus}{/if}

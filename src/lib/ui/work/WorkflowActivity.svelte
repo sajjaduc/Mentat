@@ -3,8 +3,8 @@
  * Workflow activity.
  *
  * A live feed of this workflow's run events. The SSE endpoint is workspace-scoped,
- * so the workflow's ticket set is the filter: it is loaded once and used to drop
- * other workflows' events, while payload workflow ids cover tickets created after
+ * so the workflow's workItem set is the filter: it is loaded once and used to drop
+ * other workflows' events, while payload workflow ids cover workItems created after
  * the page opened. Events are persisted first, so the replay on connect is a real
  * history and reconnection resumes exactly where it stopped.
  */
@@ -16,7 +16,8 @@ import ErrorState from '$ui/primitives/ErrorState.svelte';
 import Skeleton from '$ui/primitives/Skeleton.svelte';
 import { openEventStream } from '$ui/work/events';
 import { eventLabel, eventTone } from '$ui/work/format';
-import type { TicketListRow, WorkEvent } from '$ui/work/types';
+import { normalizeWorkItemRow, type RawWorkItemRow } from '$ui/work/rows';
+import type { WorkEvent } from '$ui/work/types';
 
 interface Props {
   workflowId: string;
@@ -24,7 +25,7 @@ interface Props {
 
 let { workflowId }: Props = $props();
 
-let tickets = $state<Record<string, { key: string; title: string }>>({});
+let workItems = $state<Record<string, { key: string | null; title: string }>>({});
 let events = $state<WorkEvent[]>([]);
 let ready = $state(false);
 let connected = $state(false);
@@ -33,26 +34,33 @@ const known = new Set<string>();
 
 const MAX_ROWS = 300;
 
-async function loadTickets() {
+async function loadWorkItems() {
   error = null;
   try {
-    const response = await api.get<{ rows: TicketListRow[] }>('/api/tickets', {
+    const response = await api.get<{
+      items?: RawWorkItemRow[];
+      rows?: RawWorkItemRow[];
+    }>('/api/workflow-items', {
       workflowId,
       limit: 200
     });
-    const map: Record<string, { key: string; title: string }> = {};
-    for (const row of response.rows) {
-      known.add(row.ticket.id);
-      map[row.ticket.id] = { key: row.ticket.key, title: row.ticket.title };
+    const map: Record<string, { key: string | null; title: string }> = {};
+    for (const raw of response.items ?? response.rows ?? []) {
+      const row = normalizeWorkItemRow(raw);
+      known.add(row.workItem.id);
+      map[row.workItem.id] = {
+        key: row.workItem.record.key,
+        title: row.workItem.record.displayName
+      };
     }
-    tickets = map;
+    workItems = map;
   } catch (failure) {
     error = describeApiError(failure);
   }
 }
 
 function belongs(event: WorkEvent): boolean {
-  if (event.ticketId && known.has(event.ticketId)) return true;
+  if (event.workflowItemId && known.has(event.workflowItemId)) return true;
   const data = event.data;
   if (typeof data === 'object' && data !== null) {
     const record = data as Record<string, unknown>;
@@ -70,14 +78,14 @@ function handleEvent(event: WorkEvent) {
 $effect(() => {
   const id = workflowId;
   void id;
-  void loadTickets();
+  void loadWorkItems();
   const close = openEventStream({
     since: 0,
     onEvent: handleEvent,
     onReady: () => {
       ready = true;
       connected = true;
-      void loadTickets();
+      void loadWorkItems();
     },
     onDisconnect: () => (connected = false)
   });
@@ -100,7 +108,7 @@ $effect(() => {
   </div>
 
   {#if error}
-    <ErrorState message={error} onRetry={loadTickets} />
+    <ErrorState message={error} onRetry={loadWorkItems} />
   {:else if !ready && events.length === 0}
     <Skeleton lines={6} height="1.25rem" />
   {:else if events.length === 0}
@@ -111,30 +119,30 @@ $effect(() => {
   {:else}
     <ul class="space-y-1.5">
       {#each events as event (event.seq)}
-        {@const ticket = event.ticketId ? tickets[event.ticketId] : undefined}
+        {@const workItem = event.workflowItemId ? workItems[event.workflowItemId] : undefined}
         <li
           class="flex flex-wrap items-center gap-2 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] px-2.5 py-1.5"
         >
           <Badge tone={eventTone(event.type)}>{eventLabel(event.type)}</Badge>
-          {#if event.ticketId}
+          {#if event.workflowItemId}
             <a
               class="min-w-0 truncate text-xs hover:text-[var(--color-accent)]"
-              href={`/tickets/${event.ticketId}`}
+              href={`/work-items/${event.workflowItemId}`}
             >
-              {#if ticket}<span class="font-mono text-[10px] text-[var(--color-ink-subtle)]"
-                  >{ticket.key}</span
+              {#if workItem}<span class="font-mono text-[10px] text-[var(--color-ink-subtle)]"
+                  >{workItem.key}</span
                 >
-                {ticket.title}
+                {workItem.title}
               {:else}
-                <span class="font-mono text-[10px]">{event.ticketId.slice(0, 8)}</span>
+                <span class="font-mono text-[10px]">{event.workflowItemId.slice(0, 8)}</span>
               {/if}
             </a>
           {/if}
           <span class="ml-auto flex items-center gap-2 text-[10px] text-[var(--color-ink-subtle)]">
-            {#if event.runId && event.ticketId}
+            {#if event.runId && event.workflowItemId}
               <a
                 class="font-mono underline decoration-dotted"
-                href={`/tickets/${event.ticketId}?tab=agent-work`}
+                href={`/work-items/${event.workflowItemId}?tab=agent-work`}
                 >run {event.runId.slice(0, 8)}</a
               >
             {/if}

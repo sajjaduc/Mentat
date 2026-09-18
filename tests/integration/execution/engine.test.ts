@@ -13,37 +13,42 @@ import {
   agentRuns,
   approvalRequests,
   jobs,
+  records,
   runEvents,
-  ticketFieldValues,
-  tickets,
   tools,
-  workflowStates
+  users,
+  workflowItemFieldValues,
+  workflowItems
 } from '../../../src/lib/server/db/schema';
 import {
-  dispatchStateEntrySync,
   enqueueApprovalResumeSync,
   handleApprovalResume,
-  handleStateEntry,
   registerExecutionJobHandlers
 } from '../../../src/lib/server/execution/engine';
 import { setProviderLookup } from '../../../src/lib/server/execution/provider-lookup';
 import { createAgentRunSync, executeAgentRun } from '../../../src/lib/server/execution/runner';
 import { createFieldDefinition, setWorkflowFields } from '../../../src/lib/server/fields/service';
-import { clearJobHandlers } from '../../../src/lib/server/jobs/handlers';
-import {
-  createTicketSync,
-  installTicketService,
-  requestTransitionSync
-} from '../../../src/lib/server/tickets/service';
+import { clearJobHandlers, getJobHandler } from '../../../src/lib/server/jobs/handlers';
 import { registerCoreNativeTools } from '../../../src/lib/server/tools/native/register';
 import { getDefaultToolRegistry, resetToolRegistry } from '../../../src/lib/server/tools/registry';
+import {
+  dispatchWorkflowItemEntrySync,
+  handleWorkflowItemStateEntry
+} from '../../../src/lib/server/workflow-items/dispatch';
+import { requestWorkflowItemTransition } from '../../../src/lib/server/workflow-items/service';
 import {
   createState,
   createTransition,
   updateState
 } from '../../../src/lib/server/workflows/service';
 import { createTestDatabase, type TestDatabase } from '../../helpers/db';
-import { createWorkflow, createWorkspace, ownerActor } from '../../helpers/factories';
+import {
+  createWorkflow,
+  createWorkflowItem,
+  createWorkspace,
+  ownerActor,
+  type WorkflowFixture
+} from '../../helpers/factories';
 import { type FakeTurn, fakeModelRow, ScriptedProvider } from '../../helpers/fake-provider';
 
 let handle: TestDatabase;
@@ -102,8 +107,59 @@ async function seedAgent(options: {
   return agent.id;
 }
 
-function insertStateHistorySafe() {
-  // no-op helper kept for symmetry with earlier revisions
+/** Start work: a Record placed into a workflow at `stateId`. */
+async function start(
+  workflow: WorkflowFixture,
+  stateId: string,
+  options: { title?: string } = {}
+): Promise<{ id: string; recordId: string; key: string; number: number }> {
+  return createWorkflowItem(handle.db, {
+    workspaceId,
+    workflow,
+    stateId,
+    title: options.title
+  });
+}
+
+function itemRow(workflowItemId: string) {
+  return handle.db
+    .select()
+    .from(workflowItems)
+    .where(eq(workflowItems.id, workflowItemId))
+    .all()[0]!;
+}
+
+/**
+ * `workflow_item.enter` jobs for one item. Filtered through the payload rather
+ * than the `jobs.workflow_item_id` column because the workflow-item enqueue paths
+ * do not populate that column; `enqueueApprovalResumeSync` does.
+ */
+function entryJobsFor(workflowItemId: string) {
+  return handle.db
+    .select()
+    .from(jobs)
+    .where(eq(jobs.type, 'workflow_item.enter'))
+    .all()
+    .filter(
+      (job) => (job.payload as { workflowItemId?: string }).workflowItemId === workflowItemId
+    );
+}
+
+/** The `workflow_item.enter` payload for the item's current state entry. */
+function payloadFor(
+  workflow: WorkflowFixture,
+  item: { id: string; recordId: string },
+  stateId: string,
+  enteredAt?: number
+) {
+  return {
+    workspaceId,
+    workflowItemId: item.id,
+    stateId,
+    workflowId: workflow.id,
+    recordId: item.recordId,
+    enteredAt: enteredAt ?? itemRow(item.id).enteredStateAt
+  };
 }
 
 beforeEach(async () => {
@@ -116,7 +172,6 @@ beforeEach(async () => {
   const workspace = await createWorkspace(handle.db, 'Execution Co');
   workspaceId = workspace.id;
   const userId = uuidv7();
-  const { users } = await import('../../../src/lib/server/db/schema');
   handle.db
     .insert(users)
     .values({
@@ -128,8 +183,6 @@ beforeEach(async () => {
     })
     .run();
   owner = ownerActor(workspaceId, userId, 'Reviewer');
-  installTicketService(() => handle.db);
-  void insertStateHistorySafe;
 });
 
 describe('agent state execution', () => {
@@ -141,33 +194,22 @@ describe('agent state execution', () => {
       kind: 'agent',
       agentId
     });
-    const ticketsBefore = createTicketSync(handle.db, owner, {
-      workflowId: workflow.id,
-      stateId: state.id,
-      title: 'Draft a reply'
-    });
+    const item = await start(workflow, state.id, { title: 'Draft a reply' });
 
     const provider = installProvider([
       { content: 'I have drafted the reply.', usage: { inputTokens: 40, outputTokens: 8 } }
     ]);
 
-    const ticketRow = handle.db
-      .select()
-      .from(tickets)
-      .where(eq(tickets.id, ticketsBefore.id))
-      .all()[0]!;
-    const result = await handleStateEntry(handle.db, {
-      ticketId: ticketsBefore.id,
-      stateId: state.id,
-      workflowId: workflow.id,
-      enteredAt: ticketRow.enteredStateAt
-    });
+    const result = await handleWorkflowItemStateEntry(
+      handle.db,
+      payloadFor(workflow, item, state.id)
+    );
 
     expect(result.outcome).toBe('ran');
     const run = handle.db
       .select()
       .from(agentRuns)
-      .where(eq(agentRuns.ticketId, ticketsBefore.id))
+      .where(eq(agentRuns.workflowItemId, item.id))
       .all()[0];
     expect(run?.status).toBe('succeeded');
     expect(run?.outputText).toBe('I have drafted the reply.');
@@ -196,26 +238,19 @@ describe('agent state execution', () => {
       kind: 'agent',
       agentId
     });
-    const ticket = createTicketSync(handle.db, owner, {
-      workflowId: workflow.id,
-      stateId: state.id,
-      title: 'Stream'
-    });
+    const item = await start(workflow, state.id, { title: 'Stream' });
 
     installProvider([{ content: 'Hello world from the agent.', chunkSize: 5 }]);
-    const result = await handleStateEntry(handle.db, {
-      ticketId: ticket.id,
-      stateId: state.id,
-      workflowId: workflow.id,
-      enteredAt: handle.db.select().from(tickets).where(eq(tickets.id, ticket.id)).all()[0]!
-        .enteredStateAt
-    });
+    const result = await handleWorkflowItemStateEntry(
+      handle.db,
+      payloadFor(workflow, item, state.id)
+    );
 
     expect(result.outcome).toBe('ran');
     const run = handle.db
       .select()
       .from(agentRuns)
-      .where(eq(agentRuns.ticketId, ticket.id))
+      .where(eq(agentRuns.workflowItemId, item.id))
       .all()[0]!;
     const deltas = handle.db
       .select()
@@ -239,52 +274,45 @@ describe('agent state execution', () => {
 
     const agentId = await seedAgent({
       workflowId: workflow.id,
-      toolKeys: ['mentat.ticket.fields.set'],
-      permissions: { native: ['mentat.ticket.fields.set'] }
+      toolKeys: ['workflowItems.setFields'],
+      permissions: { native: ['workflowItems.setFields'] }
     });
     const state = createState(handle.db, owner, workflow.id, {
       name: 'Write',
       kind: 'agent',
       agentId
     });
-    const ticket = createTicketSync(handle.db, owner, {
-      workflowId: workflow.id,
-      stateId: state.id,
-      title: 'Write reply'
-    });
+    const item = await start(workflow, state.id, { title: 'Write reply' });
 
     installProvider([
       {
         toolCalls: [
           {
-            name: 'mentat.ticket.fields.set',
-            arguments: { fieldKey: 'reply', value: 'Thanks for reaching out.' }
+            name: 'workflowItems.setFields',
+            arguments: { values: { reply: 'Thanks for reaching out.' } }
           }
         ]
       },
       { content: 'Filed the reply.' }
     ]);
 
-    const result = await handleStateEntry(handle.db, {
-      ticketId: ticket.id,
-      stateId: state.id,
-      workflowId: workflow.id,
-      enteredAt: handle.db.select().from(tickets).where(eq(tickets.id, ticket.id)).all()[0]!
-        .enteredStateAt
-    });
+    const result = await handleWorkflowItemStateEntry(
+      handle.db,
+      payloadFor(workflow, item, state.id)
+    );
 
     expect(result.outcome).toBe('ran');
     const values = handle.db
       .select()
-      .from(ticketFieldValues)
-      .where(eq(ticketFieldValues.ticketId, ticket.id))
+      .from(workflowItemFieldValues)
+      .where(eq(workflowItemFieldValues.workflowItemId, item.id))
       .all();
     expect(values[0]?.valueText).toBe('Thanks for reaching out.');
 
     const run = handle.db
       .select()
       .from(agentRuns)
-      .where(eq(agentRuns.ticketId, ticket.id))
+      .where(eq(agentRuns.workflowItemId, item.id))
       .all()[0]!;
     const steps = handle.db
       .select()
@@ -306,7 +334,7 @@ describe('agent state execution', () => {
 
     const agentId = await seedAgent({
       workflowId: workflow.id,
-      toolKeys: ['mentat.ticket.fields.set'],
+      toolKeys: ['workflowItems.setFields'],
       permissions: { native: [] }
     });
     const state = createState(handle.db, owner, workflow.id, {
@@ -314,40 +342,28 @@ describe('agent state execution', () => {
       kind: 'agent',
       agentId
     });
-    const ticket = createTicketSync(handle.db, owner, {
-      workflowId: workflow.id,
-      stateId: state.id,
-      title: 'Denied'
-    });
+    const item = await start(workflow, state.id, { title: 'Denied' });
 
     installProvider([
       {
-        toolCalls: [
-          { name: 'mentat.ticket.fields.set', arguments: { fieldKey: 'reply', value: 'nope' } }
-        ]
+        toolCalls: [{ name: 'workflowItems.setFields', arguments: { values: { reply: 'nope' } } }]
       },
       { content: 'I could not do that.' }
     ]);
 
-    await handleStateEntry(handle.db, {
-      ticketId: ticket.id,
-      stateId: state.id,
-      workflowId: workflow.id,
-      enteredAt: handle.db.select().from(tickets).where(eq(tickets.id, ticket.id)).all()[0]!
-        .enteredStateAt
-    });
+    await handleWorkflowItemStateEntry(handle.db, payloadFor(workflow, item, state.id));
 
     const values = handle.db
       .select()
-      .from(ticketFieldValues)
-      .where(eq(ticketFieldValues.ticketId, ticket.id))
+      .from(workflowItemFieldValues)
+      .where(eq(workflowItemFieldValues.workflowItemId, item.id))
       .all();
     expect(values).toHaveLength(0);
 
     const run = handle.db
       .select()
       .from(agentRuns)
-      .where(eq(agentRuns.ticketId, ticket.id))
+      .where(eq(agentRuns.workflowItemId, item.id))
       .all()[0]!;
     const toolResult = handle.db
       .select()
@@ -370,26 +386,19 @@ describe('agent state execution', () => {
       kind: 'agent',
       agentId: agent.id
     });
-    const ticket = createTicketSync(handle.db, owner, {
-      workflowId: workflow.id,
-      stateId: state.id,
-      title: 'No model'
-    });
+    const item = await start(workflow, state.id, { title: 'No model' });
 
     installProvider([{ content: 'never used' }]);
-    const result = await handleStateEntry(handle.db, {
-      ticketId: ticket.id,
-      stateId: state.id,
-      workflowId: workflow.id,
-      enteredAt: handle.db.select().from(tickets).where(eq(tickets.id, ticket.id)).all()[0]!
-        .enteredStateAt
-    });
+    const result = await handleWorkflowItemStateEntry(
+      handle.db,
+      payloadFor(workflow, item, state.id)
+    );
 
     expect(result.outcome).toBe('failed');
     const run = handle.db
       .select()
       .from(agentRuns)
-      .where(eq(agentRuns.ticketId, ticket.id))
+      .where(eq(agentRuns.workflowItemId, item.id))
       .all()[0]!;
     expect(run.status).toBe('failed');
     expect(run.errorCode).toBe('precondition_failed');
@@ -397,7 +406,7 @@ describe('agent state execution', () => {
 });
 
 describe('idempotency and recovery', () => {
-  test('skips a state entry the ticket has already left', async () => {
+  test('skips a state entry the item has already left', async () => {
     const workflow = await createWorkflow(handle.db, workspaceId, { name: 'Support' });
     const agentId = await seedAgent({ workflowId: workflow.id });
     const state = createState(handle.db, owner, workflow.id, {
@@ -410,29 +419,19 @@ describe('idempotency and recovery', () => {
       toStateId: workflow.stateIds['In Progress'] as string,
       name: 'Move on'
     });
-    const ticket = createTicketSync(handle.db, owner, {
-      workflowId: workflow.id,
-      stateId: state.id,
-      title: 'Moved on'
-    });
+    const item = await start(workflow, state.id, { title: 'Moved on' });
 
-    const enteredAt = handle.db
-      .select()
-      .from(tickets)
-      .where(eq(tickets.id, ticket.id))
-      .all()[0]!.enteredStateAt;
-    requestTransitionSync(handle.db, owner, {
-      ticketId: ticket.id,
+    const enteredAt = itemRow(item.id).enteredStateAt;
+    await requestWorkflowItemTransition(handle.db, owner, {
+      workflowItemId: item.id,
       targetStateId: workflow.stateIds['In Progress'] as string
     });
 
     installProvider([{ content: 'should not run' }]);
-    const result = await handleStateEntry(handle.db, {
-      ticketId: ticket.id,
-      stateId: state.id,
-      workflowId: workflow.id,
-      enteredAt
-    });
+    const result = await handleWorkflowItemStateEntry(
+      handle.db,
+      payloadFor(workflow, item, state.id, enteredAt)
+    );
     expect(result.outcome).toBe('skipped');
   });
 
@@ -444,25 +443,15 @@ describe('idempotency and recovery', () => {
       kind: 'agent',
       agentId
     });
-    const ticket = createTicketSync(handle.db, owner, {
-      workflowId: workflow.id,
-      stateId: state.id,
-      title: 'Once'
-    });
+    const item = await start(workflow, state.id, { title: 'Once' });
 
     const provider = installProvider([{ content: 'answer' }]);
-    const ticketRow = handle.db.select().from(tickets).where(eq(tickets.id, ticket.id)).all()[0]!;
-    await handleStateEntry(handle.db, {
-      ticketId: ticket.id,
-      stateId: state.id,
-      workflowId: workflow.id,
-      enteredAt: ticketRow.enteredStateAt
-    });
+    await handleWorkflowItemStateEntry(handle.db, payloadFor(workflow, item, state.id));
 
     const run = handle.db
       .select()
       .from(agentRuns)
-      .where(eq(agentRuns.ticketId, ticket.id))
+      .where(eq(agentRuns.workflowItemId, item.id))
       .all()[0]!;
     await executeAgentRun(handle.db, run.id);
     expect(provider.calls.length).toBe(1);
@@ -478,20 +467,15 @@ describe('idempotency and recovery', () => {
     setWorkflowFields(handle.db, owner, workflow.id, [{ fieldDefinitionId: fieldId }]);
     const agentId = await seedAgent({
       workflowId: workflow.id,
-      toolKeys: ['mentat.ticket.fields.set'],
-      permissions: { native: ['mentat.ticket.fields.set'] }
+      toolKeys: ['workflowItems.setFields'],
+      permissions: { native: ['workflowItems.setFields'] }
     });
     const state = createState(handle.db, owner, workflow.id, {
       name: 'Work',
       kind: 'agent',
       agentId
     });
-    const ticket = createTicketSync(handle.db, owner, {
-      workflowId: workflow.id,
-      stateId: state.id,
-      title: 'Crash'
-    });
-    const ticketRow = handle.db.select().from(tickets).where(eq(tickets.id, ticket.id)).all()[0]!;
+    const item = await start(workflow, state.id, { title: 'Crash' });
 
     const provider = installProvider([{ content: 'Recovered.' }]);
 
@@ -499,7 +483,8 @@ describe('idempotency and recovery', () => {
     // before the tool ran: exactly the state the database would hold.
     const runId = createAgentRunSync(handle.db, {
       workspaceId,
-      ticket: ticketRow,
+      workflowItemId: item.id,
+      recordId: item.recordId,
       state,
       agentId,
       triggerType: 'state_entry'
@@ -535,8 +520,8 @@ describe('idempotency and recovery', () => {
           toolCalls: [
             {
               id: 'call_crash',
-              name: 'mentat.ticket.fields.set',
-              arguments: { fieldKey: 'outcome', value: 'recovered' }
+              name: 'workflowItems.setFields',
+              arguments: { values: { outcome: 'recovered' } }
             }
           ],
           finishReason: 'tool_calls'
@@ -553,9 +538,9 @@ describe('idempotency and recovery', () => {
         runId,
         index: 2,
         type: 'tool_call',
-        name: 'mentat.ticket.fields.set',
+        name: 'workflowItems.setFields',
         status: 'started',
-        input: { fieldKey: 'outcome', value: 'recovered' } as never,
+        input: { values: { outcome: 'recovered' } } as never,
         startedAt: now
       })
       .run();
@@ -565,8 +550,8 @@ describe('idempotency and recovery', () => {
 
     const values = handle.db
       .select()
-      .from(ticketFieldValues)
-      .where(eq(ticketFieldValues.ticketId, ticket.id))
+      .from(workflowItemFieldValues)
+      .where(eq(workflowItemFieldValues.workflowItemId, item.id))
       .all();
     expect(values[0]?.valueText).toBe('recovered');
 
@@ -576,7 +561,7 @@ describe('idempotency and recovery', () => {
     expect(provider.calls.length).toBe(callsAfter);
   });
 
-  test('dispatchStateEntry refuses a human-gated state', async () => {
+  test('dispatch refuses a human-gated state', async () => {
     const workflow = await createWorkflow(handle.db, workspaceId, {
       name: 'Gated',
       states: [
@@ -589,17 +574,17 @@ describe('idempotency and recovery', () => {
       stateId: workflow.stateIds['Review'] as string,
       humanGate: { enabled: true }
     });
-    const ticket = createTicketSync(handle.db, owner, { workflowId: workflow.id, title: 'Gated' });
+    const item = await start(workflow, workflow.stateIds['Review'] as string, { title: 'Gated' });
 
     expect(() =>
-      dispatchStateEntrySync(handle.db, owner, { ticketId: ticket.id, force: true })
-    ).toThrow(/human-gated/);
+      dispatchWorkflowItemEntrySync(handle.db, owner, { workflowItemId: item.id })
+    ).toThrow(/human decision/);
 
-    const queued = handle.db.select().from(jobs).where(eq(jobs.ticketId, ticket.id)).all();
+    const queued = entryJobsFor(item.id);
     expect(queued).toHaveLength(0);
   });
 
-  test('handleStateEntry returns waiting for a gated state', async () => {
+  test('handleWorkflowItemStateEntry returns waiting for a gated state', async () => {
     const workflow = await createWorkflow(handle.db, workspaceId, {
       name: 'Gated',
       states: [
@@ -611,18 +596,20 @@ describe('idempotency and recovery', () => {
       stateId: workflow.stateIds['Review'] as string,
       humanGate: { enabled: true }
     });
-    const ticket = createTicketSync(handle.db, owner, { workflowId: workflow.id, title: 'Gated' });
-    const row = handle.db.select().from(tickets).where(eq(tickets.id, ticket.id)).all()[0]!;
-    const result = await handleStateEntry(handle.db, {
-      ticketId: ticket.id,
+    const item = await start(workflow, workflow.stateIds['Review'] as string, { title: 'Gated' });
+    const row = itemRow(item.id);
+    const result = await handleWorkflowItemStateEntry(handle.db, {
+      workspaceId,
+      workflowItemId: item.id,
       stateId: row.stateId,
       workflowId: workflow.id,
+      recordId: row.recordId,
       enteredAt: row.enteredStateAt
     });
     expect(result.outcome).toBe('waiting');
   });
 
-  test('dispatchStateEntry queues exactly one job per entry', async () => {
+  test('dispatch queues exactly one job per entry', async () => {
     const workflow = await createWorkflow(handle.db, workspaceId, { name: 'Manual' });
     const agentId = await seedAgent({ workflowId: workflow.id });
     const state = createState(handle.db, owner, workflow.id, {
@@ -631,16 +618,18 @@ describe('idempotency and recovery', () => {
       agentId,
       autoExecute: false
     });
-    const ticket = createTicketSync(handle.db, owner, {
-      workflowId: workflow.id,
-      stateId: state.id,
-      title: 'Dispatch'
-    });
+    const item = await start(workflow, state.id, { title: 'Dispatch' });
 
-    const first = dispatchStateEntrySync(handle.db, owner, { ticketId: ticket.id, force: true });
-    const second = dispatchStateEntrySync(handle.db, owner, { ticketId: ticket.id, force: true });
+    const first = dispatchWorkflowItemEntrySync(handle.db, owner, {
+      workflowItemId: item.id,
+      force: true
+    });
+    const second = dispatchWorkflowItemEntrySync(handle.db, owner, {
+      workflowItemId: item.id,
+      force: true
+    });
     expect(second.jobId).toBe(first.jobId);
-    const queued = handle.db.select().from(jobs).where(eq(jobs.ticketId, ticket.id)).all();
+    const queued = entryJobsFor(item.id);
     expect(queued).toHaveLength(1);
   });
 });
@@ -659,29 +648,22 @@ describe('system states', () => {
       kind: 'system',
       config: { systemAction: { type: 'setFields', values: { routed: true } } }
     });
-    const ticket = createTicketSync(handle.db, owner, {
-      workflowId: workflow.id,
-      stateId: state.id,
-      title: 'Normalise me'
-    });
-    const row = handle.db.select().from(tickets).where(eq(tickets.id, ticket.id)).all()[0]!;
+    const item = await start(workflow, state.id, { title: 'Normalise me' });
 
-    const result = await handleStateEntry(handle.db, {
-      ticketId: ticket.id,
-      stateId: state.id,
-      workflowId: workflow.id,
-      enteredAt: row.enteredStateAt
-    });
+    const result = await handleWorkflowItemStateEntry(
+      handle.db,
+      payloadFor(workflow, item, state.id)
+    );
     expect(result.outcome).toBe('ran');
     const values = handle.db
       .select()
-      .from(ticketFieldValues)
-      .where(eq(ticketFieldValues.ticketId, ticket.id))
+      .from(workflowItemFieldValues)
+      .where(eq(workflowItemFieldValues.workflowItemId, item.id))
       .all();
     expect(values[0]?.valueBool).toBe(true);
   });
 
-  test('transition action moves the ticket without a model', async () => {
+  test('transition action moves the item without a model', async () => {
     const workflow = await createWorkflow(handle.db, workspaceId, { name: 'System' });
     // Configure the start state itself as a deterministic action, reusing the
     // transition the template already provides.
@@ -695,21 +677,14 @@ describe('system states', () => {
         }
       }
     });
-    const ticket = createTicketSync(handle.db, owner, {
-      workflowId: workflow.id,
-      stateId: state.id,
-      title: 'Auto'
-    });
-    const row = handle.db.select().from(tickets).where(eq(tickets.id, ticket.id)).all()[0]!;
+    const item = await start(workflow, state.id, { title: 'Auto' });
 
-    const result = await handleStateEntry(handle.db, {
-      ticketId: ticket.id,
-      stateId: state.id,
-      workflowId: workflow.id,
-      enteredAt: row.enteredStateAt
-    });
+    const result = await handleWorkflowItemStateEntry(
+      handle.db,
+      payloadFor(workflow, item, state.id)
+    );
     expect(result.outcome, `system action detail: ${result.detail}`).toBe('ran');
-    const moved = handle.db.select().from(tickets).where(eq(tickets.id, ticket.id)).all()[0]!;
+    const moved = itemRow(item.id);
     expect(moved.stateId).toBe(workflow.stateIds['In Progress'] as string);
   });
 });
@@ -731,11 +706,11 @@ describe('tool-call approvals', () => {
       .values({
         id: toolId,
         workspaceId,
-        key: 'mentat.ticket.fields.set',
+        key: 'workflowItems.setFields',
         name: 'set field',
         description: 'set',
         kind: 'native',
-        implementation: { kind: 'native', key: 'mentat.ticket.fields.set' } as never,
+        implementation: { kind: 'native', key: 'workflowItems.setFields' } as never,
         inputSchema: { type: 'object', additionalProperties: true } as never,
         approvalPolicy: { mode: 'always', reason: 'Changing money requires approval' } as never,
         timeoutSeconds: 10,
@@ -751,103 +726,90 @@ describe('tool-call approvals', () => {
       instructions: 'Set the amount.',
       modelId: 'fake-model-row',
       toolIds: [toolId],
-      permissions: { native: ['mentat.ticket.fields.set'] } as never
+      permissions: { native: ['workflowItems.setFields'] } as never
     });
     const state = createState(handle.db, owner, workflow.id, {
       name: 'Adjust',
       kind: 'agent',
       agentId: agent.id
     });
-    const ticket = createTicketSync(handle.db, owner, {
-      workflowId: workflow.id,
-      stateId: state.id,
-      title: 'Adjust claim'
-    });
-    return { workflow, state, ticket, fieldId: field.id };
+    const item = await start(workflow, state.id, { title: 'Adjust claim' });
+    return { workflow, state, item, fieldId: field.id };
   }
 
   test('pauses the run and creates a pending approval without side effects', async () => {
-    const { workflow, state, ticket } = await approvalFixture();
+    const { workflow, state, item } = await approvalFixture();
     installProvider([
       {
         toolCalls: [
           {
             id: 'call_money',
-            name: 'mentat.ticket.fields.set',
-            arguments: { fieldKey: 'amount', value: 5000 }
+            name: 'workflowItems.setFields',
+            arguments: { values: { amount: 5000 } }
           }
         ]
       }
     ]);
 
-    const row = handle.db.select().from(tickets).where(eq(tickets.id, ticket.id)).all()[0]!;
-    const result = await handleStateEntry(handle.db, {
-      ticketId: ticket.id,
-      stateId: state.id,
-      workflowId: workflow.id,
-      enteredAt: row.enteredStateAt
-    });
+    const result = await handleWorkflowItemStateEntry(
+      handle.db,
+      payloadFor(workflow, item, state.id)
+    );
 
     expect(result.outcome).toBe('waiting');
     const run = handle.db
       .select()
       .from(agentRuns)
-      .where(eq(agentRuns.ticketId, ticket.id))
+      .where(eq(agentRuns.workflowItemId, item.id))
       .all()[0]!;
     expect(run.status).toBe('awaiting_approval');
 
     const approvals = handle.db
       .select()
       .from(approvalRequests)
-      .where(eq(approvalRequests.ticketId, ticket.id))
+      .where(eq(approvalRequests.workflowItemId, item.id))
       .all();
     expect(approvals).toHaveLength(1);
     expect(approvals[0]?.status).toBe('pending');
     expect(approvals[0]?.kind).toBe('tool_call');
     const requestedAction = approvals[0]?.requestedAction as unknown as { toolKey: string };
-    expect(requestedAction.toolKey).toBe('mentat.ticket.fields.set');
+    expect(requestedAction.toolKey).toBe('workflowItems.setFields');
 
     // The gated side effect must not have happened.
     const values = handle.db
       .select()
-      .from(ticketFieldValues)
-      .where(eq(ticketFieldValues.ticketId, ticket.id))
+      .from(workflowItemFieldValues)
+      .where(eq(workflowItemFieldValues.workflowItemId, item.id))
       .all();
     expect(values).toHaveLength(0);
   });
 
   test('approving resumes the run and applies the action exactly once', async () => {
-    const { workflow, state, ticket } = await approvalFixture();
+    const { workflow, state, item } = await approvalFixture();
     installProvider([
       {
         toolCalls: [
           {
             id: 'call_money',
-            name: 'mentat.ticket.fields.set',
-            arguments: { fieldKey: 'amount', value: 5000 }
+            name: 'workflowItems.setFields',
+            arguments: { values: { amount: 5000 } }
           }
         ]
       },
       { content: 'Amount updated.' }
     ]);
 
-    const row = handle.db.select().from(tickets).where(eq(tickets.id, ticket.id)).all()[0]!;
-    await handleStateEntry(handle.db, {
-      ticketId: ticket.id,
-      stateId: state.id,
-      workflowId: workflow.id,
-      enteredAt: row.enteredStateAt
-    });
+    await handleWorkflowItemStateEntry(handle.db, payloadFor(workflow, item, state.id));
 
     const run = handle.db
       .select()
       .from(agentRuns)
-      .where(eq(agentRuns.ticketId, ticket.id))
+      .where(eq(agentRuns.workflowItemId, item.id))
       .all()[0]!;
     const approval = handle.db
       .select()
       .from(approvalRequests)
-      .where(eq(approvalRequests.ticketId, ticket.id))
+      .where(eq(approvalRequests.workflowItemId, item.id))
       .all()[0]!;
 
     // Decision and resume-enqueue happen together, mirroring the API path.
@@ -860,7 +822,8 @@ describe('tool-call approvals', () => {
       workspaceId,
       approvalId: approval.id,
       runId: run.id,
-      ticketId: ticket.id
+      recordId: item.recordId,
+      workflowItemId: item.id
     });
 
     const resumed = await handleApprovalResume(handle.db, approval.id);
@@ -868,8 +831,8 @@ describe('tool-call approvals', () => {
 
     const values = handle.db
       .select()
-      .from(ticketFieldValues)
-      .where(eq(ticketFieldValues.ticketId, ticket.id))
+      .from(workflowItemFieldValues)
+      .where(eq(workflowItemFieldValues.workflowItemId, item.id))
       .all();
     expect(values).toHaveLength(1);
     expect(values[0]?.valueNumber).toBe(5000);
@@ -882,38 +845,32 @@ describe('tool-call approvals', () => {
     expect(again.outcome).toBe('skipped');
     const after = handle.db
       .select()
-      .from(ticketFieldValues)
-      .where(eq(ticketFieldValues.ticketId, ticket.id))
+      .from(workflowItemFieldValues)
+      .where(eq(workflowItemFieldValues.workflowItemId, item.id))
       .all();
     expect(after).toHaveLength(1);
   });
 
   test('rejecting lets the model continue without applying the action', async () => {
-    const { workflow, state, ticket } = await approvalFixture();
+    const { workflow, state, item } = await approvalFixture();
     installProvider([
       {
         toolCalls: [
           {
             id: 'call_money',
-            name: 'mentat.ticket.fields.set',
-            arguments: { fieldKey: 'amount', value: 9000 }
+            name: 'workflowItems.setFields',
+            arguments: { values: { amount: 9000 } }
           }
         ]
       },
       { content: 'I left the amount unchanged as requested.' }
     ]);
 
-    const row = handle.db.select().from(tickets).where(eq(tickets.id, ticket.id)).all()[0]!;
-    await handleStateEntry(handle.db, {
-      ticketId: ticket.id,
-      stateId: state.id,
-      workflowId: workflow.id,
-      enteredAt: row.enteredStateAt
-    });
+    await handleWorkflowItemStateEntry(handle.db, payloadFor(workflow, item, state.id));
     const approval = handle.db
       .select()
       .from(approvalRequests)
-      .where(eq(approvalRequests.ticketId, ticket.id))
+      .where(eq(approvalRequests.workflowItemId, item.id))
       .all()[0]!;
 
     expect(() =>
@@ -930,43 +887,38 @@ describe('tool-call approvals', () => {
 
     const values = handle.db
       .select()
-      .from(ticketFieldValues)
-      .where(eq(ticketFieldValues.ticketId, ticket.id))
+      .from(workflowItemFieldValues)
+      .where(eq(workflowItemFieldValues.workflowItemId, item.id))
       .all();
     expect(values).toHaveLength(0);
 
     const run = handle.db
       .select()
       .from(agentRuns)
-      .where(eq(agentRuns.ticketId, ticket.id))
+      .where(eq(agentRuns.workflowItemId, item.id))
       .all()[0]!;
     expect(run.status).toBe('succeeded');
   });
 
   test('lists pending approvals for the inbox', async () => {
-    const { workflow, state, ticket } = await approvalFixture();
+    const { workflow, state, item } = await approvalFixture();
     installProvider([
       {
         toolCalls: [
           {
             id: 'c1',
-            name: 'mentat.ticket.fields.set',
-            arguments: { fieldKey: 'amount', value: 1 }
+            name: 'workflowItems.setFields',
+            arguments: { values: { amount: 1 } }
           }
         ]
       }
     ]);
-    const row = handle.db.select().from(tickets).where(eq(tickets.id, ticket.id)).all()[0]!;
-    await handleStateEntry(handle.db, {
-      ticketId: ticket.id,
-      stateId: state.id,
-      workflowId: workflow.id,
-      enteredAt: row.enteredStateAt
-    });
+    await handleWorkflowItemStateEntry(handle.db, payloadFor(workflow, item, state.id));
 
     const pending = listApprovals(handle.db, owner, { status: ['pending'] });
     expect(pending).toHaveLength(1);
-    expect(pending[0]?.ticketKey).toBe(ticket.key as string);
+    const record = handle.db.select().from(records).where(eq(records.id, item.recordId)).all()[0]!;
+    expect(pending[0]?.recordKey).toBe(record.key);
   });
 });
 
@@ -982,32 +934,25 @@ describe('failure handling', () => {
       kind: 'agent',
       agentId
     });
-    const ticket = createTicketSync(handle.db, owner, {
-      workflowId: workflow.id,
-      stateId: state.id,
-      title: 'Fail'
-    });
+    const item = await start(workflow, state.id, { title: 'Fail' });
 
     installProvider([{ error: new Error('connection refused') }]);
-    const row = handle.db.select().from(tickets).where(eq(tickets.id, ticket.id)).all()[0]!;
-    const result = await handleStateEntry(handle.db, {
-      ticketId: ticket.id,
-      stateId: state.id,
-      workflowId: workflow.id,
-      enteredAt: row.enteredStateAt
-    });
+    const result = await handleWorkflowItemStateEntry(
+      handle.db,
+      payloadFor(workflow, item, state.id)
+    );
     expect(result.outcome).toBe('failed');
 
     const run = handle.db
       .select()
       .from(agentRuns)
-      .where(eq(agentRuns.ticketId, ticket.id))
+      .where(eq(agentRuns.workflowItemId, item.id))
       .all()[0]!;
     expect(run.status).toBe('failed');
     expect(run.error).toContain('connection refused');
   });
 
-  test('a failure state receives the ticket after the job exhausts its attempts', async () => {
+  test('a failure state receives the item after the job exhausts its attempts', async () => {
     const workflow = await createWorkflow(handle.db, workspaceId, {
       name: 'Failures',
       states: [
@@ -1027,19 +972,17 @@ describe('failure handling', () => {
       maxAttempts: 1,
       failureStateId: workflow.stateIds['Needs attention'] as string
     });
-    const ticket = createTicketSync(handle.db, owner, {
-      workflowId: workflow.id,
-      stateId: workflow.stateIds['Work'] as string,
-      title: 'Will fail'
-    });
+    const item = await start(workflow, workflow.stateIds['Work'] as string, { title: 'Will fail' });
+
+    // Dispatch enqueues the state-entry job for the agent state.
+    dispatchWorkflowItemEntrySync(handle.db, owner, { workflowItemId: item.id, force: true });
 
     // Directly exercise the handler path including final-attempt handling.
-    const { getJobHandler } = await import('../../../src/lib/server/jobs/handlers');
-    const job = handle.db.select().from(jobs).where(eq(jobs.ticketId, ticket.id)).all()[0];
+    const job = entryJobsFor(item.id)[0];
     expect(job).toBeDefined();
 
     installProvider([{ error: new Error('nope') }]);
-    const handler = getJobHandler('state.enter')!;
+    const handler = getJobHandler('workflow_item.enter')!;
     const leased = { ...job!, attempts: 1, maxAttempts: 1, leasedBy: 'w', workerId: 'w' };
     try {
       await handler({
@@ -1054,7 +997,7 @@ describe('failure handling', () => {
       // move is applied on the final attempt, which is what we assert below.
     }
 
-    const moved = handle.db.select().from(tickets).where(eq(tickets.id, ticket.id)).all()[0]!;
+    const moved = itemRow(item.id);
     expect(moved.stateId).toBe(workflow.stateIds['Needs attention'] as string);
   });
 });
@@ -1068,34 +1011,23 @@ describe('secret hygiene', () => {
       kind: 'agent',
       agentId
     });
-    const ticket = createTicketSync(handle.db, owner, {
-      workflowId: workflow.id,
-      stateId: state.id,
-      title: 'Contains API_KEY_PLACEHOLDER',
-      description: 'The token is sk-live-supersecretvalue123'
+    const item = await start(workflow, state.id, {
+      title: 'Contains API_KEY_PLACEHOLDER sk-live-supersecretvalue123'
     });
     registerSecretValue('sk-live-supersecretvalue123');
 
     installProvider([{ content: 'ok' }]);
-    const row = handle.db.select().from(tickets).where(eq(tickets.id, ticket.id)).all()[0]!;
-    await handleStateEntry(handle.db, {
-      ticketId: ticket.id,
-      stateId: state.id,
-      workflowId: workflow.id,
-      enteredAt: row.enteredStateAt
-    });
+    await handleWorkflowItemStateEntry(handle.db, payloadFor(workflow, item, state.id));
 
     const dump = handle.sqlite
       .query(
         `SELECT group_concat(coalesce(input,'') || coalesce(output,'') || coalesce(metadata,''), ' ') AS blob
-         FROM agent_run_steps WHERE run_id IN (SELECT id FROM agent_runs WHERE ticket_id = ?)`
+         FROM agent_run_steps WHERE run_id IN (SELECT id FROM agent_runs WHERE workflow_item_id = ?)`
       )
-      .get(ticket.id) as { blob: string | null };
+      .get(item.id) as { blob: string | null };
     expect(dump.blob ?? '').not.toContain('sk-live-supersecretvalue123');
   });
 });
-
-void workflowStates;
 
 describe('reasoning configuration', () => {
   const REASONING_CAPABILITIES = {
@@ -1122,23 +1054,13 @@ describe('reasoning configuration', () => {
       kind: 'agent',
       agentId
     });
-    const ticket = createTicketSync(handle.db, owner, {
-      workflowId: workflow.id,
-      stateId: state.id,
-      title: 'Think carefully'
-    });
+    const item = await start(workflow, state.id, { title: 'Think carefully' });
     const provider = installProvider([{ content: 'done' }], options.modelOverrides);
-    const ticketRow = handle.db.select().from(tickets).where(eq(tickets.id, ticket.id)).all()[0]!;
-    await handleStateEntry(handle.db, {
-      ticketId: ticket.id,
-      stateId: state.id,
-      workflowId: workflow.id,
-      enteredAt: ticketRow.enteredStateAt
-    });
+    await handleWorkflowItemStateEntry(handle.db, payloadFor(workflow, item, state.id));
     const run = handle.db
       .select()
       .from(agentRuns)
-      .where(eq(agentRuns.ticketId, ticket.id))
+      .where(eq(agentRuns.workflowItemId, item.id))
       .all()[0]!;
     return { runId: run.id, provider };
   }

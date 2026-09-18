@@ -7,12 +7,12 @@ import { createTestDatabase, type TestDatabase } from '../../helpers/db';
 import {
   createField,
   createFieldValueHistory,
-  createTicket,
-  createTicketStateInterval,
   createWorkflow,
+  createWorkflowItem,
+  createWorkflowItemStateInterval,
   createWorkspace,
   setTypedFieldValue,
-  updateTicketRow,
+  updateWorkflowItemRow,
   type WorkflowFixture
 } from '../../helpers/factories';
 
@@ -26,7 +26,7 @@ let workspaceId: string;
 let workflow: WorkflowFixture;
 const tickets: Record<string, string> = {};
 const definition: WidgetDataSource = {
-  kind: 'tickets',
+  kind: 'workflow_items',
   funnelStages: [
     { label: 'Incoming', stateIds: [] },
     { label: 'Qualified', stateIds: [] },
@@ -55,9 +55,9 @@ async function seed(): Promise<void> {
   (definition.funnelStages![3] as { stateIds: string[] }).stateIds = [stateId('Accepted')];
 
   async function makeTicket(key: string, createdAt: number): Promise<string> {
-    const ticket = await createTicket(db, { workspaceId, workflow, title: key });
+    const ticket = await createWorkflowItem(db, { workspaceId, workflow, title: key });
     tickets[key] = ticket.id;
-    await updateTicketRow(db, ticket.id, {
+    await updateWorkflowItemRow(db, ticket.id, {
       createdAt,
       updatedAt: createdAt,
       enteredStateAt: createdAt,
@@ -72,9 +72,9 @@ async function seed(): Promise<void> {
     enteredAt: number,
     exitedAt: number | null = null
   ): Promise<void> {
-    await createTicketStateInterval(db, {
+    await createWorkflowItemStateInterval(db, {
       workspaceId,
-      ticketId: tickets[key]!,
+      workflowItemId: tickets[key]!,
       workflowId: workflow.id,
       stateId: stateId(state),
       stateName: state,
@@ -149,9 +149,9 @@ describe('funnels from history', () => {
 
   test('ignores the current ticket state entirely', async () => {
     // Move every ticket's current state somewhere unrelated.
-    await updateTicketRow(db, tickets.t1!, { stateId: workflow.stateIds.Incoming! });
-    await updateTicketRow(db, tickets.t2!, { stateId: workflow.stateIds.Incoming! });
-    await updateTicketRow(db, tickets.t3!, { stateId: workflow.stateIds.Accepted! });
+    await updateWorkflowItemRow(db, tickets.t1!, { stateId: workflow.stateIds.Incoming! });
+    await updateWorkflowItemRow(db, tickets.t2!, { stateId: workflow.stateIds.Incoming! });
+    await updateWorkflowItemRow(db, tickets.t3!, { stateId: workflow.stateIds.Accepted! });
     const result = await runFunnel(db, { workspaceId, definition });
     const counts = result.stages.map((stage) => stage.count);
     expect(counts).toEqual([4, 3, 1, 2]);
@@ -172,28 +172,28 @@ describe('funnels from history', () => {
     const region = await createField(db, { workspaceId, key: 'region', type: 'select' });
     await setTypedFieldValue(db, {
       workspaceId,
-      ticketId: tickets.t1!,
+      workflowItemId: tickets.t1!,
       fieldDefinitionId: region,
       type: 'select',
       value: 'north'
     });
     await setTypedFieldValue(db, {
       workspaceId,
-      ticketId: tickets.t2!,
+      workflowItemId: tickets.t2!,
       fieldDefinitionId: region,
       type: 'select',
       value: 'north'
     });
     await setTypedFieldValue(db, {
       workspaceId,
-      ticketId: tickets.t3!,
+      workflowItemId: tickets.t3!,
       fieldDefinitionId: region,
       type: 'select',
       value: 'south'
     });
     await setTypedFieldValue(db, {
       workspaceId,
-      ticketId: tickets.t4!,
+      workflowItemId: tickets.t4!,
       fieldDefinitionId: region,
       type: 'select',
       value: 'south'
@@ -230,7 +230,7 @@ describe('funnels from history', () => {
     });
 
     const withField: WidgetDataSource = {
-      kind: 'tickets',
+      kind: 'workflow_items',
       funnelStages: [
         ...definition.funnelStages!.slice(0, 2),
         { label: 'Approved', fieldKey: 'status', fieldValue: 'approved' }
@@ -244,7 +244,7 @@ describe('funnels from history', () => {
 
   test('an unknown stage field yields a zero stage rather than throwing', async () => {
     const unknown: WidgetDataSource = {
-      kind: 'tickets',
+      kind: 'workflow_items',
       funnelStages: [
         ...definition.funnelStages!.slice(0, 2),
         { label: 'Ghost', fieldKey: 'no_such_field', fieldValue: 1 }
@@ -255,7 +255,7 @@ describe('funnels from history', () => {
   });
 
   test('an empty definition reports an empty funnel', async () => {
-    const result = await runFunnel(db, { workspaceId, definition: { kind: 'tickets' } });
+    const result = await runFunnel(db, { workspaceId, definition: { kind: 'workflow_items' } });
     expect(result.empty).toBe(true);
     expect(result.stages).toEqual([]);
     expect(result.overallConversion).toBeNull();

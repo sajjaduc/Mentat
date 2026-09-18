@@ -1,26 +1,29 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { eq } from 'drizzle-orm';
 import { runWidget, type WidgetDefinition } from '../../../src/lib/server/analytics/query';
 import type { Executor } from '../../../src/lib/server/db/client';
+import { workflowItemStateHistory } from '../../../src/lib/server/db/schema';
 import type { FilterAst } from '../../../src/lib/server/filters/ast';
 import { createSavedView } from '../../../src/lib/server/filters/views';
 import { createTestDatabase, type TestDatabase } from '../../helpers/db';
 import {
-  addTicketLabel,
+  addWorkflowItemLabel,
   createAgentRun,
   createField,
   createFileRecord,
   createLabel,
   createTeam,
-  createTicket,
-  createTicketStateInterval,
   createUser,
   createWorkflow,
+  createWorkflowItem,
+  createWorkflowItemStateInterval,
   createWorkspace,
-  linkTicketFile,
+  linkWorkflowItemFile,
   ownerActor,
   setTypedFieldValue,
   type UserFixture,
-  updateTicketRow,
+  updateRecordRow,
+  updateWorkflowItemRow,
   type WorkflowFixture
 } from '../../helpers/factories';
 
@@ -43,12 +46,12 @@ let opened: string;
 let urgent: string;
 let claimType: string;
 let channels: string;
-const ticketIds: Record<string, string> = {};
+const itemIds: Record<string, string> = {};
 
 function widget(overrides: Partial<WidgetDefinition>): WidgetDefinition {
   return {
     type: 'kpi',
-    dataSource: { kind: 'tickets' },
+    dataSource: { kind: 'workflow_items' },
     measure: { aggregation: 'count' },
     ...overrides
   };
@@ -185,18 +188,27 @@ async function seed(): Promise<void> {
   ];
 
   for (const spec of specs) {
-    const ticket = await createTicket(db, {
+    const ticket = await createWorkflowItem(db, {
       workspaceId,
       workflow,
       title: spec.title,
       stateId: workflow.stateIds[spec.state]!,
-      priority: spec.priority ?? 'none',
       ownerUserId: spec.owner,
       ownerTeamId: spec.team
     });
-    ticketIds[spec.key] = ticket.id;
+    itemIds[spec.key] = ticket.id;
+    // The factory records the item's initial state entry; these tests seed the
+    // exact history they assert on, so drop the automatic one.
+    await db
+      .delete(workflowItemStateHistory)
+      .where(eq(workflowItemStateHistory.workflowItemId, ticket.id))
+      .run();
+    // The universal model keeps `priority` as a Record structured value.
+    await updateRecordRow(db, ticket.recordId, {
+      structuredData: { priority: spec.priority ?? 'none' }
+    });
     const createdAt = BASE + spec.day * DAY;
-    await updateTicketRow(db, ticket.id, {
+    await updateWorkflowItemRow(db, ticket.id, {
       createdAt,
       updatedAt: createdAt,
       enteredStateAt: createdAt,
@@ -205,7 +217,7 @@ async function seed(): Promise<void> {
     if (spec.amount !== undefined) {
       await setTypedFieldValue(db, {
         workspaceId,
-        ticketId: ticket.id,
+        workflowItemId: ticket.id,
         fieldDefinitionId: amount,
         type: 'currency',
         value: spec.amount
@@ -214,7 +226,7 @@ async function seed(): Promise<void> {
     if (spec.score !== undefined) {
       await setTypedFieldValue(db, {
         workspaceId,
-        ticketId: ticket.id,
+        workflowItemId: ticket.id,
         fieldDefinitionId: score,
         type: 'number',
         value: spec.score
@@ -223,7 +235,7 @@ async function seed(): Promise<void> {
     if (spec.urgent !== undefined) {
       await setTypedFieldValue(db, {
         workspaceId,
-        ticketId: ticket.id,
+        workflowItemId: ticket.id,
         fieldDefinitionId: urgent,
         type: 'boolean',
         value: spec.urgent
@@ -232,7 +244,7 @@ async function seed(): Promise<void> {
     if (spec.claimType) {
       await setTypedFieldValue(db, {
         workspaceId,
-        ticketId: ticket.id,
+        workflowItemId: ticket.id,
         fieldDefinitionId: claimType,
         type: 'select',
         value: spec.claimType
@@ -241,7 +253,7 @@ async function seed(): Promise<void> {
     if (spec.channels) {
       await setTypedFieldValue(db, {
         workspaceId,
-        ticketId: ticket.id,
+        workflowItemId: ticket.id,
         fieldDefinitionId: channels,
         type: 'multi_select',
         value: spec.channels
@@ -249,15 +261,23 @@ async function seed(): Promise<void> {
     }
     await setTypedFieldValue(db, {
       workspaceId,
-      ticketId: ticket.id,
+      workflowItemId: ticket.id,
       fieldDefinitionId: opened,
       type: 'date',
       value: BASE - spec.day * DAY
     });
   }
-  await addTicketLabel(db, { workspaceId, ticketId: ticketIds.A!, labelId: urgentLabel });
-  await addTicketLabel(db, { workspaceId, ticketId: ticketIds.B!, labelId: urgentLabel });
-  await addTicketLabel(db, { workspaceId, ticketId: ticketIds.D!, labelId: vipLabel });
+  await addWorkflowItemLabel(db, {
+    workspaceId,
+    workflowItemId: itemIds.A!,
+    labelId: urgentLabel
+  });
+  await addWorkflowItemLabel(db, {
+    workspaceId,
+    workflowItemId: itemIds.B!,
+    labelId: urgentLabel
+  });
+  await addWorkflowItemLabel(db, { workspaceId, workflowItemId: itemIds.D!, labelId: vipLabel });
 }
 
 beforeEach(seed);
@@ -342,27 +362,28 @@ describe('widgets: breakdowns', () => {
       workspaceId,
       widget: widget({ grouping: { by: 'owner' } })
     });
+    // The universal engine keys a breakdown by the display value.
     const owners = byKey(byOwner.rows);
-    expect(owners.get(ada.id)).toBe(3);
-    expect(owners.get(bob.id)).toBe(2);
-    expect(owners.get('(none)')).toBe(1);
+    expect(owners.get('Ada')).toBe(3);
+    expect(owners.get('Bob')).toBe(2);
+    expect(owners.get('Unassigned')).toBe(1);
 
     const byTeam = await runWidget(db, {
       workspaceId,
       widget: widget({ grouping: { by: 'team' } })
     });
-    const teams = byKey(byTeam.rows);
-    expect(teams.get(claimsTeam)).toBe(3);
-    expect(teams.get(opsTeam)).toBe(2);
+    const teams = new Map((byTeam.rows ?? []).map((row) => [row.label, row.value]));
+    expect([...teams].find(([label]) => label?.startsWith('Claims'))?.[1]).toBe(3);
+    expect([...teams].find(([label]) => label?.startsWith('Ops'))?.[1]).toBe(2);
 
     const byState = await runWidget(db, {
       workspaceId,
       widget: widget({ grouping: { by: 'state' } })
     });
     const states = byKey(byState.rows);
-    expect(states.get(workflow.stateIds.Backlog!)).toBe(2);
-    expect(states.get(workflow.stateIds.Done!)).toBe(2);
-    expect(byState.rows?.find((row) => row.key === workflow.stateIds.Done!)?.label).toBe('Done');
+    expect(states.get('Backlog')).toBe(2);
+    expect(states.get('Done')).toBe(2);
+    expect(byState.rows?.find((row) => row.key === 'Done')?.label).toBe('Done');
 
     const byPriority = await runWidget(db, {
       workspaceId,
@@ -374,16 +395,17 @@ describe('widgets: breakdowns', () => {
       workspaceId,
       widget: widget({ grouping: { by: 'workflow' } })
     });
-    expect(byKey(byWorkflow.rows).get(workflow.id)).toBe(6);
+    expect(byWorkflow.rows).toHaveLength(1);
+    expect(byWorkflow.rows?.[0]?.value).toBe(6);
 
     const byLabel = await runWidget(db, {
       workspaceId,
       widget: widget({ grouping: { by: 'label' } })
     });
-    const labels = byKey(byLabel.rows);
+    const labels = new Map((byLabel.rows ?? []).map((row) => [row.label, row.value]));
     // A ticket with two labels appears once per label, but COUNT is DISTINCT.
-    expect(labels.get(urgentLabel)).toBe(2);
-    expect(labels.get(vipLabel)).toBe(1);
+    expect([...labels].find(([label]) => label?.startsWith('urgent'))?.[1]).toBe(2);
+    expect([...labels].find(([label]) => label?.startsWith('vip'))?.[1]).toBe(1);
   });
 
   test('field grouping uses the typed value', async () => {
@@ -456,18 +478,18 @@ describe('widgets: non-ticket data sources', () => {
   test('counts and groups state_history, runs and files sources', async () => {
     const backlog = workflow.stateIds.Backlog!;
     const review = workflow.stateIds['Human Review']!;
-    await createTicketStateInterval(db, {
+    await createWorkflowItemStateInterval(db, {
       workspaceId,
-      ticketId: ticketIds.A!,
+      workflowItemId: itemIds.A!,
       workflowId: workflow.id,
       stateId: backlog,
       stateName: 'Backlog',
       enteredAt: BASE,
       exitedAt: BASE + 100_000
     });
-    await createTicketStateInterval(db, {
+    await createWorkflowItemStateInterval(db, {
       workspaceId,
-      ticketId: ticketIds.B!,
+      workflowItemId: itemIds.B!,
       workflowId: workflow.id,
       stateId: review,
       stateName: 'Human Review',
@@ -476,7 +498,7 @@ describe('widgets: non-ticket data sources', () => {
     });
     await createAgentRun(db, {
       workspaceId,
-      ticketId: ticketIds.A!,
+      workflowItemId: itemIds.A!,
       workflowId: workflow.id,
       stateId: backlog,
       status: 'succeeded'
@@ -486,7 +508,7 @@ describe('widgets: non-ticket data sources', () => {
       originalFilename: 'evidence.pdf',
       status: 'ready'
     });
-    await linkTicketFile(db, { workspaceId, ticketId: ticketIds.B!, fileId });
+    await linkWorkflowItemFile(db, { workspaceId, workflowItemId: itemIds.B!, fileId });
 
     const history = await runWidget(db, {
       workspaceId,
@@ -572,7 +594,7 @@ describe('widgets: filter composition and isolation', () => {
     const other = await createWorkspace(db, 'Other WS');
     const otherWorkflow = await createWorkflow(db, other.id, { name: 'Other WF' });
     const otherAda = await createUser(db, { name: 'Ada' });
-    await createTicket(db, {
+    await createWorkflowItem(db, {
       workspaceId: other.id,
       workflow: otherWorkflow,
       title: 'Foreign',
@@ -580,15 +602,15 @@ describe('widgets: filter composition and isolation', () => {
       priority: 'high'
     });
     const otherTeam = await createTeam(db, other.id, 'Claims');
-    const foreign = await createTicket(db, {
+    const foreign = await createWorkflowItem(db, {
       workspaceId: other.id,
       workflow: otherWorkflow,
       title: 'Foreign team',
       ownerTeamId: otherTeam
     });
-    await addTicketLabel(db, {
+    await addWorkflowItemLabel(db, {
       workspaceId: other.id,
-      ticketId: foreign.id,
+      workflowItemId: foreign.id,
       labelId: await createLabel(db, other.id, 'urgent')
     });
 
@@ -598,7 +620,8 @@ describe('widgets: filter composition and isolation', () => {
       workspaceId,
       widget: widget({ grouping: { by: 'owner' } })
     });
-    expect(byOwner.rows?.some((row) => row.key === otherAda.id)).toBe(false);
+    // Only this workspace's work contributes: Ada 3, Bob 2 and one unassigned.
+    expect(byOwner.rows?.reduce((sum, row) => sum + row.value, 0)).toBe(6);
     const byLabel = await runWidget(db, {
       workspaceId,
       widget: widget({ grouping: { by: 'label' } })
@@ -610,20 +633,20 @@ describe('widgets: filter composition and isolation', () => {
 describe('widgets: duration measures from history', () => {
   test('time_in_state averages recorded intervals, including open ones', async () => {
     const backlog = workflow.stateIds.Backlog!;
-    const t1 = ticketIds.A!;
-    const t2 = ticketIds.B!;
-    await createTicketStateInterval(db, {
+    const t1 = itemIds.A!;
+    const t2 = itemIds.B!;
+    await createWorkflowItemStateInterval(db, {
       workspaceId,
-      ticketId: t1,
+      workflowItemId: t1,
       workflowId: workflow.id,
       stateId: backlog,
       stateName: 'Backlog',
       enteredAt: BASE,
       exitedAt: BASE + 100_000
     });
-    await createTicketStateInterval(db, {
+    await createWorkflowItemStateInterval(db, {
       workspaceId,
-      ticketId: t2,
+      workflowItemId: t2,
       workflowId: workflow.id,
       stateId: backlog,
       stateName: 'Backlog',
@@ -631,9 +654,9 @@ describe('widgets: duration measures from history', () => {
       exitedAt: BASE + 300_000
     });
     // An open interval: 200s from `now`.
-    await createTicketStateInterval(db, {
+    await createWorkflowItemStateInterval(db, {
       workspaceId,
-      ticketId: ticketIds.C!,
+      workflowItemId: itemIds.C!,
       workflowId: workflow.id,
       stateId: backlog,
       stateName: 'Backlog',
@@ -646,7 +669,7 @@ describe('widgets: duration measures from history', () => {
       now: BASE + 200_000,
       widget: widget({
         measure: { aggregation: 'duration', durationOf: 'time_in_state' },
-        dataSource: { kind: 'tickets', agingStates: [backlog] }
+        dataSource: { kind: 'workflow_items', agingStates: [backlog] }
       })
     });
     // (100 + 300 + 200) / 3 = 200
@@ -655,9 +678,9 @@ describe('widgets: duration measures from history', () => {
 
   test('time_in_state re-scopes history when the widget declares another source', async () => {
     const backlog = workflow.stateIds.Backlog!;
-    await createTicketStateInterval(db, {
+    await createWorkflowItemStateInterval(db, {
       workspaceId,
-      ticketId: ticketIds.A!,
+      workflowItemId: itemIds.A!,
       workflowId: workflow.id,
       stateId: backlog,
       stateName: 'Backlog',
@@ -678,17 +701,17 @@ describe('widgets: duration measures from history', () => {
 
   test('cycle_time measures creation to first terminal entry', async () => {
     const done = workflow.stateIds.Done!;
-    await createTicketStateInterval(db, {
+    await createWorkflowItemStateInterval(db, {
       workspaceId,
-      ticketId: ticketIds.A!,
+      workflowItemId: itemIds.A!,
       workflowId: workflow.id,
       stateId: done,
       stateName: 'Done',
       enteredAt: BASE + 100_000
     });
-    await createTicketStateInterval(db, {
+    await createWorkflowItemStateInterval(db, {
       workspaceId,
-      ticketId: ticketIds.B!,
+      workflowItemId: itemIds.B!,
       workflowId: workflow.id,
       stateId: done,
       stateName: 'Done',
@@ -720,23 +743,23 @@ describe('widgets: conversion over time', () => {
       { first: week2, done: week2 + DAY }
     ];
     for (const spec of specs) {
-      const ticket = await createTicket(db, {
+      const ticket = await createWorkflowItem(db, {
         workspaceId,
         workflow,
         title: `Conv ${spec.first}-${spec.done}`
       });
-      await createTicketStateInterval(db, {
+      await createWorkflowItemStateInterval(db, {
         workspaceId,
-        ticketId: ticket.id,
+        workflowItemId: ticket.id,
         workflowId: workflow.id,
         stateId: backlog,
         stateName: 'Backlog',
         enteredAt: spec.first
       });
       if (spec.done !== null) {
-        await createTicketStateInterval(db, {
+        await createWorkflowItemStateInterval(db, {
           workspaceId,
-          ticketId: ticket.id,
+          workflowItemId: ticket.id,
           workflowId: workflow.id,
           stateId: done,
           stateName: 'Done',
@@ -751,7 +774,7 @@ describe('widgets: conversion over time', () => {
       grouping: { by: 'week' },
       filter: cond('title', 'starts_with', 'Conv'),
       dataSource: {
-        kind: 'tickets',
+        kind: 'workflow_items',
         funnelStages: [
           { label: 'Incoming', stateIds: [backlog] },
           { label: 'Accepted', stateIds: [done] }

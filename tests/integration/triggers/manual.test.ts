@@ -2,19 +2,17 @@
  * Manual/API trigger firing.
  *
  * Manual firing must reuse the same durable event path as webhooks and cron, so
- * these tests assert the event/job shape and that the caller-supplied idempotency
- * key makes retries free.
+ * these tests assert the event/job shape, that the caller-supplied idempotency
+ * key makes retries free, and that processing produces a Record + WorkflowItem.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { ActorContext } from '../../../src/lib/server/core/context';
 import { systemActor } from '../../../src/lib/server/core/context';
 import { clearJobHandlers } from '../../../src/lib/server/jobs/handlers';
-import { setTicketService } from '../../../src/lib/server/tickets/contracts';
 import { registerTriggerJobHandlers } from '../../../src/lib/server/triggers/handlers';
 import { fireManual } from '../../../src/lib/server/triggers/manual';
 import { createTestDatabase, type TestDatabase } from '../../helpers/db';
 import {
-  createFakeTicketService,
   createTriggerRecord,
   createUser,
   createWorkflow,
@@ -36,13 +34,11 @@ beforeEach(async () => {
   workspaceId = workspace.id;
   actor = ownerActor(workspaceId, (await createUser(handle.db)).id);
   workflow = await createWorkflow(handle.db, workspaceId);
-  setTicketService(createFakeTicketService({ defaultStateId: workflow.states[0] }).service);
   clearJobHandlers();
   registerTriggerJobHandlers();
 });
 
 afterEach(() => {
-  setTicketService(null);
   clearJobHandlers();
   handle.cleanup();
 });
@@ -92,12 +88,18 @@ describe('triggers/manual firing', () => {
 
     expect(await runPendingJobs(handle.db)).toBe(1);
     const processed = handle.sqlite
-      .query<{ status: string; ticket_id: string | null }, []>(
-        'SELECT status, ticket_id FROM trigger_events'
+      .query<{ status: string; record_id: string | null; workflow_item_id: string | null }, []>(
+        'SELECT status, record_id, workflow_item_id FROM trigger_events'
       )
       .get();
     expect(processed?.status).toBe('processed');
-    expect(processed?.ticket_id).toBeTruthy();
+    expect(processed?.record_id).toBeTruthy();
+    expect(processed?.workflow_item_id).toBeTruthy();
+
+    const record = handle.sqlite
+      .query<{ display_name: string }, []>('SELECT display_name FROM records LIMIT 1')
+      .get();
+    expect(record?.display_name).toBe('Created by hand');
   });
 
   test('dedupes on a caller-provided idempotency key', async () => {

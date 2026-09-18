@@ -71,9 +71,9 @@ async function sessionIsValid(request: APIRequestContext, cookie: string): Promi
   }
 }
 
-// Registration is the one stateful step: a fresh instance creates a starter workspace for
-// its first account, and later registrations do not. Reusing a persisted session keeps the
-// whole file on one account across worker restarts and repeated runs.
+// Registration is the one stateful step: every account gets a personal workspace, but
+// reusing a persisted session keeps the whole file on one account across worker
+// restarts and repeated runs.
 test.beforeAll(async ({ playwright }) => {
   const port = new URL(projectBaseUrl()).port;
   const request = await playwright.request.newContext({ baseURL: `http://127.0.0.1:${port}` });
@@ -257,7 +257,7 @@ test('Tools: the catalogue explains native capabilities and stored tools', async
   await expect(page.getByText('Native capabilities').first()).toBeVisible();
   await expect(page.getByText('Stored tools').first()).toBeVisible();
   // A native tool key and the enforcement note are shown so an operator can grant them.
-  await expect(page.getByText(/mentat\.ticket|ticket:read/).first()).toBeVisible();
+  await expect(page.getByText(/workflowItems\.|records\./).first()).toBeVisible();
   await expect(page.getByText(/approval is enforced/i).first()).toBeVisible();
 
   // Groups are collapsible and carry a whole-namespace availability toggle.

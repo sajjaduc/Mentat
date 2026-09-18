@@ -3,7 +3,7 @@
  * Read-only rendering of a typed field value.
  *
  * One component understands all fifteen field types so the board card, the list
- * and the ticket overview cannot disagree about how a currency or a multi-select
+ * and the workItem overview cannot disagree about how a currency or a multi-select
  * is displayed.
  */
 import { formatCurrency, formatDate, formatDateTime, formatNumber } from '$shared/format';

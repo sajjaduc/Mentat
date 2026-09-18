@@ -32,17 +32,17 @@ export interface QueuedUpload {
 
 interface Props {
   workflows: Array<{ value: string; label: string }>;
-  /** Resolve a ticket key from an id, when the user pastes an id or key. */
-  onresolveTicket?: (input: string) => Promise<string | null>;
+  /** Resolve a work item key from an id, when the user pastes an id or key. */
+  onresolveWorkItem?: (input: string) => Promise<string | null>;
   onuploaded: (
     result: UploadResult,
-    context: { ticketId: string | null; workflowId: string | null }
+    context: { workflowItemId: string | null; workflowId: string | null }
   ) => void;
   /** Called the moment a file enters the queue, so the list can show a placeholder row. */
   onstarted?: (context: {
     filename: string;
     size: number;
-    ticketId: string | null;
+    workflowItemId: string | null;
     workflowId: string | null;
   }) => void;
   /** Called when an upload fails, so the placeholder row can be withdrawn. */
@@ -50,13 +50,13 @@ interface Props {
   onclose: () => void;
 }
 
-let { workflows, onuploaded, onclose, onresolveTicket, onstarted, onfailed }: Props = $props();
+let { workflows, onuploaded, onclose, onresolveWorkItem, onstarted, onfailed }: Props = $props();
 
 let queue = $state<QueuedUpload[]>([]);
-let ticketInput = $state('');
+let workItemInput = $state('');
 let workflowId = $state('');
-let ticketId = $state<string | null>(null);
-let ticketError = $state<string | null>(null);
+let workflowItemId = $state<string | null>(null);
+let workItemError = $state<string | null>(null);
 let dragging = $state(false);
 let input: HTMLInputElement | undefined = $state();
 let aborters = new Map<string, AbortController>();
@@ -64,30 +64,30 @@ let aborters = new Map<string, AbortController>();
 const pendingCount = $derived(queue.filter((entry) => entry.status === 'uploading').length);
 const doneCount = $derived(queue.filter((entry) => entry.status === 'done').length);
 
-async function resolveTicket() {
-  ticketError = null;
-  const raw = ticketInput.trim();
+async function resolveWorkItem() {
+  workItemError = null;
+  const raw = workItemInput.trim();
   if (raw.length === 0) {
-    ticketId = null;
+    workflowItemId = null;
     return;
   }
-  if (onresolveTicket) {
-    const resolved = await onresolveTicket(raw);
+  if (onresolveWorkItem) {
+    const resolved = await onresolveWorkItem(raw);
     if (!resolved) {
-      ticketError = 'No ticket with that id or key was found in this workspace.';
-      ticketId = null;
+      workItemError = 'No work item with that id or key was found in this workspace.';
+      workflowItemId = null;
       return;
     }
-    ticketId = resolved;
+    workflowItemId = resolved;
     return;
   }
-  ticketId = raw;
+  workflowItemId = raw;
 }
 
 async function enqueue(files: FileList | File[]) {
   const list = Array.from(files);
   if (list.length === 0) return;
-  await resolveTicket();
+  await resolveWorkItem();
 
   for (const file of list) {
     const id = `upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -101,13 +101,18 @@ async function enqueue(files: FileList | File[]) {
       error: null
     };
     queue = [...queue, entry];
-    onstarted?.({ filename: file.name, size: file.size, ticketId, workflowId: workflowId || null });
+    onstarted?.({
+      filename: file.name,
+      size: file.size,
+      workflowItemId,
+      workflowId: workflowId || null
+    });
     const controller = new AbortController();
     aborters.set(id, controller);
 
     uploadFile({
       file,
-      ticketId,
+      workflowItemId,
       workflowId: workflowId || null,
       signal: controller.signal,
       onProgress: (fraction) => {
@@ -118,7 +123,7 @@ async function enqueue(files: FileList | File[]) {
         queue = queue.map((item) =>
           item.id === id ? { ...item, progress: 1, status: 'done', result } : item
         );
-        onuploaded(result, { ticketId, workflowId: workflowId || null });
+        onuploaded(result, { workflowItemId, workflowId: workflowId || null });
       })
       .catch((failure: unknown) => {
         queue = queue.map((item) =>
@@ -195,12 +200,12 @@ function cancel(id: string) {
     </div>
     <div>
       <Input
-        label="Linked ticket (optional)"
-        bind:value={ticketInput}
-        placeholder="Ticket id or key, e.g. CLAIM-42"
-        error={ticketError}
-        onblur={resolveTicket}
-        hint={ticketId ? `Will link to ${ticketId}` : 'Link now or attach it later from the file page.'}
+        label="Linked work item (optional)"
+        bind:value={workItemInput}
+        placeholder="Work item id or key"
+        error={workItemError}
+        onblur={resolveWorkItem}
+        hint={workflowItemId ? `Will link to ${workflowItemId}` : 'Link now or attach it later from the file page.'}
       />
     </div>
   </div>
@@ -253,8 +258,9 @@ function cancel(id: string) {
   {/if}
 
   <p class="text-[11px] leading-relaxed text-[var(--color-ink-subtle)]">
-    A File is a durable, content-addressed document that can be linked to many tickets. Uploading
-    the same bytes again preserves a new provenance entry while storage stays deduplicated.
+    A File is a durable, content-addressed document that can be linked to many work items.
+    Uploading the same bytes again preserves a new provenance entry while storage stays
+    deduplicated.
   </p>
 
   <div class="flex justify-end gap-2">

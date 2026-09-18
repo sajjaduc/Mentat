@@ -4,7 +4,7 @@ import { createActorContext, Permissions } from '../../../src/lib/server/core/co
 import { isAppError } from '../../../src/lib/server/core/errors';
 import { auditEvents, savedViews } from '../../../src/lib/server/db/schema';
 import type { FilterAst } from '../../../src/lib/server/filters/ast';
-import { filterTickets } from '../../../src/lib/server/filters/compile';
+import { filterWorkflowItems } from '../../../src/lib/server/filters/compile';
 import {
   applySavedView,
   createSavedView,
@@ -15,13 +15,14 @@ import {
 } from '../../../src/lib/server/filters/views';
 import { createTestDatabase, type TestDatabase } from '../../helpers/db';
 import {
-  createTicket,
   createUser,
   createWorkflow,
+  createWorkflowItem,
   createWorkspace,
   memberActor,
   ownerActor,
-  type UserFixture
+  type UserFixture,
+  updateRecordRow
 } from '../../helpers/factories';
 
 let handle: TestDatabase;
@@ -71,7 +72,7 @@ describe('saved views: CRUD and audit', () => {
       isPinned: true
     });
     expect(view.name).toBe('High priority');
-    expect(view.scope).toBe('tickets');
+    expect(view.scope).toBe('workflowItems');
     expect(view.isShared).toBe(true);
     expect(view.createdByUserId).toBe(owner.id);
 
@@ -188,7 +189,7 @@ describe('saved views: privacy and permissions', () => {
       actorType: 'user',
       actorId: other.id,
       role: 'admin',
-      permissions: [Permissions.workspaceAdmin, Permissions.ticketRead]
+      permissions: [Permissions.workspaceAdmin, Permissions.workflowItemRead]
     });
     const renamed = await updateSavedView(handle.db, admin, shared.id, { name: 'Renamed' });
     expect(renamed.name).toBe('Renamed');
@@ -216,13 +217,13 @@ describe('saved views: privacy and permissions', () => {
       filter: null
     });
     expect(filesView.scope).toBe('files');
-    // Owner has file:read; a member without it cannot list the files scope.
+    // Owner has file:read; a member with only work-item read cannot list the files scope.
     const filesOnly = createActorContext({
       workspaceId,
       actorType: 'user',
       actorId: other.id,
       role: 'member',
-      permissions: [Permissions.ticketRead]
+      permissions: [Permissions.workflowItemRead]
     });
     let scopeCode: string | undefined;
     try {
@@ -261,18 +262,19 @@ describe('saved views: apply', () => {
     expect(applied.filter).toEqual(highPriority);
     expect(applied.sort).toEqual([{ field: 'number', direction: 'asc' }]);
     expect(applied.columns).toEqual(['title']);
-    expect(applied.scope).toBe('tickets');
+    expect(applied.scope).toBe('workflowItems');
   });
 
   test('applies a saved view to a real ticket list', async () => {
     const workflow = await createWorkflow(handle.db, workspaceId, { name: 'View WF' });
-    const high = await createTicket(handle.db, {
+    const high = await createWorkflowItem(handle.db, {
       workspaceId,
       workflow,
-      title: 'High',
-      priority: 'high'
+      title: 'High'
     });
-    await createTicket(handle.db, { workspaceId, workflow, title: 'Low', priority: 'low' });
+    await updateRecordRow(handle.db, high.recordId, { structuredData: { priority: 'high' } });
+    const low = await createWorkflowItem(handle.db, { workspaceId, workflow, title: 'Low' });
+    await updateRecordRow(handle.db, low.recordId, { structuredData: { priority: 'low' } });
 
     const view = await createSavedView(handle.db, ownerView, {
       name: 'High priority list',
@@ -280,7 +282,7 @@ describe('saved views: apply', () => {
       sort: [{ field: 'number', direction: 'asc' }]
     });
     const applied = await applySavedView(handle.db, ownerView, view.id);
-    const page = await filterTickets(handle.db, {
+    const page = await filterWorkflowItems(handle.db, {
       workspaceId,
       filter: applied.filter,
       sort: applied.sort

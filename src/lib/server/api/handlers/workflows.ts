@@ -18,11 +18,10 @@ import {
   listWorkflowFields,
   requireFieldDefinition,
   setWorkflowFields,
+  setWorkflowZodSchema,
   updateFieldDefinition
 } from '../../fields/service';
-import { compileTicketFilterDetailed } from '../../filters/compile';
-import { getBoard, parseFilterInput } from '../../tickets/query';
-import { previewTransfer } from '../../tickets/service';
+import { getWorkflowBoard } from '../../workflow-items/query';
 import {
   archiveWorkflow,
   availableTransitions,
@@ -45,7 +44,7 @@ import {
   updateWorkflow,
   WORKFLOW_TEMPLATES
 } from '../../workflows/service';
-import { mutate } from '../helpers';
+import { mutate, queryInt } from '../helpers';
 import { route } from '../types';
 
 const humanGateSchema = z.object({
@@ -65,7 +64,15 @@ const stateConfigSchema = z
     allowedToolKeys: z.array(z.string()).optional(),
     runOncePerEntry: z.boolean().optional(),
     wipLimit: z.number().int().min(0).optional(),
-    slaSeconds: z.number().int().min(0).optional()
+    slaSeconds: z.number().int().min(0).optional(),
+    requiredSubmission: z
+      .object({
+        toolKey: z.string().min(1).max(120).optional(),
+        maxNudges: z.number().int().min(0).max(10).optional(),
+        allowWorkflowChange: z.boolean().optional()
+      })
+      .nullish(),
+    zodSchema: z.string().max(20_000).optional()
   })
   .nullish();
 
@@ -128,6 +135,8 @@ export const workflowRoutes = [
       icon: z.string().max(60).nullish(),
       color: z.string().max(40).nullish(),
       template: z.enum(['blank', 'basic', 'intake', 'claims', 'support']).optional(),
+      objectTypeId: z.string().nullish(),
+      objectTypeKey: z.string().nullish(),
       settings: z.record(z.string(), z.unknown()).nullish()
     }),
     handler: ({ db, actor, body }) => ({
@@ -157,7 +166,8 @@ export const workflowRoutes = [
       icon: z.string().max(60).nullish(),
       color: z.string().max(40).nullish(),
       settings: z.record(z.string(), z.unknown()).nullish(),
-      defaultStateId: z.string().nullish()
+      defaultStateId: z.string().nullish(),
+      objectTypeId: z.string().nullish()
     }),
     handler: ({ db, actor, params, body }) => ({
       body: {
@@ -185,27 +195,21 @@ export const workflowRoutes = [
   route({
     method: 'GET',
     path: '/workflows/:id/board',
-    permission: Permissions.ticketRead,
-    summary: 'Board columns with tickets, honouring a filter AST',
+    permission: Permissions.workflowItemRead,
+    summary: 'Board columns of WorkflowItems, grouped by workflow state',
     handler: async ({ db, actor, params, query }) => {
       // Loading the workflow first turns "unknown id" into 404 instead of an empty
       // board, which is also what makes cross-tenant probing indistinguishable from
       // a missing resource.
       requireWorkflow(db, actor.workspaceId, params.id as string);
-      const options = (query ?? {}) as { filter?: unknown; search?: unknown; limit?: unknown };
-      const filter = parseFilterInput(options.filter ?? null);
-      const board = await getBoard(db, {
+      const board = await getWorkflowBoard(db, {
         workspaceId: actor.workspaceId,
         workflowId: params.id as string,
-        filter,
-        search: typeof options.search === 'string' ? options.search : null,
-        perColumnLimit: typeof options.limit === 'number' ? options.limit : 50
+        perColumnLimit: queryInt({ query } as never, 'limit', 50, { min: 1, max: 500 })
       });
-      const compiled = await compileTicketFilterDetailed(db, {
-        workspaceId: actor.workspaceId,
-        filter
-      });
-      return { body: { ...board, unresolvedFields: compiled.unresolved } };
+      // Filter-AST board queries are not yet supported by the workflow-items query
+      // service; the list endpoint (`GET /workflow-items?filter=...`) is.
+      return { body: { ...board, unresolvedFields: [] } };
     }
   }),
 
@@ -324,7 +328,7 @@ export const workflowRoutes = [
   route({
     method: 'GET',
     path: '/states/:id/transitions',
-    permission: Permissions.ticketRead,
+    permission: Permissions.workflowItemRead,
     summary: 'Transitions available to the caller from a state',
     handler: ({ db, actor, params }) => {
       requireState(db, actor.workspaceId, params.id as string);
@@ -345,7 +349,14 @@ export const workflowRoutes = [
       return {
         body: {
           fields: listFieldDefinitions(db, actor, {
-            scope: scope === 'file' ? 'file' : scope === 'ticket' ? 'ticket' : undefined
+            scope:
+              scope === 'file'
+                ? 'file'
+                : scope === 'workflowItem'
+                  ? 'workflowItem'
+                  : scope === 'record'
+                    ? 'record'
+                    : undefined
           })
         }
       };
@@ -378,7 +389,7 @@ export const workflowRoutes = [
         'phone',
         'json'
       ]),
-      scope: z.enum(['ticket', 'file']).optional(),
+      scope: z.enum(['workflowItem', 'file', 'record']).optional(),
       options: z.record(z.string(), z.unknown()).nullish(),
       defaultValue: z.unknown().optional(),
       validation: z.record(z.string(), z.unknown()).nullish(),
@@ -471,6 +482,20 @@ export const workflowRoutes = [
     })
   }),
 
+  // -------------------------------------------------------- overlay schema
+  route({
+    method: 'PUT',
+    path: '/workflows/:id/zod-schema',
+    permission: Permissions.workflowWrite,
+    summary: 'Author a workflow’s overlay schema as Zod source (ADR-0023)',
+    body: z.object({ source: z.string().min(1).max(20_000) }),
+    handler: ({ db, actor, params, body }) => ({
+      body: mutate(db, (tx) =>
+        setWorkflowZodSchema(tx, actor, params.id as string, (body as { source: string }).source)
+      )
+    })
+  }),
+
   // -------------------------------------------------------- transfer rules
   route({
     method: 'GET',
@@ -514,20 +539,6 @@ export const workflowRoutes = [
       await mutate(db, (tx) => deleteTransferRule(tx, actor, params.id as string));
       return { status: 204 };
     }
-  }),
-
-  route({
-    method: 'POST',
-    path: '/tickets/:id/transfer-preview',
-    permission: Permissions.ticketTransfer,
-    summary: 'Preview a cross-workflow move: policy, mappings and missing fields',
-    body: z.object({ targetWorkflowId: z.string() }),
-    handler: ({ db, actor, params, body }) => ({
-      body: previewTransfer(db, actor, {
-        ticketId: params.id as string,
-        targetWorkflowId: (body as { targetWorkflowId: string }).targetWorkflowId
-      })
-    })
   })
 ];
 

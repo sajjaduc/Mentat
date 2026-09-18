@@ -62,7 +62,7 @@ interface Props {
   initialWorkflowId: string;
   initialStatus: string;
   initialMimeType: string;
-  initialTicketId: string;
+  initialWorkItemId: string;
   initialFilename: string;
   onurlchange: (query: Record<string, string>) => void;
 }
@@ -74,7 +74,7 @@ let {
   initialWorkflowId,
   initialStatus,
   initialMimeType,
-  initialTicketId,
+  initialWorkItemId,
   initialFilename,
   onurlchange
 }: Props = $props();
@@ -86,7 +86,7 @@ type ColumnKey =
   | 'status'
   | 'summary'
   | 'workflow'
-  | 'tickets'
+  | 'workItems'
   | 'provenance'
   | 'created';
 
@@ -97,7 +97,7 @@ const ALL_COLUMNS: Array<{ key: ColumnKey; label: string; always?: boolean }> = 
   { key: 'status', label: 'Status' },
   { key: 'summary', label: 'Summary' },
   { key: 'workflow', label: 'Workflow context' },
-  { key: 'tickets', label: 'Linked tickets' },
+  { key: 'workItems', label: 'Linked work' },
   { key: 'provenance', label: 'Provenance' },
   { key: 'created', label: 'Created' }
 ];
@@ -109,7 +109,7 @@ const DEFAULT_COLUMNS: ColumnKey[] = [
   'status',
   'summary',
   'workflow',
-  'tickets',
+  'workItems',
   'provenance',
   'created'
 ];
@@ -132,7 +132,7 @@ let filename = $state(untrack(() => initialFilename));
 let status = $state(untrack(() => initialStatus));
 let mimeType = $state(untrack(() => initialMimeType));
 let workflowId = $state(untrack(() => initialWorkflowId));
-let ticketId = $state(untrack(() => initialTicketId));
+let workflowItemId = $state(untrack(() => initialWorkItemId));
 let view = $state<'table' | 'grid'>('table');
 let sortKey = $state<'createdAt' | 'updatedAt' | 'filename' | 'size'>('createdAt');
 let sortDirection = $state<'asc' | 'desc'>('desc');
@@ -205,7 +205,7 @@ async function load(options: { append?: boolean } = {}) {
       mimeType: mimeType || undefined,
       status: status || undefined,
       workflowId: workflowId || undefined,
-      ticketId: ticketId || undefined,
+      workflowItemId: workflowItemId || undefined,
       // The AST composes with the metadata shortcuts server-side, with AND.
       filter: serializeFilter(serverFilter) ?? undefined,
       sort: JSON.stringify({ key: sortKey, direction: sortDirection }),
@@ -263,7 +263,7 @@ $effect(() => {
   void status;
   void mimeType;
   void workflowId;
-  void ticketId;
+  void workflowItemId;
   void mode;
   void search;
   void filter;
@@ -357,7 +357,7 @@ function publishUrl() {
     status,
     mimeType,
     workflowId,
-    ticketId
+    workItem: workflowItemId
   });
 }
 
@@ -368,7 +368,7 @@ function onFilterChange(next: FilterGroup | null) {
 
 async function onUploaded(
   result: UploadResult,
-  context: { ticketId: string | null; workflowId: string | null }
+  context: { workflowItemId: string | null; workflowId: string | null }
 ) {
   // Drop the optimistic placeholder keyed by the logical file id the server
   // returned; the authoritative row (with provenance and workflow ids resolved)
@@ -381,7 +381,7 @@ async function onUploaded(
       ? 'These bytes already existed in this workspace; the existing blob was reused.'
       : `Stored ${formatBytes(result.size)} as a new blob.`
   });
-  if (context.ticketId || context.workflowId) {
+  if (context.workflowItemId || context.workflowId) {
     // Associations change which filters match, so refetch rather than patch.
     cursor = null;
     await load();
@@ -401,7 +401,7 @@ async function onUploaded(
 function onUploadStarted(context: {
   filename: string;
   size: number;
-  ticketId: string | null;
+  workflowItemId: string | null;
   workflowId: string | null;
 }) {
   const id = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -417,7 +417,8 @@ function onUploadStarted(context: {
       createdAt: Date.now(),
       provenance: { sourceType: 'human_upload', sourceLabel: null },
       workflowIds: context.workflowId ? [context.workflowId] : [],
-      ticketIds: context.ticketId ? [context.ticketId] : []
+      workflowItemIds: context.workflowItemId ? [context.workflowItemId] : [],
+      recordIds: []
     },
     ...pendingRows
   ];
@@ -437,7 +438,7 @@ function toggleColumn(key: ColumnKey) {
   }
 }
 
-function ticketLabel(id: string): string {
+function workItemLabel(id: string): string {
   return id;
 }
 
@@ -452,7 +453,7 @@ const hasAnyFiles = $derived(files.length > 0 || pendingRows.length > 0);
   <PageHeader
     title="Files"
     eyebrow="Resources"
-    description="Durable, content-addressed documents in this workspace. The same file can be linked to many tickets and interpreted by more than one workflow."
+    description="Durable, content-addressed documents in this workspace. The same file can be linked to many work items and interpreted by more than one workflow."
   >
     {#snippet actions()}
       <SegmentedControl
@@ -517,7 +518,7 @@ const hasAnyFiles = $derived(files.length > 0 || pendingRows.length > 0);
 
     <div class="flex flex-wrap items-end gap-2">
       <div class="min-w-56 flex-1">
-        <Input label="Linked ticket id" bind:value={ticketId} placeholder="Ticket id" />
+        <Input label="Linked work item id" bind:value={workflowItemId} placeholder="Work item id" />
       </div>
       <Button variant="secondary" onclick={() => (structuredOpen = !structuredOpen)} aria-expanded={structuredOpen}>
         {structuredOpen ? 'Hide structured filters' : 'Structured filters'}
@@ -533,7 +534,7 @@ const hasAnyFiles = $derived(files.length > 0 || pendingRows.length > 0);
           status = '';
           mimeType = '';
           workflowId = '';
-          ticketId = '';
+          workflowItemId = '';
           search = '';
           filter = null;
           contentHits = null;
@@ -688,7 +689,7 @@ const hasAnyFiles = $derived(files.length > 0 || pendingRows.length > 0);
     <Card>
       <EmptyState
         title="No files yet"
-        description="A File in Mentat is a durable, content-addressed document: the bytes are hashed and stored once, while the logical file carries provenance, extracted content, summaries and workflow-specific field values. One file can support many tickets."
+        description="A File in Mentat is a durable, content-addressed document: the bytes are hashed and stored once, while the logical file carries provenance, extracted content, summaries and workflow-specific field values. One file can support many work items."
       >
         <div class="mt-2 flex justify-center gap-2">
           <Button variant="primary" onclick={() => (uploadOpen = true)}>Upload a file</Button>
@@ -758,17 +759,23 @@ const hasAnyFiles = $derived(files.length > 0 || pendingRows.length > 0);
               {/if}
             </td>
           {/if}
-          {#if columns.includes('tickets')}
+          {#if columns.includes('workItems')}
             <td class="hidden px-3 py-2 lg:table-cell">
-              {#if file.ticketIds.length === 0}
+              {#if file.workflowItemIds.length === 0 && file.recordIds.length === 0}
                 <span class="text-xs text-[var(--color-ink-subtle)]">—</span>
               {:else}
                 <span class="flex flex-wrap gap-1">
-                  {#each file.ticketIds.slice(0, 2) as id (id)}
-                    <Badge tone="accent">{ticketLabel(id)}</Badge>
+                  {#each file.workflowItemIds.slice(0, 2) as id (id)}
+                    <Badge tone="accent">{workItemLabel(id)}</Badge>
                   {/each}
-                  {#if file.ticketIds.length > 2}
-                    <Badge tone="muted">+{file.ticketIds.length - 2}</Badge>
+                  {#if file.workflowItemIds.length > 2}
+                    <Badge tone="muted">+{file.workflowItemIds.length - 2}</Badge>
+                  {/if}
+                  {#each file.recordIds.slice(0, 2) as id (id)}
+                    <Badge tone="neutral">{id}</Badge>
+                  {/each}
+                  {#if file.recordIds.length > 2}
+                    <Badge tone="muted">+{file.recordIds.length - 2}</Badge>
                   {/if}
                 </span>
               {/if}
@@ -825,13 +832,16 @@ const hasAnyFiles = $derived(files.length > 0 || pendingRows.length > 0);
               <span>·</span>
               <span>{formatRelative(file.createdAt)}</span>
             </div>
-            {#if file.workflowIds.length > 0 || file.ticketIds.length > 0}
+            {#if file.workflowIds.length > 0 || file.workflowItemIds.length > 0 || file.recordIds.length > 0}
               <div class="flex flex-wrap gap-1">
                 {#each file.workflowIds.slice(0, 1) as id (id)}
                   <Badge tone="neutral">{workflowName.get(id) ?? id.slice(0, 8)}</Badge>
                 {/each}
-                {#each file.ticketIds.slice(0, 2) as id (id)}
-                  <Badge tone="accent">{ticketLabel(id)}</Badge>
+                {#each file.workflowItemIds.slice(0, 2) as id (id)}
+                  <Badge tone="accent">{workItemLabel(id)}</Badge>
+                {/each}
+                {#each file.recordIds.slice(0, 2) as id (id)}
+                  <Badge tone="neutral">{id}</Badge>
                 {/each}
               </div>
             {/if}

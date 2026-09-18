@@ -132,7 +132,7 @@ const linkClass =
       <div class="space-y-2 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] p-3">
         <p class="text-sm font-medium text-[var(--color-ink)]">Triggers → inbound work</p>
         <p class="text-xs leading-relaxed text-[var(--color-ink-subtle)]">
-          Webhooks, schedules and on-demand fires normalize a signal into a ticket.
+          Webhooks, schedules and on-demand fires normalize a signal into a work item.
         </p>
         <a class={linkClass} href="#triggers">Jump to triggers</a>
       </div>

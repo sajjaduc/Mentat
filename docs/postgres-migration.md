@@ -23,8 +23,8 @@ record of what has already been kept portable so the move is a swap, not a rewri
 
 | Location | What is SQLite-specific | PostgreSQL replacement |
 | --- | --- | --- |
-| `src/lib/server/tickets/query.ts` | `json_extract(provenance, '$.sourceType')` for the `sourceType` filter | `provenance ->> 'sourceType'` |
-| `src/lib/server/tickets/query.ts` | `strftime('%s','now')` for `timeInStateSeconds` | `extract(epoch from now())` |
+| `src/lib/server/filters/compile.ts` | `json_extract(provenance, '$.sourceType')` for the `sourceType` filter | `provenance ->> 'sourceType'` |
+| `src/lib/server/analytics/query.ts` | `strftime('%s','now')` for `timeInStateSeconds` | `extract(epoch from now())` |
 | `src/lib/server/analytics/series.ts` | `strftime` bucketing for day/week/month | `date_trunc('day' \| 'week' \| 'month', to_timestamp(ms/1000))` |
 | `src/lib/server/files/filter-compile.ts` | `json_extract` on file metadata | `->>` |
 | `src/lib/server/files/retrieval.ts` | FTS5 virtual table | `tsvector` column + GIN index |
@@ -82,15 +82,16 @@ The dump/restore is mechanical because ids and timestamps are already portable:
 
 ```bash
 # Source: SQLite
-sqlite3 ./data/mentat.db ".mode json" ".output tickets.json" "SELECT * FROM tickets;"
+sqlite3 ./data/mentat.db ".mode json" ".output workflow_items.json" "SELECT * FROM workflow_items;"
 
 # Target: PostgreSQL
-psql "$DATABASE_URL" -c "\copy tickets FROM 'tickets.json' WITH (FORMAT csv)"
+psql "$DATABASE_URL" -c "\copy workflow_items FROM 'workflow_items.json' WITH (FORMAT csv)"
 ```
 
 Recommended order respects foreign keys: workspaces → users → memberships → teams →
-field definitions → workflows → states → transitions → tickets → ticket field
-values → notes → files → blobs → runs → steps → approvals → jobs → audit.
+field definitions → object types → workflows → states → transitions → records →
+workflow items → workflow item field values → notes → files → blobs → runs → steps →
+approvals → jobs → audit.
 
 Two details to get right:
 
@@ -101,7 +102,7 @@ Two details to get right:
   `setval(pg_get_serial_sequence('audit_events','seq'), max(seq))`.
 
 Write a verification query per table (`SELECT count(*) FROM x` on both sides) and a
-spot check that joins a ticket to its field values, notes, runs and events — count
+spot check that joins a work item to its record, field values, notes, runs and events — count
 parity alone will not catch a broken join key.
 
 ### 4. Replace the isolated dialect code
@@ -143,7 +144,7 @@ they need explicit tests rather than an assumption:
 | Behaviour | Today (SQLite) | PostgreSQL |
 | --- | --- | --- |
 | Job leasing | Single writer; the conditional UPDATE is sufficient | Must use `FOR UPDATE SKIP LOCKED` or two workers can claim the same row under load |
-| Ticket optimistic concurrency | `WHERE id = ?` + version compare | Same, but add a retry loop for serialization failures |
+| Work-item optimistic concurrency | `WHERE id = ?` + version compare | Same, but add a retry loop for serialization failures |
 | Counter allocation | Row update inside the creating transaction | `INSERT … ON CONFLICT DO UPDATE … RETURNING value` |
 | Cache stampede lock | Insert-with-expiry, take over when expired | Same, plus `FOR UPDATE` on the lock row to avoid duplicate computes |
 | Cache upsert | Unique index on (workspace, namespace, authScope, key) | Same; verify the index exists before relying on `ON CONFLICT` |
@@ -160,7 +161,7 @@ they need explicit tests rather than an assumption:
    `tsvector` and `LIKE`.
 5. A migration rehearsal: dump a populated SQLite database, restore into PostgreSQL,
    and assert per-table counts plus a joined spot check.
-6. A performance baseline for the board query (one workflow, 10k tickets) before and
+6. A performance baseline for the board query (one workflow, 10k work items) before and
    after, so the index strategy is validated rather than assumed.
 
 ## Non-goals

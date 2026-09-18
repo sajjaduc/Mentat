@@ -17,7 +17,8 @@ import type { UploadResult } from '$ui/types';
 
 export interface UploadOptions {
   file: File;
-  ticketId?: string | null;
+  workflowItemId?: string | null;
+  recordId?: string | null;
   workflowId?: string | null;
   sourceType?: string;
   onProgress?: (fraction: number) => void;
@@ -33,7 +34,8 @@ export function uploadFile(options: UploadOptions): Promise<UploadResult> {
 
     const form = new FormData();
     form.append('file', options.file, options.file.name);
-    if (options.ticketId) form.append('ticketId', options.ticketId);
+    if (options.workflowItemId) form.append('workflowItemId', options.workflowItemId);
+    if (options.recordId) form.append('recordId', options.recordId);
     if (options.workflowId) form.append('workflowId', options.workflowId);
     form.append('sourceType', options.sourceType ?? 'human_upload');
 

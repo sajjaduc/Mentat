@@ -23,7 +23,9 @@ export interface ToolInvocationContext {
   actor: ActorContext;
   /** Database executor: a transaction when the call must be atomic with its step. */
   db: Executor;
-  ticketId?: string | null;
+  /** Universal-model subject in scope for this call. */
+  recordId?: string | null;
+  workflowItemId?: string | null;
   workflowId?: string | null;
   runId?: string | null;
   stepId?: string | null;
@@ -58,7 +60,7 @@ export interface NativeToolHandler<TInput = unknown, TOutput = unknown> {
   description: string;
   inputSchema: JsonSchema;
   outputSchema?: JsonSchema;
-  /** Permission key the actor must hold, e.g. `ticket:write`. */
+  /** Permission key the actor must hold, e.g. `workflow_item:write`. */
   permission?: string;
   /** Extra policy check evaluated by Mentat, not by the model. */
   approvalPolicy?: ApprovalPolicy;

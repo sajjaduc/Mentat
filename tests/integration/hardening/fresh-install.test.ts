@@ -24,7 +24,7 @@ import { createActorContext, permissionsForRole } from '../../../src/lib/server/
 import { clearSecretRegistry } from '../../../src/lib/server/core/secret-registry';
 import { createDatabase } from '../../../src/lib/server/db/client';
 import { hasFullTextSearch, runMigrations } from '../../../src/lib/server/db/migrate';
-import { allSchema, tickets as ticketsTable, users } from '../../../src/lib/server/db/schema';
+import { allSchema, records as recordsTable, users } from '../../../src/lib/server/db/schema';
 import { clearProviderOverrides } from '../../../src/lib/server/providers/registry';
 import { resetToolRegistry } from '../../../src/lib/server/tools/registry';
 import { listWorkflows } from '../../../src/lib/server/workflows/service';
@@ -35,7 +35,7 @@ const blobRoot = path.join(tempRoot, 'blobs');
 
 /** Tables a fresh install must contain, grouped by the phase that introduced them. */
 const REQUIRED_TABLES = [
-  // Phase 0-1: tenancy, workflows, tickets, fields
+  // Phase 0-1: tenancy, object types, records, workflows, fields
   'workspaces',
   'users',
   'workspace_members',
@@ -47,7 +47,6 @@ const REQUIRED_TABLES = [
   'idempotency_keys',
   'field_definitions',
   'workflow_fields',
-  'ticket_field_values',
   'field_value_history',
   'workflows',
   'workflow_states',
@@ -55,14 +54,25 @@ const REQUIRED_TABLES = [
   'workflow_transfer_rules',
   'labels',
   'saved_views',
-  'tickets',
-  'ticket_labels',
-  'ticket_notes',
-  'ticket_note_revisions',
-  'ticket_relationships',
-  'ticket_state_history',
-  'ticket_workflow_history',
-  'human_gate_decisions',
+  // ADR-0021: the universal work model replaces the Ticket primitive.
+  'object_types',
+  'object_type_fields',
+  'records',
+  'record_field_values',
+  'record_notes',
+  'record_note_revisions',
+  'record_relationships',
+  'record_relationship_definitions',
+  'record_external_ids',
+  'record_layouts',
+  'workflow_items',
+  'workflow_item_field_values',
+  'workflow_item_notes',
+  'workflow_item_note_revisions',
+  'workflow_item_relationships',
+  'workflow_item_state_history',
+  'workflow_item_workflow_history',
+  'workflow_item_labels',
   // Phase 2-3: execution, agents, providers
   'jobs',
   'job_attempts',
@@ -99,14 +109,16 @@ const REQUIRED_TABLES = [
   'files',
   'file_sources',
   'workflow_files',
-  'ticket_files',
+  'file_workflow_items',
+  'file_records',
   'file_processing_runs',
   'file_extracted_content',
   'file_summaries',
   'file_field_values',
   'dashboards',
   'dashboard_widgets',
-  'audit_events'
+  'audit_events',
+  'mcp_servers'
 ];
 
 afterAll(() => {
@@ -264,20 +276,30 @@ describe('fresh install', () => {
         5
       );
 
+      // Object Types are explicit: define one before creating a workflow or Record.
+      const objectType = await call('POST', '/object-types', {
+        name: 'Ticket',
+        key: 'ticket',
+        settings: { numbered: true, keyPrefix: 'TKT' }
+      });
+      expect(objectType.status).toBe(201);
+      const objectTypeId = (objectType.body as { objectType: { id: string } }).objectType.id;
+
       const created = await call('POST', '/workflows', {
         name: 'First workflow',
-        template: 'basic'
+        template: 'basic',
+        objectTypeId
       });
       expect(created.status).toBe(201);
       const workflowId = (created.body as { workflow: { id: string } }).workflow.id;
 
-      const ticket = await call('POST', '/tickets', {
+      const started = await call('POST', '/workflow-items', {
         workflowId,
-        title: 'First ticket'
+        record: { objectTypeId, displayName: 'First ticket' }
       });
-      expect(ticket.status).toBe(201);
+      expect(started.status).toBe(201);
 
-      const rows = handle.db.select().from(ticketsTable).all();
+      const rows = handle.db.select().from(recordsTable).all();
       expect(rows).toHaveLength(1);
       expect(rows[0]?.key).toMatch(/^[A-Z]+-1$/);
 

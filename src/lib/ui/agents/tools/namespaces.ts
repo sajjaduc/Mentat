@@ -1,17 +1,17 @@
 /**
  * Tool namespacing for the catalogue.
  *
- * Tool keys are dotted paths. Native tools are prefixed `mentat.` (`mentat.ticket.fields.set`),
+ * Tool keys are dotted paths. Native tools are prefixed `mentat.` (`mentat.workflowItems.setFields`),
  * while stored HTTP tools carry the operation key verbatim (`hubspot.get_contact`). The
  * first *meaningful* segment is what an operator recognises as the owner, so a native key
- * drops the `mentat.` prefix before taking its head — `mentat.ticket.fields.set` groups
- * under `ticket`, and `hubspot.get_contact` groups under `hubspot`.
+ * drops the `mentat.` prefix before taking its head — `mentat.workflowItems.setFields` groups
+ * under `workflowItems`, and `hubspot.get_contact` groups under `hubspot`.
  */
 
 /** The product-owned prefix stripped before deriving a namespace. */
 const PRODUCT_PREFIX = 'mentat.';
 
-/** The owner segment of a tool key, e.g. `ticket` or `hubspot`. */
+/** The owner segment of a tool key, e.g. `work item` or `hubspot`. */
 export function namespaceForKey(key: string): string {
   const trimmed = key.trim();
   if (trimmed.length === 0) return 'other';

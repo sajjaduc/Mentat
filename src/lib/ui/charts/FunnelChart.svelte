@@ -8,7 +8,7 @@
  * order (ADR-0017).
  *
  * Counts are cumulative by construction: each stage independently asks "did this
- * ticket ever reach here", so a ticket that skipped a stage still counts in the
+ * work item ever reach here", so a work item that skipped a stage still counts in the
  * later one and is never double-counted. Conversion between stages and overall
  * conversion are ratios of those counts.
  *
@@ -81,7 +81,7 @@ const maxCount = $derived(funnel.stages.reduce((max, stage) => Math.max(max, sta
     </ol>
 
     <p class="text-[11px] leading-relaxed text-[var(--color-ink-subtle)]">
-      Counts ask “did this ticket ever reach this milestone inside the window”, so a ticket that
+      Counts ask “did this work item ever reach this milestone inside the window”, so a work item that
       skipped a stage still counts in the later one. Median and average time between stages are
       computed server-side from recorded entry timestamps; the run endpoint does not serialize them
       yet, so they are not shown here rather than approximated.

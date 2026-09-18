@@ -2,9 +2,9 @@
 /**
  * Cross-workflow transfer rules.
  *
- * A rule is the policy that lets a ticket leave this workflow. It names the
+ * A rule is the policy that lets a workItem leave this workflow. It names the
  * destination, the default state, how fields map, which destination fields must be
- * satisfied, and whether agents or humans may move the ticket at all.
+ * satisfied, and whether agents or humans may move the workItem at all.
  */
 import { api, describeApiError } from '$ui/api';
 import Badge from '$ui/primitives/Badge.svelte';

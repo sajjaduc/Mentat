@@ -2,7 +2,7 @@
 /**
  * Workflow workspace.
  *
- * The five work surfaces of one workflow, with the tab and the open ticket both in
+ * The five work surfaces of one workflow, with the tab and the open workItem both in
  * the URL. Tab switches and filter changes use the History API rather than the
  * router: no loader re-runs, no remount, and back/forward still walk the surfaces
  * the user actually visited.
@@ -14,7 +14,7 @@ import Button from '$ui/primitives/Button.svelte';
 import ErrorState from '$ui/primitives/ErrorState.svelte';
 import Skeleton from '$ui/primitives/Skeleton.svelte';
 import Tabs from '$ui/primitives/Tabs.svelte';
-import TicketDrawer from '$ui/ticket/TicketDrawer.svelte';
+import type { ObjectTypeSummary } from '$ui/records/types';
 import {
   emptyFilterState,
   type FilterState,
@@ -22,7 +22,6 @@ import {
   filterStateFromQuery,
   filterStateToQuery
 } from '$ui/work/filters';
-import TicketList from '$ui/work/TicketList.svelte';
 import type {
   AgentOption,
   AppliedSavedView,
@@ -33,10 +32,12 @@ import type {
   WorkflowDetailResponse,
   WorkflowFieldView
 } from '$ui/work/types';
-import { closeTicketInUrl, openTicketInUrl, pushQuery, replaceQuery } from '$ui/work/url';
+import { closeWorkItemInUrl, openWorkItemInUrl, pushQuery, replaceQuery } from '$ui/work/url';
 import WorkflowActivity from '$ui/work/WorkflowActivity.svelte';
 import WorkflowConfiguration from '$ui/work/WorkflowConfiguration.svelte';
 import WorkflowData from '$ui/work/WorkflowData.svelte';
+import WorkItemList from '$ui/work/WorkItemList.svelte';
+import WorkItemDrawer from '$ui/work-item/WorkItemDrawer.svelte';
 
 const TABS = ['board', 'list', 'activity', 'data', 'configuration'] as const;
 type TabId = (typeof TABS)[number];
@@ -62,7 +63,7 @@ const rawTab = $derived(page.url.searchParams.get('tab'));
 const activeTab = $derived<TabId>(
   TABS.includes((rawTab ?? 'board') as TabId) ? ((rawTab ?? 'board') as TabId) : 'board'
 );
-const openTicketId = $derived(page.url.searchParams.get('ticket'));
+const openWorkItemId = $derived(page.url.searchParams.get('workItem'));
 
 const tabs = [
   { id: 'board', label: 'Board' },
@@ -91,10 +92,20 @@ async function load(id: string) {
   loading = true;
   error = null;
   try {
-    const [detailResponse, fieldResponse] = await Promise.all([
+    const [detailResponse, fieldResponse, objectTypeResponse] = await Promise.all([
       api.get<WorkflowDetailResponse>(`/workflows/${id}`),
-      api.get<{ fields: WorkflowFieldView[] }>(`/workflows/${id}/fields`)
+      api.get<{ fields: WorkflowFieldView[] }>(`/workflows/${id}/fields`),
+      api
+        .get<{ objectTypes: ObjectTypeSummary[] }>('/object-types')
+        .catch(() => ({ objectTypes: [] }))
     ]);
+    const objectType = objectTypeResponse.objectTypes.find(
+      (type) => type.id === detailResponse.workflow.objectTypeId
+    );
+    if (objectType) {
+      detailResponse.workflow.objectTypeName = objectType.name;
+      detailResponse.workflow.objectTypePluralName = objectType.pluralName;
+    }
     detail = detailResponse;
     fieldConfig = fieldResponse.fields;
     if (columns.length === 0) columns = defaultColumns;
@@ -165,8 +176,8 @@ function applyView(view: AppliedSavedView) {
   if (view.columns.length > 0) columns = view.columns;
 }
 
-function openTicket(ticketId: string) {
-  openTicketInUrl(ticketId);
+function openWorkItem(workflowItemId: string) {
+  openWorkItemInUrl(workflowItemId);
 }
 
 function onTransferred() {
@@ -196,6 +207,12 @@ function onTransferred() {
           <span class="font-mono text-[11px] text-[var(--color-ink-subtle)]"
             >{detail.workflow.key}</span
           >
+          {#if detail.workflow.objectTypeName}
+            <span
+              class="rounded-full border border-[var(--color-border-subtle)] px-2 py-0.5 text-[10px] text-[var(--color-ink-muted)]"
+              >{detail.workflow.objectTypeName}</span
+            >
+          {/if}
         </div>
         {#if detail.workflow.description}
           <p class="truncate text-xs text-[var(--color-ink-subtle)]">
@@ -227,11 +244,11 @@ function onTransferred() {
         {refreshKey}
         onFilterChange={changeFilter}
         onApplyView={applyView}
-        onOpenTicket={openTicket}
+        onOpenWorkItem={openWorkItem}
         onConfigure={() => changeTab('configuration')}
       />
     {:else if activeTab === 'list'}
-      <TicketList
+      <WorkItemList
         workflow={detail.workflow}
         states={detail.states}
         {fieldConfig}
@@ -244,7 +261,7 @@ function onTransferred() {
         {refreshKey}
         onFilterChange={changeFilter}
         onApplyView={applyView}
-        onOpenTicket={openTicket}
+        onOpenWorkItem={openWorkItem}
         onSortChange={(next) => (sort = next)}
         onColumnsChange={(next) => (columns = next)}
       />
@@ -262,12 +279,12 @@ function onTransferred() {
   {/if}
 </div>
 
-{#if openTicketId}
-  <TicketDrawer
-    ticketId={openTicketId}
+{#if openWorkItemId}
+  <WorkItemDrawer
+    workflowItemId={openWorkItemId}
     {workspaceId}
-    onclose={closeTicketInUrl}
-    onOpenTicket={openTicket}
+    onclose={closeWorkItemInUrl}
+    onOpenWorkItem={openWorkItem}
     onTransferred={onTransferred}
   />
 {/if}

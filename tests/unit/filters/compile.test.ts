@@ -2,33 +2,34 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import { isAppError } from '../../../src/lib/server/core/errors';
 import type { Executor } from '../../../src/lib/server/db/client';
-import { tickets } from '../../../src/lib/server/db/schema';
+import { workflowItems } from '../../../src/lib/server/db/schema';
 import { andOf, describeFilter, type FilterAst, orOf } from '../../../src/lib/server/filters/ast';
 import {
-  compileTicketFilter,
-  compileTicketFilterDetailed,
-  decodeTicketCursor,
-  encodeTicketCursor,
-  filterTickets
+  compileWorkflowItemFilter,
+  compileWorkflowItemFilterDetailed,
+  decodeWorkflowItemCursor,
+  encodeWorkflowItemCursor,
+  filterWorkflowItems
 } from '../../../src/lib/server/filters/compile';
 import { createTestDatabase, type TestDatabase } from '../../helpers/db';
 import {
   addFileSource,
-  addTicketLabel,
+  addWorkflowItemLabel,
   createAgentRun,
   createApprovalRequest,
   createField,
   createFileRecord,
   createLabel,
   createTeam,
-  createTicket,
   createUser,
   createWorkflow,
+  createWorkflowItem,
   createWorkspace,
-  linkTicketFile,
+  linkWorkflowItemFile,
   setFileFieldValueTyped,
   setTypedFieldValue,
-  updateTicketRow,
+  updateRecordRow,
+  updateWorkflowItemRow,
   type WorkflowFixture
 } from '../../helpers/factories';
 
@@ -38,16 +39,16 @@ let workspaceId: string;
 let workflow: WorkflowFixture;
 
 async function matches(filter: FilterAst | null, now?: number): Promise<string[]> {
-  const condition = await compileTicketFilter(db, { workspaceId, filter, now });
+  const condition = await compileWorkflowItemFilter(db, { workspaceId, filter, now });
   const rows = await db.all<{ id: string }>(
-    sql`SELECT id FROM tickets WHERE ${condition} ORDER BY number`
+    sql`SELECT workflow_items.id AS id FROM workflow_items JOIN records ON records.id = workflow_items.record_id WHERE ${condition} ORDER BY records.number`
   );
   return rows.map((row) => row.id);
 }
 
 async function ticketByTitle(title: string): Promise<string> {
   const rows = await db.all<{ id: string }>(
-    sql`SELECT id FROM tickets WHERE workspace_id = ${workspaceId} AND title = ${title}`
+    sql`SELECT workflow_items.id AS id FROM workflow_items JOIN records ON records.id = workflow_items.record_id WHERE workflow_items.workspace_id = ${workspaceId} AND records.display_name = ${title}`
   );
   return rows[0]!.id;
 }
@@ -70,17 +71,19 @@ afterEach(() => {
   handle.cleanup();
 });
 
-describe('compileTicketFilter: system columns', () => {
+describe('compileWorkflowItemFilter: system columns', () => {
   test('an empty filter compiles to an unconditional truth', async () => {
-    await createTicket(db, { workspaceId, workflow, title: 'One' });
-    const compiled = await compileTicketFilterDetailed(db, { workspaceId, filter: null });
+    await createWorkflowItem(db, { workspaceId, workflow, title: 'One' });
+    const compiled = await compileWorkflowItemFilterDetailed(db, { workspaceId, filter: null });
     expect(compiled.unresolved).toEqual([]);
     expect(await matches(null)).toHaveLength(1);
   });
 
   test('matches priority with in and not_in', async () => {
-    await createTicket(db, { workspaceId, workflow, title: 'High', priority: 'high' });
-    await createTicket(db, { workspaceId, workflow, title: 'Low', priority: 'low' });
+    const highItem = await createWorkflowItem(db, { workspaceId, workflow, title: 'High' });
+    await updateRecordRow(db, highItem.recordId, { structuredData: { priority: 'high' } });
+    const lowItem = await createWorkflowItem(db, { workspaceId, workflow, title: 'Low' });
+    await updateRecordRow(db, lowItem.recordId, { structuredData: { priority: 'low' } });
 
     const high = await matches({
       type: 'condition',
@@ -104,8 +107,8 @@ describe('compileTicketFilter: system columns', () => {
   });
 
   test('searches title with contains, starts_with and ends_with', async () => {
-    await createTicket(db, { workspaceId, workflow, title: 'Claim for ACME' });
-    await createTicket(db, { workspaceId, workflow, title: 'Invoice for Beta' });
+    await createWorkflowItem(db, { workspaceId, workflow, title: 'Claim for ACME' });
+    await createWorkflowItem(db, { workspaceId, workflow, title: 'Invoice for Beta' });
 
     const contains = await matches({
       type: 'condition',
@@ -150,8 +153,8 @@ describe('compileTicketFilter: system columns', () => {
   });
 
   test('treats LIKE wildcards in the value as literal text', async () => {
-    await createTicket(db, { workspaceId, workflow, title: '100% done' });
-    await createTicket(db, { workspaceId, workflow, title: '100x done' });
+    await createWorkflowItem(db, { workspaceId, workflow, title: '100% done' });
+    await createWorkflowItem(db, { workspaceId, workflow, title: '100x done' });
     const result = await matches({
       type: 'condition',
       kind: 'system',
@@ -164,13 +167,13 @@ describe('compileTicketFilter: system columns', () => {
   });
 
   test('compares numbers, dates and unassigned state', async () => {
-    const first = await createTicket(db, { workspaceId, workflow, title: 'First' });
-    const second = await createTicket(db, { workspaceId, workflow, title: 'Second' });
-    await updateTicketRow(db, second.id, {
-      number: 20,
+    const first = await createWorkflowItem(db, { workspaceId, workflow, title: 'First' });
+    const second = await createWorkflowItem(db, { workspaceId, workflow, title: 'Second' });
+    await updateWorkflowItemRow(db, second.id, {
       dueAt: Date.UTC(2024, 5, 1),
       closedAt: null
     });
+    await updateRecordRow(db, second.recordId, { number: 20 });
 
     const numbers = await matches({
       type: 'condition',
@@ -202,8 +205,8 @@ describe('compileTicketFilter: system columns', () => {
   test('joins workflow_states for stateName, stateKind and stateCategory', async () => {
     const backlog = workflow.stateIds.Backlog!;
     const done = workflow.stateIds.Done!;
-    await createTicket(db, { workspaceId, workflow, title: 'Backlog', stateId: backlog });
-    await createTicket(db, { workspaceId, workflow, title: 'Done', stateId: done });
+    await createWorkflowItem(db, { workspaceId, workflow, title: 'Backlog', stateId: backlog });
+    await createWorkflowItem(db, { workspaceId, workflow, title: 'Done', stateId: done });
 
     expect(
       await matches({
@@ -235,9 +238,9 @@ describe('compileTicketFilter: system columns', () => {
   });
 
   test('reads sourceType from ticket provenance JSON', async () => {
-    const fromEmail = await createTicket(db, { workspaceId, workflow, title: 'Email' });
-    await updateTicketRow(db, fromEmail.id, { provenance: { sourceType: 'incoming_email' } });
-    await createTicket(db, { workspaceId, workflow, title: 'Manual' });
+    const fromEmail = await createWorkflowItem(db, { workspaceId, workflow, title: 'Email' });
+    await updateWorkflowItemRow(db, fromEmail.id, { provenance: { sourceType: 'incoming_email' } });
+    await createWorkflowItem(db, { workspaceId, workflow, title: 'Manual' });
 
     const matched = await matches({
       type: 'condition',
@@ -250,10 +253,10 @@ describe('compileTicketFilter: system columns', () => {
   });
 
   test('resolves runStatus through the latest agent run', async () => {
-    const ticket = await createTicket(db, { workspaceId, workflow, title: 'Run' });
+    const ticket = await createWorkflowItem(db, { workspaceId, workflow, title: 'Run' });
     await createAgentRun(db, {
       workspaceId,
-      ticketId: ticket.id,
+      workflowItemId: ticket.id,
       workflowId: workflow.id,
       stateId: workflow.states[0]!,
       status: 'failed',
@@ -261,13 +264,13 @@ describe('compileTicketFilter: system columns', () => {
     });
     await createAgentRun(db, {
       workspaceId,
-      ticketId: ticket.id,
+      workflowItemId: ticket.id,
       workflowId: workflow.id,
       stateId: workflow.states[0]!,
       status: 'succeeded',
       createdAt: 2_000
     });
-    await createTicket(db, { workspaceId, workflow, title: 'No run' });
+    await createWorkflowItem(db, { workspaceId, workflow, title: 'No run' });
 
     const matched = await matches({
       type: 'condition',
@@ -280,16 +283,16 @@ describe('compileTicketFilter: system columns', () => {
   });
 
   test('resolves approvalStatus through the latest approval request', async () => {
-    const ticket = await createTicket(db, { workspaceId, workflow, title: 'Approval' });
+    const ticket = await createWorkflowItem(db, { workspaceId, workflow, title: 'Approval' });
     await createApprovalRequest(db, {
       workspaceId,
-      ticketId: ticket.id,
+      workflowItemId: ticket.id,
       status: 'pending',
       createdAt: 1_000
     });
     await createApprovalRequest(db, {
       workspaceId,
-      ticketId: ticket.id,
+      workflowItemId: ticket.id,
       status: 'rejected',
       createdAt: 2_000
     });
@@ -316,10 +319,10 @@ describe('compileTicketFilter: system columns', () => {
 
   test('derives timeInStateSeconds from entered_state_at', async () => {
     const now = Date.UTC(2024, 2, 10, 12, 0, 0);
-    const old = await createTicket(db, { workspaceId, workflow, title: 'Old' });
-    await updateTicketRow(db, old.id, { enteredStateAt: now - 4 * 3_600_000 });
-    const fresh = await createTicket(db, { workspaceId, workflow, title: 'Fresh' });
-    await updateTicketRow(db, fresh.id, { enteredStateAt: now - 60_000 });
+    const old = await createWorkflowItem(db, { workspaceId, workflow, title: 'Old' });
+    await updateWorkflowItemRow(db, old.id, { enteredStateAt: now - 4 * 3_600_000 });
+    const fresh = await createWorkflowItem(db, { workspaceId, workflow, title: 'Fresh' });
+    await updateWorkflowItemRow(db, fresh.id, { enteredStateAt: now - 60_000 });
 
     const matched = await matches(
       {
@@ -335,13 +338,15 @@ describe('compileTicketFilter: system columns', () => {
   });
 
   test('supports the remaining system field keys', async () => {
-    const parent = await createTicket(db, { workspaceId, workflow, title: 'Parent' });
-    const child = await createTicket(db, { workspaceId, workflow, title: 'Child ticket' });
-    await updateTicketRow(db, parent.id, { lastActivityAt: Date.UTC(2024, 3, 1) });
-    await updateTicketRow(db, child.id, {
-      description: 'Needs legal review',
+    const parent = await createWorkflowItem(db, { workspaceId, workflow, title: 'Parent' });
+    const child = await createWorkflowItem(db, { workspaceId, workflow, title: 'Child ticket' });
+    await updateWorkflowItemRow(db, parent.id, { lastActivityAt: Date.UTC(2024, 3, 1) });
+    await updateRecordRow(db, child.recordId, {
+      structuredData: { description: 'Needs legal review' }
+    });
+    await updateWorkflowItemRow(db, child.id, {
       waitingOn: 'approval',
-      originTicketId: parent.id,
+      originWorkflowItemId: parent.id,
       stateRunCount: 3,
       closedAt: null,
       lastActivityAt: Date.UTC(2024, 5, 1)
@@ -358,7 +363,7 @@ describe('compileTicketFilter: system columns', () => {
     expect(await matches(condition('key', 'contains', parent.key))).toEqual([parent.id]);
     expect(await matches(condition('description', 'contains', 'legal'))).toEqual([child.id]);
     expect(await matches(condition('waitingOn', 'eq', 'approval'))).toEqual([child.id]);
-    expect(await matches(condition('originTicketId', 'eq', parent.id))).toEqual([child.id]);
+    expect(await matches(condition('originWorkflowItemId', 'eq', parent.id))).toEqual([child.id]);
     expect(await matches(condition('stateRunCount', 'gte', 3))).toEqual([child.id]);
     expect((await matches(condition('closedAt', 'is_empty'))).sort()).toEqual(
       [parent.id, child.id].sort()
@@ -372,60 +377,60 @@ describe('compileTicketFilter: system columns', () => {
   });
 });
 
-describe('compileTicketFilter: custom fields', () => {
+describe('compileWorkflowItemFilter: custom fields', () => {
   test('compares text, number, date and boolean fields with typed columns', async () => {
     const text = await createField(db, { workspaceId, key: 'customer', type: 'short_text' });
     const amount = await createField(db, { workspaceId, key: 'amount', type: 'currency' });
     const due = await createField(db, { workspaceId, key: 'review_date', type: 'date' });
     const urgent = await createField(db, { workspaceId, key: 'urgent', type: 'boolean' });
 
-    const a = await createTicket(db, { workspaceId, workflow, title: 'A' });
-    const b = await createTicket(db, { workspaceId, workflow, title: 'B' });
+    const a = await createWorkflowItem(db, { workspaceId, workflow, title: 'A' });
+    const b = await createWorkflowItem(db, { workspaceId, workflow, title: 'B' });
     await setTypedFieldValue(db, {
       workspaceId,
-      ticketId: a.id,
+      workflowItemId: a.id,
       fieldDefinitionId: text,
       type: 'short_text',
       value: 'Acme Pty Ltd'
     });
     await setTypedFieldValue(db, {
       workspaceId,
-      ticketId: b.id,
+      workflowItemId: b.id,
       fieldDefinitionId: text,
       type: 'short_text',
       value: 'Beta Corp'
     });
     await setTypedFieldValue(db, {
       workspaceId,
-      ticketId: a.id,
+      workflowItemId: a.id,
       fieldDefinitionId: amount,
       type: 'currency',
       value: 12_500
     });
     await setTypedFieldValue(db, {
       workspaceId,
-      ticketId: b.id,
+      workflowItemId: b.id,
       fieldDefinitionId: amount,
       type: 'currency',
       value: 400
     });
     await setTypedFieldValue(db, {
       workspaceId,
-      ticketId: a.id,
+      workflowItemId: a.id,
       fieldDefinitionId: due,
       type: 'date',
       value: Date.UTC(2024, 0, 15)
     });
     await setTypedFieldValue(db, {
       workspaceId,
-      ticketId: a.id,
+      workflowItemId: a.id,
       fieldDefinitionId: urgent,
       type: 'boolean',
       value: true
     });
     await setTypedFieldValue(db, {
       workspaceId,
-      ticketId: b.id,
+      workflowItemId: b.id,
       fieldDefinitionId: urgent,
       type: 'boolean',
       value: false
@@ -447,7 +452,7 @@ describe('compileTicketFilter: custom fields', () => {
     expect(await matches(condition('urgent', 'is_true'))).toEqual([a.id]);
     expect(await matches(condition('urgent', 'is_false'))).toEqual([b.id]);
     // A ticket with no value row is empty for both truth values.
-    const c = await createTicket(db, { workspaceId, workflow, title: 'C' });
+    const c = await createWorkflowItem(db, { workspaceId, workflow, title: 'C' });
     expect(await matches(condition('urgent', 'is_false'))).toHaveLength(1);
     expect(await matches(condition('urgent', 'is_empty'))).toEqual([c.id]);
     expect(await matches(condition('urgent', 'is_not_empty')).then((ids) => ids.sort())).toEqual(
@@ -468,25 +473,25 @@ describe('compileTicketFilter: custom fields', () => {
       type: 'multi_select',
       options: { choices: [] }
     });
-    const a = await createTicket(db, { workspaceId, workflow, title: 'A' });
-    const b = await createTicket(db, { workspaceId, workflow, title: 'B' });
+    const a = await createWorkflowItem(db, { workspaceId, workflow, title: 'A' });
+    const b = await createWorkflowItem(db, { workspaceId, workflow, title: 'B' });
     await setTypedFieldValue(db, {
       workspaceId,
-      ticketId: a.id,
+      workflowItemId: a.id,
       fieldDefinitionId: select,
       type: 'select',
       value: 'motor'
     });
     await setTypedFieldValue(db, {
       workspaceId,
-      ticketId: b.id,
+      workflowItemId: b.id,
       fieldDefinitionId: select,
       type: 'select',
       value: 'property'
     });
     await setTypedFieldValue(db, {
       workspaceId,
-      ticketId: a.id,
+      workflowItemId: a.id,
       fieldDefinitionId: multi,
       type: 'multi_select',
       value: ['email', 'phone']
@@ -509,18 +514,18 @@ describe('compileTicketFilter: custom fields', () => {
   test('within_last_days is evaluated against the supplied now', async () => {
     const due = await createField(db, { workspaceId, key: 'opened', type: 'date' });
     const now = Date.UTC(2024, 2, 10);
-    const recent = await createTicket(db, { workspaceId, workflow, title: 'Recent' });
-    const stale = await createTicket(db, { workspaceId, workflow, title: 'Stale' });
+    const recent = await createWorkflowItem(db, { workspaceId, workflow, title: 'Recent' });
+    const stale = await createWorkflowItem(db, { workspaceId, workflow, title: 'Stale' });
     await setTypedFieldValue(db, {
       workspaceId,
-      ticketId: recent.id,
+      workflowItemId: recent.id,
       fieldDefinitionId: due,
       type: 'date',
       value: now - 3 * 86_400_000
     });
     await setTypedFieldValue(db, {
       workspaceId,
-      ticketId: stale.id,
+      workflowItemId: stale.id,
       fieldDefinitionId: due,
       type: 'date',
       value: now - 30 * 86_400_000
@@ -540,14 +545,14 @@ describe('compileTicketFilter: custom fields', () => {
   });
 });
 
-describe('compileTicketFilter: relations', () => {
+describe('compileWorkflowItemFilter: relations', () => {
   test('filters by label in and not_in', async () => {
     const urgent = await createLabel(db, workspaceId, 'urgent');
     const vip = await createLabel(db, workspaceId, 'vip');
-    const labelled = await createTicket(db, { workspaceId, workflow, title: 'Labelled' });
-    const plain = await createTicket(db, { workspaceId, workflow, title: 'Plain' });
-    await addTicketLabel(db, { workspaceId, ticketId: labelled.id, labelId: urgent });
-    await addTicketLabel(db, { workspaceId, ticketId: labelled.id, labelId: vip });
+    const labelled = await createWorkflowItem(db, { workspaceId, workflow, title: 'Labelled' });
+    const plain = await createWorkflowItem(db, { workspaceId, workflow, title: 'Plain' });
+    await addWorkflowItemLabel(db, { workspaceId, workflowItemId: labelled.id, labelId: urgent });
+    await addWorkflowItemLabel(db, { workspaceId, workflowItemId: labelled.id, labelId: vip });
 
     const inUrgent: FilterAst = {
       type: 'condition',
@@ -583,7 +588,7 @@ describe('compileTicketFilter: relations', () => {
     expect(await matches(byName)).toEqual([labelled.id]);
 
     // An unknown label name is reported, not thrown.
-    const compiled = await compileTicketFilterDetailed(db, {
+    const compiled = await compileWorkflowItemFilterDetailed(db, {
       workspaceId,
       filter: { type: 'condition', kind: 'label', key: 'ghost', operator: 'in' }
     });
@@ -597,25 +602,25 @@ describe('compileTicketFilter: relations', () => {
     const user = await createUser(db, { name: 'Ada' });
     const other = await createUser(db, { name: 'Bob' });
     const team = await createTeam(db, workspaceId, 'Claims');
-    const mine = await createTicket(db, {
+    const mine = await createWorkflowItem(db, {
       workspaceId,
       workflow,
       title: 'Mine',
       ownerUserId: user.id
     });
-    const theirs = await createTicket(db, {
+    const theirs = await createWorkflowItem(db, {
       workspaceId,
       workflow,
       title: 'Theirs',
       ownerUserId: other.id
     });
-    const teamTicket = await createTicket(db, {
+    const teamTicket = await createWorkflowItem(db, {
       workspaceId,
       workflow,
       title: 'Team',
       ownerTeamId: team
     });
-    const unassigned = await createTicket(db, { workspaceId, workflow, title: 'Nobody' });
+    const unassigned = await createWorkflowItem(db, { workspaceId, workflow, title: 'Nobody' });
 
     expect(
       await matches({
@@ -641,8 +646,8 @@ describe('compileTicketFilter: relations', () => {
 
   test('filters by workflow membership', async () => {
     const other = await createWorkflow(db, workspaceId, { name: 'Other' });
-    const here = await createTicket(db, { workspaceId, workflow, title: 'Here' });
-    await createTicket(db, { workspaceId, workflow: other, title: 'There' });
+    const here = await createWorkflowItem(db, { workspaceId, workflow, title: 'Here' });
+    await createWorkflowItem(db, { workspaceId, workflow: other, title: 'There' });
     expect(
       await matches({
         type: 'condition',
@@ -667,11 +672,19 @@ describe('compileTicketFilter: relations', () => {
       mimeType: 'image/png',
       status: 'quarantined'
     });
-    const withInvoice = await createTicket(db, { workspaceId, workflow, title: 'With invoice' });
-    const withPhoto = await createTicket(db, { workspaceId, workflow, title: 'With photo' });
-    const noFiles = await createTicket(db, { workspaceId, workflow, title: 'No files' });
-    await linkTicketFile(db, { workspaceId, ticketId: withInvoice.id, fileId: invoice });
-    await linkTicketFile(db, { workspaceId, ticketId: withPhoto.id, fileId: photo });
+    const withInvoice = await createWorkflowItem(db, {
+      workspaceId,
+      workflow,
+      title: 'With invoice'
+    });
+    const withPhoto = await createWorkflowItem(db, { workspaceId, workflow, title: 'With photo' });
+    const noFiles = await createWorkflowItem(db, { workspaceId, workflow, title: 'No files' });
+    await linkWorkflowItemFile(db, {
+      workspaceId,
+      workflowItemId: withInvoice.id,
+      fileId: invoice
+    });
+    await linkWorkflowItemFile(db, { workspaceId, workflowItemId: withPhoto.id, fileId: photo });
     await addFileSource(db, { workspaceId, fileId: invoice, sourceType: 'incoming_email' });
 
     const filenameContains: FilterAst = {
@@ -742,9 +755,9 @@ describe('compileTicketFilter: relations', () => {
       type: 'currency',
       value: 980
     });
-    const ticket = await createTicket(db, { workspaceId, workflow, title: 'Has file' });
-    await createTicket(db, { workspaceId, workflow, title: 'Other' });
-    await linkTicketFile(db, { workspaceId, ticketId: ticket.id, fileId: file });
+    const ticket = await createWorkflowItem(db, { workspaceId, workflow, title: 'Has file' });
+    await createWorkflowItem(db, { workspaceId, workflow, title: 'Other' });
+    await linkWorkflowItemFile(db, { workspaceId, workflowItemId: ticket.id, fileId: file });
 
     const condition: FilterAst = {
       type: 'condition',
@@ -757,24 +770,26 @@ describe('compileTicketFilter: relations', () => {
   });
 });
 
-describe('compileTicketFilter: groups and failure modes', () => {
+describe('compileWorkflowItemFilter: groups and failure modes', () => {
   test('nested AND/OR keeps explicit grouping instead of flattening', async () => {
-    await createTicket(db, { workspaceId, workflow, title: 'keep me', priority: 'high' });
-    await createTicket(db, {
+    const keepHigh = await createWorkflowItem(db, { workspaceId, workflow, title: 'keep me' });
+    await updateRecordRow(db, keepHigh.recordId, { structuredData: { priority: 'high' } });
+    const keepDone = await createWorkflowItem(db, {
       workspaceId,
       workflow,
       title: 'keep me',
-      priority: 'low',
       stateId: workflow.stateIds.Done!
     });
-    const flatWouldMatch = await createTicket(db, {
+    await updateRecordRow(db, keepDone.recordId, { structuredData: { priority: 'low' } });
+    const flatWouldMatch = await createWorkflowItem(db, {
       workspaceId,
       workflow,
       title: 'other',
-      priority: 'low',
       stateId: workflow.stateIds.Done!
     });
-    await createTicket(db, { workspaceId, workflow, title: 'other', priority: 'high' });
+    await updateRecordRow(db, flatWouldMatch.recordId, { structuredData: { priority: 'low' } });
+    const otherHigh = await createWorkflowItem(db, { workspaceId, workflow, title: 'other' });
+    await updateRecordRow(db, otherHigh.recordId, { structuredData: { priority: 'high' } });
 
     const filter = andOf([
       { type: 'condition', kind: 'system', key: 'title', operator: 'contains', value: 'keep' },
@@ -795,14 +810,15 @@ describe('compileTicketFilter: groups and failure modes', () => {
   });
 
   test('OR of two system conditions returns the union', async () => {
-    const high = await createTicket(db, { workspaceId, workflow, title: 'High', priority: 'high' });
-    const done = await createTicket(db, {
+    const high = await createWorkflowItem(db, { workspaceId, workflow, title: 'High' });
+    await updateRecordRow(db, high.recordId, { structuredData: { priority: 'high' } });
+    const done = await createWorkflowItem(db, {
       workspaceId,
       workflow,
       title: 'Done',
       stateId: workflow.stateIds.Done!
     });
-    await createTicket(db, { workspaceId, workflow, title: 'Neither' });
+    await createWorkflowItem(db, { workspaceId, workflow, title: 'Neither' });
     const ids = await matches(
       orOf([
         { type: 'condition', kind: 'system', key: 'priority', operator: 'eq', value: 'high' },
@@ -819,14 +835,17 @@ describe('compileTicketFilter: groups and failure modes', () => {
   });
 
   test('an unknown field key matches nothing and is reported', async () => {
-    const kept = await createTicket(db, { workspaceId, workflow, title: 'keep me' });
-    await createTicket(db, { workspaceId, workflow, title: 'other' });
+    const kept = await createWorkflowItem(db, { workspaceId, workflow, title: 'keep me' });
+    await createWorkflowItem(db, { workspaceId, workflow, title: 'other' });
 
     const withUnknown = andOf([
       { type: 'condition', kind: 'system', key: 'title', operator: 'contains', value: 'keep' },
       { type: 'condition', kind: 'field', key: 'ghost_field', operator: 'eq', value: 'x' }
     ]);
-    const compiled = await compileTicketFilterDetailed(db, { workspaceId, filter: withUnknown });
+    const compiled = await compileWorkflowItemFilterDetailed(db, {
+      workspaceId,
+      filter: withUnknown
+    });
     expect(compiled.unresolved).toEqual(['ghost_field']);
     expect(await matches(withUnknown)).toEqual([]);
 
@@ -839,8 +858,8 @@ describe('compileTicketFilter: groups and failure modes', () => {
   });
 
   test('an unknown system key is also reported rather than throwing', async () => {
-    await createTicket(db, { workspaceId, workflow, title: 'One' });
-    const compiled = await compileTicketFilterDetailed(db, {
+    await createWorkflowItem(db, { workspaceId, workflow, title: 'One' });
+    const compiled = await compileWorkflowItemFilterDetailed(db, {
       workspaceId,
       filter: { type: 'condition', kind: 'system', key: 'nope', operator: 'eq', value: 1 }
     });
@@ -865,7 +884,7 @@ describe('compileTicketFilter: groups and failure modes', () => {
   });
 });
 
-describe('compileTicketFilter: SQL shape and parameterization', () => {
+describe('compileWorkflowItemFilter: SQL shape and parameterization', () => {
   test('relation filters compile to EXISTS and never interpolate values', async () => {
     const label = await createLabel(db, workspaceId, 'urgent');
     const filter = andOf([
@@ -884,11 +903,15 @@ describe('compileTicketFilter: SQL shape and parameterization', () => {
         value: 'incoming_email'
       }
     ]);
-    const condition = await compileTicketFilter(db, { workspaceId, filter });
-    const rendered = db.select({ id: tickets.id }).from(tickets).where(condition).toSQL();
+    const condition = await compileWorkflowItemFilter(db, { workspaceId, filter });
+    const rendered = db
+      .select({ id: workflowItems.id })
+      .from(workflowItems)
+      .where(condition)
+      .toSQL();
     expect(rendered.sql).toContain('EXISTS');
     expect(rendered.sql).toContain('json_extract');
-    expect(rendered.sql).toContain('ticket_labels');
+    expect(rendered.sql).toContain('workflow_item_labels');
     // Values are bound parameters, never spliced into the SQL text.
     expect(rendered.params).toContain(label);
     expect(rendered.params).toContain('incoming_email');
@@ -896,12 +919,12 @@ describe('compileTicketFilter: SQL shape and parameterization', () => {
   });
 });
 
-describe('filterTickets: sorting and pagination', () => {
+describe('filterWorkflowItems: sorting and pagination', () => {
   test('rejects a sort on an unknown field with a validation error', async () => {
-    await createTicket(db, { workspaceId, workflow, title: 'One' });
+    await createWorkflowItem(db, { workspaceId, workflow, title: 'One' });
     let code: string | undefined;
     try {
-      await filterTickets(db, {
+      await filterWorkflowItems(db, {
         workspaceId,
         filter: null,
         sort: [{ field: 'not_a_field', direction: 'asc' }]
@@ -914,25 +937,25 @@ describe('filterTickets: sorting and pagination', () => {
 
   test('sorts by a custom number field using its typed column', async () => {
     const amount = await createField(db, { workspaceId, key: 'score', type: 'number' });
-    const low = await createTicket(db, { workspaceId, workflow, title: 'Low' });
-    const high = await createTicket(db, { workspaceId, workflow, title: 'High' });
-    const none = await createTicket(db, { workspaceId, workflow, title: 'None' });
+    const low = await createWorkflowItem(db, { workspaceId, workflow, title: 'Low' });
+    const high = await createWorkflowItem(db, { workspaceId, workflow, title: 'High' });
+    const none = await createWorkflowItem(db, { workspaceId, workflow, title: 'None' });
     await setTypedFieldValue(db, {
       workspaceId,
-      ticketId: low.id,
+      workflowItemId: low.id,
       fieldDefinitionId: amount,
       type: 'number',
       value: 1
     });
     await setTypedFieldValue(db, {
       workspaceId,
-      ticketId: high.id,
+      workflowItemId: high.id,
       fieldDefinitionId: amount,
       type: 'number',
       value: 9
     });
 
-    const page = await filterTickets(db, {
+    const page = await filterWorkflowItems(db, {
       workspaceId,
       filter: null,
       sort: [
@@ -947,15 +970,15 @@ describe('filterTickets: sorting and pagination', () => {
     const base = Date.UTC(2024, 0, 1);
     const created: string[] = [];
     for (let index = 0; index < 5; index++) {
-      const ticket = await createTicket(db, { workspaceId, workflow, title: `T${index}` });
-      await updateTicketRow(db, ticket.id, { updatedAt: base + index * 1_000 });
+      const ticket = await createWorkflowItem(db, { workspaceId, workflow, title: `T${index}` });
+      await updateWorkflowItemRow(db, ticket.id, { updatedAt: base + index * 1_000 });
       created.push(ticket.id);
     }
 
     const seen: string[] = [];
     let cursor: string | null = null;
     for (let guard = 0; guard < 10; guard++) {
-      const page: Awaited<ReturnType<typeof filterTickets>> = await filterTickets(db, {
+      const page: Awaited<ReturnType<typeof filterWorkflowItems>> = await filterWorkflowItems(db, {
         workspaceId,
         filter: null,
         limit: 2,
@@ -972,21 +995,22 @@ describe('filterTickets: sorting and pagination', () => {
 
   test('pagination cursor round-trips and composes with a filter', async () => {
     const base = Date.UTC(2024, 0, 1);
-    const first = await createTicket(db, {
+    const first = await createWorkflowItem(db, {
       workspaceId,
       workflow,
-      title: 'Keep A',
-      priority: 'high'
+      title: 'Keep A'
     });
-    const second = await createTicket(db, {
+    await updateRecordRow(db, first.recordId, { structuredData: { priority: 'high' } });
+    const second = await createWorkflowItem(db, {
       workspaceId,
       workflow,
-      title: 'Keep B',
-      priority: 'high'
+      title: 'Keep B'
     });
-    await createTicket(db, { workspaceId, workflow, title: 'Drop', priority: 'low' });
-    await updateTicketRow(db, first.id, { updatedAt: base + 2_000 });
-    await updateTicketRow(db, second.id, { updatedAt: base + 1_000 });
+    await updateRecordRow(db, second.recordId, { structuredData: { priority: 'high' } });
+    const dropped = await createWorkflowItem(db, { workspaceId, workflow, title: 'Drop' });
+    await updateRecordRow(db, dropped.recordId, { structuredData: { priority: 'low' } });
+    await updateWorkflowItemRow(db, first.id, { updatedAt: base + 2_000 });
+    await updateWorkflowItemRow(db, second.id, { updatedAt: base + 1_000 });
 
     const filter: FilterAst = {
       type: 'condition',
@@ -995,12 +1019,12 @@ describe('filterTickets: sorting and pagination', () => {
       operator: 'eq',
       value: 'high'
     };
-    const pageA = await filterTickets(db, { workspaceId, filter, limit: 1 });
+    const pageA = await filterWorkflowItems(db, { workspaceId, filter, limit: 1 });
     expect(pageA.rows.map((row) => row.id)).toEqual([first.id]);
-    const decoded = decodeTicketCursor(pageA.nextCursor!);
+    const decoded = decodeWorkflowItemCursor(pageA.nextCursor!);
     expect(decoded.updatedAt).toBe(base + 2_000);
-    expect(encodeTicketCursor(decoded)).toBe(pageA.nextCursor!);
-    const pageB = await filterTickets(db, {
+    expect(encodeWorkflowItemCursor(decoded)).toBe(pageA.nextCursor!);
+    const pageB = await filterWorkflowItems(db, {
       workspaceId,
       filter,
       limit: 1,
@@ -1013,14 +1037,14 @@ describe('filterTickets: sorting and pagination', () => {
   test('never returns another workspace’s rows', async () => {
     const otherWorkspace = await createWorkspace(db, 'Other');
     const otherWorkflow = await createWorkflow(db, otherWorkspace.id, { name: 'Other' });
-    await createTicket(db, { workspaceId, workflow, title: 'Mine' });
-    await createTicket(db, {
+    const mine = await createWorkflowItem(db, { workspaceId, workflow, title: 'Mine' });
+    await createWorkflowItem(db, {
       workspaceId: otherWorkspace.id,
       workflow: otherWorkflow,
       title: 'Theirs'
     });
-    const page = await filterTickets(db, { workspaceId, filter: null });
+    const page = await filterWorkflowItems(db, { workspaceId, filter: null });
     expect(page.rows).toHaveLength(1);
-    expect(page.rows[0]?.title).toBe('Mine');
+    expect(page.rows[0]?.id).toBe(mine.id);
   });
 });

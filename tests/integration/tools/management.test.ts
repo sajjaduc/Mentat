@@ -224,9 +224,9 @@ describe('tool catalogue', () => {
   test('a group can be disabled and re-enabled in one call', async () => {
     const result = await call('GET', '/tools');
     const stored = result.body.stored as Array<{ id: string; key: string }>;
-    // All the materialised native tickets rows share the `mentat.ticket` prefix.
+    // A native namespace group with more than one materialised row.
     const ids = stored
-      .filter((tool) => tool.key.startsWith('mentat.ticket'))
+      .filter((tool) => tool.key.startsWith('mentat.state.'))
       .map((tool) => tool.id);
     expect(ids.length).toBeGreaterThan(1);
 

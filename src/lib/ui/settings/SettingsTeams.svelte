@@ -9,7 +9,7 @@
  * Honesty note on renaming: the API exposes `POST /api/teams` and
  * `PUT /api/teams/:id/members` but no `PATCH /api/teams/:id`. Renaming is therefore
  * implemented as create-then-replace-members, and the UI says plainly that the team
- * gets a new id and that any ticket owned by the old team must be reassigned.
+ * gets a new id and that any work item owned by the old team must be reassigned.
  */
 
 import { page } from '$app/state';
@@ -135,7 +135,7 @@ async function create() {
 
 /**
  * Rename by creating a replacement team and moving its members. The old team is
- * left in place rather than deleted, because tickets may reference it and the API
+ * left in place rather than deleted, because work items may reference it and the API
  * offers no delete route; the replacement is what future assignments should use.
  */
 async function rename() {
@@ -152,7 +152,7 @@ async function rename() {
     pushToast({
       tone: 'success',
       title: `Created “${response.team.name}”`,
-      description: `“${renaming.name}” was kept because tickets may still reference it. Reassign them, then stop using the old team.`
+      description: `“${renaming.name}” was kept because work items may still reference it. Reassign them, then stop using the old team.`
     });
     renaming = null;
     renameDraft = '';
@@ -173,7 +173,7 @@ function toggleMember(userId: string) {
 <div class="space-y-5">
   <PageHeader
     title="Teams"
-    description="Teams group people for ticket ownership and human-gate authorization. Membership is replaced as a whole set."
+    description="Teams group people for work item ownership and human-gate authorization. Membership is replaced as a whole set."
   >
     {#snippet actions()}
       <Button variant="primary" onclick={openCreate}>New team</Button>
@@ -228,7 +228,7 @@ function toggleMember(userId: string) {
 <Modal
   open={createOpen}
   title="New team"
-  description="Teams are workspace-scoped and can be assigned ticket ownership."
+  description="Teams are workspace-scoped and can be assigned work item ownership."
   onclose={() => (createOpen = false)}
 >
   <div class="space-y-3">
@@ -293,8 +293,8 @@ function toggleMember(userId: string) {
   <div class="space-y-3">
     <Input label="New name" bind:value={renameDraft} />
     <p class="rounded-[var(--radius-md)] bg-[color-mix(in_oklch,var(--color-caution)_18%,transparent)] px-3 py-2 text-[11px] leading-relaxed">
-      The replacement has a new id. The original team is left in place because tickets may still
-      reference it; reassign those tickets to the new team before removing the old one from use.
+      The replacement has a new id. The original team is left in place because work items may still
+      reference it; reassign those work items to the new team before removing the old one from use.
     </p>
     <div class="flex justify-end gap-2">
       <Button variant="ghost" onclick={() => (renaming = null)}>Cancel</Button>

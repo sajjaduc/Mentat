@@ -32,11 +32,12 @@ import { setProviderLookup } from './execution/provider-lookup';
 import { setFileExtractionProvider } from './files/fields';
 import { registerFileJobHandlers } from './files/handlers';
 import { installFileService } from './files/service';
-import { compileTicketFilterDetailed } from './filters/compile';
+import {
+  compileWorkflowItemFilterDetailed,
+  setWorkflowItemFilterCompiler
+} from './filters/compile';
 import { executeOperation } from './http/runtime';
 import { getProviderForModel } from './providers/registry';
-import { setTicketFilterCompiler } from './tickets/query';
-import { installTicketService } from './tickets/service';
 import { setHttpToolInvoker } from './tools/http-locator';
 import { registerNativeTools } from './tools/native';
 import { registerCoreNativeTools } from './tools/native/register';
@@ -131,17 +132,12 @@ export async function runBootstrap(options: RunBootstrapOptions = {}): Promise<B
  * installation; they only record a reference.
  */
 export function installLocators(db: Executor): void {
-  const dbFactory = (): Executor => db;
-
-  // Tickets
-  installTicketService(dbFactory);
-
   // The analytics filter compiler becomes the single implementation used by the
   // board, the list, saved views and dashboard widgets, so they cannot drift
   // (ADR-0012). It is async because it resolves field definitions first.
-  setTicketFilterCompiler({
+  setWorkflowItemFilterCompiler({
     compile(executor, { workspaceId, filter }) {
-      return compileTicketFilterDetailed(executor, { workspaceId, filter });
+      return compileWorkflowItemFilterDetailed(executor, { workspaceId, filter });
     }
   });
 

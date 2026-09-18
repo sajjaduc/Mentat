@@ -30,7 +30,7 @@ import {
   addMember,
   createTeam,
   createWorkspaceWithOwner,
-  ensureStarterWorkspace,
+  ensurePersonalWorkspace,
   findUserByEmail,
   getTeamView,
   getUser,
@@ -79,7 +79,7 @@ export const authRoutes = [
     method: 'POST',
     path: '/auth/register',
     public: true,
-    summary: 'Create the first account and its starter workspace',
+    summary: 'Create an account and give it a workspace to work in',
     body: z.object({
       email: emailSchema,
       name: z.string().trim().min(1).max(120),
@@ -91,15 +91,15 @@ export const authRoutes = [
         db,
         body as { email: string; name: string; password: string }
       );
-      const workspace = ensureStarterWorkspace(db, user);
+      const workspace = ensurePersonalWorkspace(db, user);
       const session = await createSession(db, user, {
-        activeWorkspaceId: workspace?.id ?? null,
+        activeWorkspaceId: workspace.id,
         userAgent: request.headers.get('user-agent'),
         ip: clientIp(request)
       });
       return {
         status: 201,
-        body: { user: publicUser(user), workspaceId: workspace?.id ?? null },
+        body: { user: publicUser(user), workspaceId: workspace.id },
         headers: cookieHeader(session.token)
       };
     }

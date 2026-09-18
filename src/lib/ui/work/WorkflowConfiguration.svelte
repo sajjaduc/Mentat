@@ -2,15 +2,21 @@
 /**
  * Workflow configuration.
  *
- * Three coherent surfaces — the state machine, the ticket schema and cross-workflow
+ * Three coherent surfaces — the state machine, the workItem schema and cross-workflow
  * policy — sharing one loader so a change in any of them refreshes the others.
  * Nothing here navigates; mutations re-read only what they changed.
  */
+
 import { onMount } from 'svelte';
+import { page } from '$app/state';
 import { api, describeApiError } from '$ui/api';
+import Button from '$ui/primitives/Button.svelte';
 import ErrorState from '$ui/primitives/ErrorState.svelte';
+import Select from '$ui/primitives/Select.svelte';
 import Skeleton from '$ui/primitives/Skeleton.svelte';
 import Tabs from '$ui/primitives/Tabs.svelte';
+import type { ObjectTypeSummary } from '$ui/records/types';
+import { pushToast } from '$ui/toast';
 import FieldConfiguration from '$ui/work/FieldConfiguration.svelte';
 import StateDesigner from '$ui/work/StateDesigner.svelte';
 import TransferRules from '$ui/work/TransferRules.svelte';
@@ -19,6 +25,7 @@ import type {
   FieldDefinition,
   MemberOption,
   TeamOption,
+  Workflow,
   WorkflowDetailResponse,
   WorkflowFieldView,
   WorkflowListItem,
@@ -43,9 +50,22 @@ let agents = $state<AgentOption[]>([]);
 let teams = $state<TeamOption[]>([]);
 let members = $state<MemberOption[]>([]);
 let workflows = $state<WorkflowListItem[]>([]);
+let workflow = $state<Workflow | null>(null);
+let objectTypes = $state<ObjectTypeSummary[]>([]);
+let objectTypeId = $state('');
+let savingObjectType = $state(false);
 let loading = $state(true);
 let error = $state<string | null>(null);
 let section = $state('states');
+
+/** Only owners and admins may re-point a workflow at another Object Type. */
+const canEditObjectType = $derived(
+  page.data.actor?.role === 'owner' || page.data.actor?.role === 'admin'
+);
+
+const selectedObjectType = $derived(
+  objectTypes.find((type) => type.id === workflow?.objectTypeId) ?? null
+);
 
 const tabs = [
   { id: 'states', label: 'States' },
@@ -57,25 +77,59 @@ async function load(id: string) {
   loading = true;
   error = null;
   try {
-    const [detail, fieldResponse, workspaceFieldResponse, agentResponse, workflowResponse] =
-      await Promise.all([
-        api.get<WorkflowDetailResponse>(`/api/workflows/${id}`),
-        api.get<{ fields: WorkflowFieldView[] }>(`/api/workflows/${id}/fields`),
-        api.get<{ fields: FieldDefinition[] }>('/api/fields', { scope: 'ticket' }),
-        api.get<{ agents: AgentOption[] }>('/api/agents'),
-        api.get<{ workflows: WorkflowListItem[] }>('/api/workflows')
-      ]);
+    const [
+      detail,
+      fieldResponse,
+      workspaceFieldResponse,
+      agentResponse,
+      workflowResponse,
+      typeResponse
+    ] = await Promise.all([
+      api.get<WorkflowDetailResponse>(`/api/workflows/${id}`),
+      api.get<{ fields: WorkflowFieldView[] }>(`/api/workflows/${id}/fields`),
+      api.get<{ fields: FieldDefinition[] }>('/api/fields'),
+      api.get<{ agents: AgentOption[] }>('/api/agents'),
+      api.get<{ workflows: WorkflowListItem[] }>('/api/workflows'),
+      api.get<{ objectTypes: ObjectTypeSummary[] }>('/api/object-types')
+    ]);
     states = detail.states;
     transitions = detail.transitions;
     rules = detail.transferRules;
+    workflow = detail.workflow;
+    objectTypeId = detail.workflow.objectTypeId ?? '';
     fields = fieldResponse.fields;
-    workspaceFields = workspaceFieldResponse.fields;
+    // Overlay fields may be workflow-item- or record-scoped; file fields are not eligible.
+    workspaceFields = workspaceFieldResponse.fields.filter(
+      (field) => field.scope === 'workflowItem' || field.scope === 'record'
+    );
     agents = agentResponse.agents;
     workflows = workflowResponse.workflows;
+    objectTypes = typeResponse.objectTypes;
   } catch (failure) {
     error = describeApiError(failure);
   } finally {
     loading = false;
+  }
+}
+
+async function saveObjectType() {
+  if (!workflow || objectTypeId === '' || objectTypeId === workflow.objectTypeId) return;
+  savingObjectType = true;
+  try {
+    const response = await api.patch<{ workflow: Workflow }>(`/api/workflows/${workflowId}`, {
+      objectTypeId
+    });
+    workflow = { ...workflow, ...response.workflow, objectTypeId };
+    pushToast({ tone: 'success', title: 'Object Type updated' });
+  } catch (failure) {
+    pushToast({
+      tone: 'error',
+      title: 'Could not change the Object Type',
+      description: describeApiError(failure)
+    });
+    objectTypeId = workflow.objectTypeId ?? '';
+  } finally {
+    savingObjectType = false;
   }
 }
 
@@ -114,6 +168,50 @@ $effect(() => {
   {:else if error}
     <ErrorState message={error} onRetry={() => load(workflowId)} />
   {:else}
+    {#if workflow}
+      <section
+        class="mb-4 flex flex-wrap items-end gap-3 rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-muted)]/40 p-3"
+      >
+        <div class="min-w-0">
+          <p class="text-[11px] font-semibold tracking-wider text-[var(--color-ink-subtle)] uppercase">
+            Object Type
+          </p>
+          <p class="text-sm font-medium">
+            {selectedObjectType?.name ??
+              workflow.objectTypeName ??
+              (workflow.objectTypeId ? 'Unknown Object Type' : 'Not set')}
+          </p>
+          {#if selectedObjectType}
+            <p class="text-[11px] text-[var(--color-ink-subtle)]">
+              Records are called “{selectedObjectType.pluralName.toLowerCase()}” here.
+            </p>
+          {/if}
+        </div>
+        {#if canEditObjectType && objectTypes.length > 0}
+          <div class="ml-auto flex items-end gap-2">
+            <div class="w-64">
+              <Select
+                label="Change Object Type"
+                bind:value={objectTypeId}
+                options={objectTypes.map((type) => ({
+                  value: type.id,
+                  label: `${type.name} · ${type.pluralName}`
+                }))}
+              />
+            </div>
+            <Button
+              size="sm"
+              variant="secondary"
+              loading={savingObjectType}
+              disabled={objectTypeId === '' || objectTypeId === workflow.objectTypeId}
+              onclick={saveObjectType}
+            >
+              Save
+            </Button>
+          </div>
+        {/if}
+      </section>
+    {/if}
     <Tabs {tabs} active={section} onselect={(id) => (section = id)} class="mb-4" />
     {#if section === 'states'}
       <StateDesigner
@@ -130,6 +228,7 @@ $effect(() => {
     {:else if section === 'fields'}
       <FieldConfiguration
         {workflowId}
+        schemaSource={String(workflow?.settings?.zodSchema ?? '')}
         {fields}
         {workspaceFields}
         {states}

@@ -19,43 +19,60 @@ import {
   type Blob,
   blobs,
   type FileExtractedContent,
+  type FileLinkRelationship,
   type FileProcessingRun,
   type FileRecord,
+  type FileRecordLink,
   type FileSource,
   type FileSourceType,
+  type FileWorkflowItemLink,
   fileExtractedContent,
   fileProcessingRuns,
+  fileRecords,
   fileSources,
   files,
+  fileWorkflowItems,
   type Job,
   jobs,
   type NewBlob,
   type NewFileRecord,
   type ProcessingStatus,
-  type TicketFile,
-  type TicketFileRelationship,
-  ticketFiles,
-  tickets,
+  records,
   type WorkflowFile,
   workflowFiles,
+  workflowItems,
   workflows
 } from '../db/schema';
 
 /**
  * Tenant-scoped existence checks used inside the ingest transaction.
  *
- * They run *inside* the transaction on purpose: if a caller supplies a ticket id
- * that does not exist in this workspace, the whole ingest (file, provenance,
- * blob row) must roll back rather than leave an orphaned logical file.
+ * They run *inside* the transaction on purpose: if a caller supplies a work item
+ * or record id that does not exist in this workspace, the whole ingest (file,
+ * provenance, blob row) must roll back rather than leave an orphaned logical file.
  */
-export function assertTicketInWorkspace(db: Executor, workspaceId: string, ticketId: string): void {
+export function assertWorkflowItemInWorkspace(
+  db: Executor,
+  workspaceId: string,
+  workflowItemId: string
+): void {
   const found = db
-    .select({ id: tickets.id })
-    .from(tickets)
-    .where(and(eq(tickets.workspaceId, workspaceId), eq(tickets.id, ticketId)))
+    .select({ id: workflowItems.id })
+    .from(workflowItems)
+    .where(and(eq(workflowItems.workspaceId, workspaceId), eq(workflowItems.id, workflowItemId)))
     .limit(1)
     .all()[0];
-  if (!found) throw errors.notFound('Ticket', ticketId);
+  if (!found) throw errors.notFound('Workflow item', workflowItemId);
+}
+
+export function assertRecordInWorkspace(db: Executor, workspaceId: string, recordId: string): void {
+  const found = db
+    .select({ id: records.id })
+    .from(records)
+    .where(and(eq(records.workspaceId, workspaceId), eq(records.id, recordId)))
+    .limit(1)
+    .all()[0];
+  if (!found) throw errors.notFound('Record', recordId);
 }
 
 export function assertWorkflowInWorkspace(
@@ -229,65 +246,105 @@ export function listWorkflowFilesForFile(
     .all();
 }
 
-export function listTicketFilesForFile(
+export function listFileWorkflowItemLinksForFile(
   db: Executor,
   workspaceId: string,
   fileId: string,
   options: { includeRemoved?: boolean } = {}
-): TicketFile[] {
-  const conditions = [eq(ticketFiles.workspaceId, workspaceId), eq(ticketFiles.fileId, fileId)];
-  if (!options.includeRemoved) conditions.push(isNull(ticketFiles.removedAt));
+): FileWorkflowItemLink[] {
+  const conditions = [
+    eq(fileWorkflowItems.workspaceId, workspaceId),
+    eq(fileWorkflowItems.fileId, fileId)
+  ];
+  if (!options.includeRemoved) conditions.push(isNull(fileWorkflowItems.removedAt));
   return db
     .select()
-    .from(ticketFiles)
+    .from(fileWorkflowItems)
     .where(and(...conditions))
     .all();
 }
 
-export function listTicketFilesForTicket(
+export function listFileWorkflowItemLinksForWorkflowItem(
   db: Executor,
   workspaceId: string,
-  ticketId: string,
+  workflowItemId: string,
   options: { includeRemoved?: boolean } = {}
-): TicketFile[] {
-  const conditions = [eq(ticketFiles.workspaceId, workspaceId), eq(ticketFiles.ticketId, ticketId)];
-  if (!options.includeRemoved) conditions.push(isNull(ticketFiles.removedAt));
+): FileWorkflowItemLink[] {
+  const conditions = [
+    eq(fileWorkflowItems.workspaceId, workspaceId),
+    eq(fileWorkflowItems.workflowItemId, workflowItemId)
+  ];
+  if (!options.includeRemoved) conditions.push(isNull(fileWorkflowItems.removedAt));
   return db
     .select()
-    .from(ticketFiles)
+    .from(fileWorkflowItems)
     .where(and(...conditions))
-    .orderBy(desc(ticketFiles.createdAt))
+    .orderBy(desc(fileWorkflowItems.createdAt))
     .all();
 }
 
-export type UpsertTicketFileInput = {
+export function listFileRecordLinksForFile(
+  db: Executor,
+  workspaceId: string,
+  fileId: string,
+  options: { includeRemoved?: boolean } = {}
+): FileRecordLink[] {
+  const conditions = [eq(fileRecords.workspaceId, workspaceId), eq(fileRecords.fileId, fileId)];
+  if (!options.includeRemoved) conditions.push(isNull(fileRecords.removedAt));
+  return db
+    .select()
+    .from(fileRecords)
+    .where(and(...conditions))
+    .all();
+}
+
+export function listFileRecordLinksForRecord(
+  db: Executor,
+  workspaceId: string,
+  recordId: string,
+  options: { includeRemoved?: boolean } = {}
+): FileRecordLink[] {
+  const conditions = [eq(fileRecords.workspaceId, workspaceId), eq(fileRecords.recordId, recordId)];
+  if (!options.includeRemoved) conditions.push(isNull(fileRecords.removedAt));
+  return db
+    .select()
+    .from(fileRecords)
+    .where(and(...conditions))
+    .orderBy(desc(fileRecords.createdAt))
+    .all();
+}
+
+export type UpsertFileWorkflowItemLinkInput = {
   workspaceId: string;
-  ticketId: string;
+  workflowItemId: string;
   fileId: string;
-  relationship: TicketFileRelationship;
+  relationship: FileLinkRelationship;
   caption?: string | null;
-  addedByType?: TicketFile['addedByType'];
+  addedByType?: FileWorkflowItemLink['addedByType'];
   addedById?: string | null;
   addedByLabel?: string | null;
   runId?: string | null;
 };
 
 /**
- * Link a file to a ticket. The unique key is `(ticketId, fileId, relationship)`,
- * so re-linking a previously removed relationship clears `removedAt` instead of
- * creating a second row — which keeps "is this file still attached" a single-row
- * question.
+ * Link a file to a WorkflowItem. The unique key is
+ * `(fileId, workflowItemId, relationship)`, so re-linking a previously removed
+ * relationship clears `removedAt` instead of creating a second row — which keeps
+ * "is this file still attached" a single-row question.
  */
-export function upsertTicketFile(db: Executor, input: UpsertTicketFileInput): TicketFile {
+export function upsertFileWorkflowItemLink(
+  db: Executor,
+  input: UpsertFileWorkflowItemLinkInput
+): FileWorkflowItemLink {
   const now = Date.now();
   const existing = db
     .select()
-    .from(ticketFiles)
+    .from(fileWorkflowItems)
     .where(
       and(
-        eq(ticketFiles.ticketId, input.ticketId),
-        eq(ticketFiles.fileId, input.fileId),
-        eq(ticketFiles.relationship, input.relationship)
+        eq(fileWorkflowItems.workflowItemId, input.workflowItemId),
+        eq(fileWorkflowItems.fileId, input.fileId),
+        eq(fileWorkflowItems.relationship, input.relationship)
       )
     )
     .limit(1)
@@ -295,24 +352,25 @@ export function upsertTicketFile(db: Executor, input: UpsertTicketFileInput): Ti
 
   if (existing) {
     const updated = db
-      .update(ticketFiles)
+      .update(fileWorkflowItems)
       .set({
         removedAt: null,
         caption: input.caption ?? existing.caption,
         runId: input.runId ?? null
       })
-      .where(eq(ticketFiles.id, existing.id))
+      .where(eq(fileWorkflowItems.id, existing.id))
       .returning()
       .all()[0];
-    if (!updated) throw errors.internal('Failed to re-link ticket file', { fileId: input.fileId });
+    if (!updated)
+      throw errors.internal('Failed to re-link workflow item file', { fileId: input.fileId });
     return updated;
   }
 
   const row = db
-    .insert(ticketFiles)
+    .insert(fileWorkflowItems)
     .values({
       workspaceId: input.workspaceId,
-      ticketId: input.ticketId,
+      workflowItemId: input.workflowItemId,
       fileId: input.fileId,
       relationship: input.relationship,
       caption: input.caption ?? null,
@@ -324,7 +382,73 @@ export function upsertTicketFile(db: Executor, input: UpsertTicketFileInput): Ti
     })
     .returning()
     .all()[0];
-  if (!row) throw errors.internal('Failed to link ticket file', { fileId: input.fileId });
+  if (!row) throw errors.internal('Failed to link workflow item file', { fileId: input.fileId });
+  return row;
+}
+
+export type UpsertFileRecordLinkInput = {
+  workspaceId: string;
+  recordId: string;
+  fileId: string;
+  relationship: FileLinkRelationship;
+  caption?: string | null;
+  addedByType?: FileRecordLink['addedByType'];
+  addedById?: string | null;
+  addedByLabel?: string | null;
+  runId?: string | null;
+};
+
+/** Link a file to a Record as durable evidence; same re-link semantics as work. */
+export function upsertFileRecordLink(
+  db: Executor,
+  input: UpsertFileRecordLinkInput
+): FileRecordLink {
+  const now = Date.now();
+  const existing = db
+    .select()
+    .from(fileRecords)
+    .where(
+      and(
+        eq(fileRecords.recordId, input.recordId),
+        eq(fileRecords.fileId, input.fileId),
+        eq(fileRecords.relationship, input.relationship)
+      )
+    )
+    .limit(1)
+    .all()[0];
+
+  if (existing) {
+    const updated = db
+      .update(fileRecords)
+      .set({
+        removedAt: null,
+        caption: input.caption ?? existing.caption,
+        runId: input.runId ?? null
+      })
+      .where(eq(fileRecords.id, existing.id))
+      .returning()
+      .all()[0];
+    if (!updated) throw errors.internal('Failed to re-link record file', { fileId: input.fileId });
+    return updated;
+  }
+
+  const row = db
+    .insert(fileRecords)
+    .values({
+      workspaceId: input.workspaceId,
+      recordId: input.recordId,
+      fileId: input.fileId,
+      relationship: input.relationship,
+      caption: input.caption ?? null,
+      addedByType: input.addedByType ?? null,
+      addedById: input.addedById ?? null,
+      addedByLabel: input.addedByLabel ?? null,
+      runId: input.runId ?? null,
+      createdAt: now
+    })
+    .returning()
+    .all()[0];
+  if (!row) throw errors.internal('Failed to link record file', { fileId: input.fileId });
   return row;
 }
 
@@ -494,7 +618,8 @@ export type SyncJobInput = {
   dedupeKey?: string | null;
   priority?: number;
   maxAttempts?: number;
-  ticketId?: string | null;
+  workflowItemId?: string | null;
+  recordId?: string | null;
   runId?: string | null;
 };
 
@@ -539,7 +664,8 @@ export function enqueueJobSync(db: Executor, input: SyncJobInput): Job {
       maxAttempts: input.maxAttempts ?? 5,
       availableAt: now,
       dedupeKey: input.dedupeKey ?? null,
-      ticketId: input.ticketId ?? null,
+      workflowItemId: input.workflowItemId ?? null,
+      recordId: input.recordId ?? null,
       runId: input.runId ?? null,
       createdAt: now,
       updatedAt: now
@@ -554,7 +680,8 @@ export function enqueueJobSync(db: Executor, input: SyncJobInput): Job {
     entityType: 'job',
     entityId: row.id,
     jobId: row.id,
-    ticketId: row.ticketId,
+    workflowItemId: row.workflowItemId,
+    recordId: row.recordId,
     runId: row.runId,
     summary: `Job ${input.type} enqueued`,
     data: { type: input.type, dedupeKey: input.dedupeKey ?? null }

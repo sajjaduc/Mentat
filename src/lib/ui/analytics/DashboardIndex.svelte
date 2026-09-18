@@ -116,7 +116,7 @@ async function remove(dashboard: Dashboard) {
   <PageHeader
     title="Dashboards"
     eyebrow="Platform"
-    description="Widgets declare a data source, filter, measure, grouping and time range. Every number is derived from recorded history, and the filter language is the same one the ticket list uses."
+    description="Widgets declare a data source, filter, measure, grouping and time range. Every number is derived from recorded history, and the filter language is the same one the work item list uses."
   >
     {#snippet actions()}
       <Button variant="primary" onclick={() => (createOpen = true)}>New dashboard</Button>

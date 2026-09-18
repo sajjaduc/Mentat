@@ -22,17 +22,18 @@ import {
   type StateCategory,
   type StateConfig,
   type StateKind,
-  tickets as ticketsTable,
   type Workflow,
   type WorkflowSettings,
   type WorkflowState,
   type WorkflowTransferRule,
   type WorkflowTransition,
+  workflowItems,
   workflowStates,
   workflows,
   workflowTransferRules,
   workflowTransitions
 } from '../db/schema';
+import { findObjectTypeByKey, requireObjectType } from '../records/object-types';
 
 export interface WorkflowDetail {
   workflow: Workflow;
@@ -57,7 +58,7 @@ export function listWorkflows(
   db: Executor,
   actor: ActorContext,
   options: { includeArchived?: boolean } = {}
-): Array<Workflow & { ticketCount: number; stateCount: number }> {
+): Array<Workflow & { itemCount: number; stateCount: number }> {
   assertPermission(actor, Permissions.workflowRead);
   const conditions = [eq(workflows.workspaceId, actor.workspaceId)];
   if (!options.includeArchived) conditions.push(isNull(workflows.archivedAt));
@@ -75,19 +76,19 @@ export function listWorkflows(
     .where(eq(workflowStates.workspaceId, actor.workspaceId))
     .groupBy(workflowStates.workflowId)
     .all();
-  const ticketCounts = db
-    .select({ workflowId: ticketsTable.workflowId, count: sql<number>`count(*)` })
-    .from(ticketsTable)
-    .where(eq(ticketsTable.workspaceId, actor.workspaceId))
-    .groupBy(ticketsTable.workflowId)
+  const itemCounts = db
+    .select({ workflowId: workflowItems.workflowId, count: sql<number>`count(*)` })
+    .from(workflowItems)
+    .where(and(eq(workflowItems.workspaceId, actor.workspaceId), isNull(workflowItems.archivedAt)))
+    .groupBy(workflowItems.workflowId)
     .all();
 
   const stateMap = new Map(stateCounts.map((row) => [row.workflowId, row.count]));
-  const ticketMap = new Map(ticketCounts.map((row) => [row.workflowId, row.count]));
+  const itemMap = new Map(itemCounts.map((row) => [row.workflowId, row.count]));
   return rows.map((workflow) => ({
     ...workflow,
     stateCount: stateMap.get(workflow.id) ?? 0,
-    ticketCount: ticketMap.get(workflow.id) ?? 0
+    itemCount: itemMap.get(workflow.id) ?? 0
   }));
 }
 
@@ -317,6 +318,9 @@ export interface CreateWorkflowInput {
   color?: string | null;
   template?: WorkflowTemplate;
   settings?: WorkflowSettings | null;
+  /** Which Object Type this workflow processes (defaults to Ticket). */
+  objectTypeId?: string | null;
+  objectTypeKey?: string | null;
 }
 
 export function createWorkflow(
@@ -354,6 +358,7 @@ export function createWorkflow(
       description: input.description ?? template.description,
       icon: input.icon ?? null,
       color: input.color ?? null,
+      objectTypeId: resolveObjectTypeId(db, actor, input),
       settings: (input.settings as never) ?? null,
       position: (positionRows[0]?.max ?? -1) + 1,
       createdByUserId: actor.actorType === 'user' ? actor.actorId : null,
@@ -444,6 +449,20 @@ function ensureUniqueKey(db: Executor, workspaceId: string, base: string): strin
   throw errors.conflict(`Unable to allocate a unique workflow key for ${base}`);
 }
 
+function resolveObjectTypeId(
+  db: Executor,
+  actor: ActorContext,
+  input: { objectTypeId?: string | null; objectTypeKey?: string | null }
+): string {
+  if (input.objectTypeId) return requireObjectType(db, actor.workspaceId, input.objectTypeId).id;
+  if (input.objectTypeKey) {
+    const found = findObjectTypeByKey(db, actor.workspaceId, input.objectTypeKey);
+    if (!found) throw errors.notFound('Object type', input.objectTypeKey);
+    return found.id;
+  }
+  throw errors.validation('Choose an Object Type for this workflow');
+}
+
 export function updateWorkflow(
   db: Executor,
   actor: ActorContext,
@@ -455,6 +474,7 @@ export function updateWorkflow(
     color?: string | null;
     settings?: WorkflowSettings | null;
     defaultStateId?: string | null;
+    objectTypeId?: string | null;
   }
 ): Workflow {
   assertPermission(actor, Permissions.workflowWrite, 'Not permitted to update workflows');
@@ -462,6 +482,9 @@ export function updateWorkflow(
 
   if (input.defaultStateId) {
     requireState(db, actor.workspaceId, input.defaultStateId);
+  }
+  if (input.objectTypeId) {
+    requireObjectType(db, actor.workspaceId, input.objectTypeId);
   }
   const name = input.name?.trim();
   if (name !== undefined && name.length === 0) {
@@ -475,6 +498,7 @@ export function updateWorkflow(
       description: input.description === undefined ? current.description : input.description,
       icon: input.icon === undefined ? current.icon : input.icon,
       color: input.color === undefined ? current.color : input.color,
+      objectTypeId: input.objectTypeId === undefined ? current.objectTypeId : input.objectTypeId,
       settings:
         input.settings === undefined ? current.settings : ((input.settings as never) ?? null),
       defaultStateId:
@@ -737,14 +761,15 @@ export function deleteState(db: Executor, actor: ActorContext, stateId: string):
 
   const occupants = db
     .select({ count: sql<number>`count(*)` })
-    .from(ticketsTable)
-    .where(and(eq(ticketsTable.workspaceId, actor.workspaceId), eq(ticketsTable.stateId, stateId)))
+    .from(workflowItems)
+    .where(
+      and(eq(workflowItems.workspaceId, actor.workspaceId), eq(workflowItems.stateId, stateId))
+    )
     .all();
   if ((occupants[0]?.count ?? 0) > 0) {
-    throw errors.precondition(
-      'This state still holds tickets. Move them before deleting the state.',
-      { ticketCount: occupants[0]?.count ?? 0 }
-    );
+    throw errors.precondition('This state still holds work. Move it before deleting the state.', {
+      itemCount: occupants[0]?.count ?? 0
+    });
   }
 
   const states = listStates(db, actor.workspaceId, state.workflowId);

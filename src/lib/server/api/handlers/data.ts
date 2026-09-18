@@ -60,10 +60,11 @@ import {
   deleteBlob,
   deleteFile,
   removeWorkflowContext,
-  unlinkFromTicket
+  unlinkFromRecord,
+  unlinkFromWorkflowItem
 } from '../../files/lifecycle';
 import { findFiles, searchFileContent } from '../../files/retrieval';
-import { andOf, combineFilters, type FilterCondition } from '../../filters/ast';
+import { andOf, combineFilters, type FilterCondition, parseFilterAst } from '../../filters/ast';
 import {
   applySavedView,
   createSavedView,
@@ -74,11 +75,10 @@ import {
 import { getJobAttempts, listJobs } from '../../jobs/queue';
 import { createSecret, deleteSecret, listSecrets, rotateSecret } from '../../secrets/service';
 import { deleteStateValue, getStateValue, listState, setStateValue } from '../../state/service';
-import { parseFilterInput } from '../../tickets/query';
 import { mutate, queryBool, queryInt, queryString } from '../helpers';
 import { route } from '../types';
 
-const stateScopeSchema = z.enum(['workspace', 'workflow', 'ticket', 'agent', 'run']);
+const stateScopeSchema = z.enum(['workspace', 'workflow', 'workflowItem', 'agent', 'run']);
 
 export const dataRoutes = [
   // ------------------------------------------------------------------- files
@@ -89,7 +89,7 @@ export const dataRoutes = [
     summary: 'Find files by metadata and typed file fields, expressed as a filter AST',
     handler: async ({ db, actor, query, request }) => {
       const params = new URL(request.url).searchParams;
-      // Metadata shortcuts are translated into the same filter AST the ticket list
+      // Metadata shortcuts are translated into the same filter AST the work list
       // uses, rather than being passed as ad-hoc query fields the retrieval layer
       // would silently ignore (ADR-0012).
       const conditions: FilterCondition[] = [];
@@ -108,12 +108,13 @@ export const dataRoutes = [
       exact('mimeType', 'mimeType');
       exact('status', 'status');
       exact('workflowId', 'workflowId');
-      exact('ticketId', 'ticketId');
+      exact('workflowItemId', 'workflowItemId');
+      exact('recordId', 'recordId');
       exact('sourceType', 'sourceType');
       exact('language', 'language');
       exact('contentHash', 'contentHash');
 
-      const explicit = parseFilterInput(params.get('filter'));
+      const explicit = parseFilterAst(params.get('filter'));
       const filter = combineFilters(explicit, conditions.length > 0 ? andOf(conditions) : null);
 
       return {
@@ -148,8 +149,10 @@ export const dataRoutes = [
         throw errors.validation('Attach a file under the "file" field');
       }
       const bytes = new Uint8Array(await file.arrayBuffer());
-      const ticketId =
-        typeof form.get('ticketId') === 'string' ? String(form.get('ticketId')) : null;
+      const workflowItemId =
+        typeof form.get('workflowItemId') === 'string' ? String(form.get('workflowItemId')) : null;
+      const recordId =
+        typeof form.get('recordId') === 'string' ? String(form.get('recordId')) : null;
       const workflowId =
         typeof form.get('workflowId') === 'string' ? String(form.get('workflowId')) : null;
       const sourceType =
@@ -165,8 +168,9 @@ export const dataRoutes = [
           mimeType: file.type || undefined,
           kind: 'upload',
           workflowId,
-          ticketId,
-          // Ingest links to the ticket inside the same transaction.
+          workflowItemId,
+          recordId,
+          // Ingest links to the work item/record inside the same transaction.
           source: {
             type: sourceType as never,
             label: actor.actorLabel,
@@ -183,7 +187,7 @@ export const dataRoutes = [
     method: 'GET',
     path: '/files/:id',
     permission: Permissions.fileRead,
-    summary: 'File detail with provenance, workflow contexts and linked tickets',
+    summary: 'File detail with provenance, workflow contexts and linked work/records',
     handler: async ({ db, actor, params }) => {
       if (!hasFileService()) throw errors.unsupported('File service is unavailable');
       return { body: { file: await fileService().requireFile(actor, params.id as string, db) } };
@@ -331,14 +335,28 @@ export const dataRoutes = [
     method: 'POST',
     path: '/files/:id/unlink',
     permission: Permissions.fileWrite,
-    summary: 'Unlink a file from a ticket, keeping the file and its other links',
-    body: z.object({ ticketId: z.string() }),
+    summary: 'Unlink a file from a work item or record, keeping the file and its other links',
+    body: z.object({
+      workflowItemId: z.string().optional(),
+      recordId: z.string().optional()
+    }),
     handler: async ({ db, actor, params, body }) => {
-      await unlinkFromTicket(
-        actor,
-        { fileId: params.id as string, ticketId: (body as { ticketId: string }).ticketId },
-        db
-      );
+      const input = body as { workflowItemId?: string; recordId?: string };
+      if (input.workflowItemId) {
+        await unlinkFromWorkflowItem(
+          actor,
+          { fileId: params.id as string, workflowItemId: input.workflowItemId },
+          db
+        );
+      } else if (input.recordId) {
+        await unlinkFromRecord(
+          actor,
+          { fileId: params.id as string, recordId: input.recordId },
+          db
+        );
+      } else {
+        throw errors.validation('Provide workflowItemId or recordId to unlink');
+      }
       return { status: 204 };
     }
   }),
@@ -388,7 +406,8 @@ export const dataRoutes = [
         body: {
           approvals: listApprovals(db, actor, {
             status: status.length > 0 ? (status as never) : ['pending'],
-            ticketId: params.get('ticketId') ?? undefined,
+            workflowItemId: params.get('workflowItemId') ?? undefined,
+            recordId: params.get('recordId') ?? undefined,
             assignedToMe: params.get('mine') === 'true',
             limit: queryInt({ query } as never, 'limit', 100, { min: 1, max: 300 })
           }),
@@ -436,8 +455,7 @@ export const dataRoutes = [
             enqueueApprovalResumeSync(tx, {
               workspaceId: actor.workspaceId,
               approvalId: result.approval.id,
-              runId: result.approval.runId,
-              ticketId: result.approval.ticketId
+              runId: result.approval.runId
             });
           }
           return { approval: result.approval, resumeQueued: result.shouldResume };
@@ -450,14 +468,15 @@ export const dataRoutes = [
   route({
     method: 'GET',
     path: '/views',
-    permission: Permissions.ticketRead,
-    summary: 'Saved views for tickets or files',
+    permission: Permissions.workflowItemRead,
+    summary: 'Saved views for work items or files',
     handler: ({ db, actor, request }) => {
       const scope = new URL(request.url).searchParams.get('scope');
       return {
         body: {
           views: listSavedViews(db, actor, {
-            scope: scope === 'files' ? 'files' : scope === 'tickets' ? 'tickets' : undefined
+            scope:
+              scope === 'files' ? 'files' : scope === 'workflowItems' ? 'workflowItems' : undefined
           })
         }
       };
@@ -467,12 +486,12 @@ export const dataRoutes = [
   route({
     method: 'POST',
     path: '/views',
-    permission: Permissions.ticketRead,
+    permission: Permissions.workflowItemRead,
     summary: 'Create a saved view (serializable filter AST)',
     body: z.object({
       name: z.string().trim().min(1).max(120),
       description: z.string().max(2000).nullish(),
-      scope: z.enum(['tickets', 'files']).optional(),
+      scope: z.enum(['workflowItems', 'files']).optional(),
       workflowId: z.string().nullish(),
       /** Serializable filter AST; `null` means "all items". */
       filter: z.unknown().nullish(),
@@ -500,7 +519,7 @@ export const dataRoutes = [
   route({
     method: 'PATCH',
     path: '/views/:id',
-    permission: Permissions.ticketRead,
+    permission: Permissions.workflowItemRead,
     summary: 'Update a saved view',
     body: z.record(z.string(), z.unknown()),
     handler: async ({ db, actor, params, body }) => ({
@@ -511,7 +530,7 @@ export const dataRoutes = [
   route({
     method: 'DELETE',
     path: '/views/:id',
-    permission: Permissions.ticketRead,
+    permission: Permissions.workflowItemRead,
     summary: 'Delete a saved view',
     handler: async ({ db, actor, params }) => {
       await deleteSavedView(db, actor, params.id as string);
@@ -522,7 +541,7 @@ export const dataRoutes = [
   route({
     method: 'GET',
     path: '/views/:id/apply',
-    permission: Permissions.ticketRead,
+    permission: Permissions.workflowItemRead,
     summary: 'Resolve a saved view into filter, sort and columns',
     handler: ({ db, actor, params }) => ({
       body: applySavedView(db, actor, params.id as string)
@@ -746,9 +765,9 @@ export const dataRoutes = [
 
   route({
     method: 'PATCH',
-    path: '/records/:id',
+    path: '/collections/:id/records/:recordId',
     permission: Permissions.dataWrite,
-    summary: 'Update a record with optimistic concurrency',
+    summary: 'Update a collection record with optimistic concurrency',
     body: z.object({
       data: z.record(z.string(), z.unknown()),
       expectedVersion: z.number().int().optional()
@@ -756,7 +775,7 @@ export const dataRoutes = [
     handler: async ({ db, actor, params, body }) => ({
       body: {
         record: await updateRecord(db, actor, {
-          recordId: params.id as string,
+          recordId: params.recordId as string,
           ...(body as object)
         } as never)
       }
@@ -765,11 +784,11 @@ export const dataRoutes = [
 
   route({
     method: 'DELETE',
-    path: '/records/:id',
+    path: '/collections/:id/records/:recordId',
     permission: Permissions.dataWrite,
-    summary: 'Soft-delete a record',
+    summary: 'Soft-delete a collection record',
     handler: async ({ db, actor, params }) => {
-      await deleteRecord(db, actor, { recordId: params.id as string });
+      await deleteRecord(db, actor, { recordId: params.recordId as string });
       return { status: 204 };
     }
   }),
@@ -787,7 +806,7 @@ export const dataRoutes = [
           entries: listState(db, actor, {
             scope: (url.searchParams.get('scope') as never) ?? 'workspace',
             workflowId: url.searchParams.get('workflowId') ?? undefined,
-            ticketId: url.searchParams.get('ticketId') ?? undefined,
+            workflowItemId: url.searchParams.get('workflowItemId') ?? undefined,
             agentId: url.searchParams.get('agentId') ?? undefined,
             runId: url.searchParams.get('runId') ?? undefined,
             namespace: url.searchParams.get('namespace') ?? undefined,
@@ -811,7 +830,7 @@ export const dataRoutes = [
       value: z.unknown(),
       ttlSeconds: z.number().int().min(1).optional(),
       workflowId: z.string().nullish(),
-      ticketId: z.string().nullish(),
+      workflowItemId: z.string().nullish(),
       agentId: z.string().nullish(),
       runId: z.string().nullish()
     }),
@@ -834,7 +853,7 @@ export const dataRoutes = [
             key: url.searchParams.get('key') as string,
             namespace: url.searchParams.get('namespace') ?? undefined,
             workflowId: url.searchParams.get('workflowId') ?? undefined,
-            ticketId: url.searchParams.get('ticketId') ?? undefined,
+            workflowItemId: url.searchParams.get('workflowItemId') ?? undefined,
             agentId: url.searchParams.get('agentId') ?? undefined,
             runId: url.searchParams.get('runId') ?? undefined
           } as never)
@@ -855,7 +874,7 @@ export const dataRoutes = [
         key: url.searchParams.get('key') as string,
         namespace: url.searchParams.get('namespace') ?? undefined,
         workflowId: url.searchParams.get('workflowId') ?? undefined,
-        ticketId: url.searchParams.get('ticketId') ?? undefined,
+        workflowItemId: url.searchParams.get('workflowItemId') ?? undefined,
         agentId: url.searchParams.get('agentId') ?? undefined,
         runId: url.searchParams.get('runId') ?? undefined
       } as never);
@@ -1107,7 +1126,8 @@ export const dataRoutes = [
             workspaceId: actor.workspaceId,
             status: status.length > 0 ? (status as never) : undefined,
             type: (url.searchParams.get('type') as never) ?? undefined,
-            ticketId: url.searchParams.get('ticketId') ?? undefined,
+            workflowItemId: url.searchParams.get('workflowItemId') ?? undefined,
+            recordId: url.searchParams.get('recordId') ?? undefined,
             runId: url.searchParams.get('runId') ?? undefined,
             limit: queryInt({ query } as never, 'limit', 100, { min: 1, max: 300 })
           })
@@ -1143,7 +1163,8 @@ export const dataRoutes = [
         body: {
           events: await queryAudit(db, {
             workspaceId: actor.workspaceId,
-            ticketId: url.searchParams.get('ticketId') ?? undefined,
+            workflowItemId: url.searchParams.get('workflowItemId') ?? undefined,
+            recordId: url.searchParams.get('recordId') ?? undefined,
             runId: url.searchParams.get('runId') ?? undefined,
             fileId: url.searchParams.get('fileId') ?? undefined,
             entityType: url.searchParams.get('entityType') ?? undefined,

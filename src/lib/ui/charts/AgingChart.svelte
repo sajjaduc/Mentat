@@ -3,8 +3,8 @@
  * AgingChart: time-in-state, stated as history rather than current rows.
  *
  * The whole point of this widget is that current state cannot answer "how long do
- * tickets spend in Human Review". Every number here comes from
- * `ticket_state_history` intervals — including an open interval, which is measured
+ * work items spend in Human Review". Every number here comes from
+ * `workflow_item_state_history` intervals — including an open interval, which is measured
  * against now so in-progress work is counted rather than dropped.
  *
  * `GET /api/dashboards/:id/run` returns the **median** dwell time per state and
@@ -34,7 +34,7 @@ let hover = $state<number | null>(null);
   <div class="flex flex-wrap items-center gap-2">
     <Badge tone="neutral">From recorded history</Badge>
     <span class="text-[11px] text-[var(--color-ink-subtle)]">
-      Intervals from <code class="font-mono">ticket_state_history</code>, not current ticket rows
+      Intervals from <code class="font-mono">workflow_item_state_history</code>, not current work item rows
     </span>
   </div>
 

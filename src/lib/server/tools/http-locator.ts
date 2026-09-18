@@ -16,7 +16,8 @@ export interface HttpToolInvocation {
   serviceId?: string | null;
   input: Record<string, unknown>;
   actor: ActorContext;
-  ticketId?: string | null;
+  recordId?: string | null;
+  workflowItemId?: string | null;
   workflowId?: string | null;
   runId?: string | null;
   stepId?: string | null;

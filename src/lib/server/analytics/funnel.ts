@@ -5,30 +5,32 @@
  * Kanban column order, because workflows branch (ADR-0017). Each milestone may
  * select states, a field value, or both:
  *
- *  - `stateIds` — the ticket reached any of those states (earliest entry wins);
- *  - `fieldKey`/`fieldValue` — the ticket's value history shows that value;
+ *  - `stateIds` — the item reached any of those states (earliest entry wins);
+ *  - `fieldKey`/`fieldValue` — the item's value history (Record base or workflow
+ *    overlay) shows that value;
  *  - both — both must hold, and the milestone is reached at the later of the two.
  *
- * Everything is derived from `ticket_state_history` and `field_value_history`,
- * so "how many entered Claims last month" is answerable. Stage counts are
- * cumulative by construction: every stage independently asks "did this ticket
- * ever reach here inside the window". A ticket that skipped a stage therefore
- * counts in the later stage and is never counted twice. Inter-stage times are
- * differences of *recorded* entry timestamps for tickets that reached both
- * stages (a skipped stage contributes no delta).
+ * Everything is derived from `workflow_item_state_history` and
+ * `field_value_history`, so "how many entered Claims last month" is answerable.
+ * Stage counts are cumulative by construction: every stage independently asks
+ * "did this item ever reach here inside the window". An item that skipped a stage
+ * therefore counts in the later stage and is never counted twice. Inter-stage
+ * times are differences of *recorded* entry timestamps for items that reached
+ * both stages (a skipped stage contributes no delta).
  */
 import { type SQL, sql } from 'drizzle-orm';
 import type { Executor } from '../db/client';
 import {
   fieldDefinitions,
   fieldValueHistory,
-  ticketStateHistory,
-  tickets,
+  records,
   type WidgetDataSource,
-  type WidgetTimeRange
+  type WidgetTimeRange,
+  workflowItemStateHistory,
+  workflowItems
 } from '../db/schema';
 import type { FilterAst } from '../filters/ast';
-import { compileTicketFilterDetailed } from '../filters/compile';
+import { compileWorkflowItemFilterDetailed } from '../filters/compile';
 import { resolveTimeWindow } from './series';
 import { meanOf, medianOf } from './stats';
 
@@ -68,7 +70,7 @@ export interface FunnelResult {
 }
 
 interface StageEntry {
-  ticketId: string;
+  itemId: string;
   enteredAt: number;
 }
 
@@ -91,16 +93,16 @@ async function resolveFieldId(
     .select({ id: fieldDefinitions.id })
     .from(fieldDefinitions)
     .where(
-      sql`${fieldDefinitions.workspaceId} = ${workspaceId} AND ${fieldDefinitions.scope} = 'ticket' AND (${fieldDefinitions.key} = ${key} OR ${fieldDefinitions.id} = ${key})`
+      sql`${fieldDefinitions.workspaceId} = ${workspaceId} AND ${fieldDefinitions.scope} <> 'file' AND (${fieldDefinitions.key} = ${key} OR ${fieldDefinitions.id} = ${key})`
     )
     .all();
   return rows[0]?.id ?? null;
 }
 
 /**
- * Per-ticket earliest entry for one milestone. Returns one row per candidate
- * ticket; tickets that never satisfy the milestone are filtered out in SQL by
- * the `NOT NULL` guard on the entry subqueries.
+ * Per-item earliest entry for one milestone. Returns one row per candidate
+ * workflow item; items that never satisfy the milestone are filtered out in SQL
+ * by the `NOT NULL` guard on the entry subqueries.
  */
 async function stageEntries(
   db: Executor,
@@ -121,7 +123,7 @@ async function stageEntries(
   const stateWindow: SQL[] = [];
   if (window.from !== null) stateWindow.push(sql`hs.entered_at >= ${window.from}`);
   if (window.to !== null) stateWindow.push(sql`hs.entered_at <= ${window.to}`);
-  const stateEntry = sql`(SELECT MIN(hs.entered_at) FROM ${ticketStateHistory} hs WHERE hs.ticket_id = ${tickets.id} AND hs.workspace_id = ${workspaceId}${stateClause}${stateWindow.length > 0 ? sql` AND ${sql.join(stateWindow, sql` AND `)}` : sql``})`;
+  const stateEntry = sql`(SELECT MIN(hs.entered_at) FROM ${workflowItemStateHistory} hs WHERE hs.workflow_item_id = ${workflowItems.id} AND hs.workspace_id = ${workspaceId}${stateClause}${stateWindow.length > 0 ? sql` AND ${sql.join(stateWindow, sql` AND `)}` : sql``})`;
 
   let fieldEntry: SQL | null = null;
   if (stage.fieldKey) {
@@ -139,7 +141,10 @@ async function stageEntries(
           sql`, `
         )}))`
       : sql`json_extract(fv.new_value, '$') = ${serializeFieldValue(stage.fieldValue)}`;
-    fieldEntry = sql`(SELECT MIN(fv.created_at) FROM ${fieldValueHistory} fv WHERE fv.owner_type = 'ticket' AND fv.owner_id = ${tickets.id} AND fv.workspace_id = ${workspaceId} AND fv.field_definition_id = ${fieldId} AND ${valueClause}${fieldWindow.length > 0 ? sql` AND ${sql.join(fieldWindow, sql` AND `)}` : sql``})`;
+    // A value may be recorded on the Record (base) or on the participation
+    // (overlay); the earliest of the two is when the milestone was reached.
+    const ownerClause = sql`((fv.owner_type = 'workflow_item' AND fv.owner_id = ${workflowItems.id}) OR (fv.owner_type = 'record' AND fv.owner_id = ${workflowItems.recordId}))`;
+    fieldEntry = sql`(SELECT MIN(fv.created_at) FROM ${fieldValueHistory} fv WHERE ${ownerClause} AND fv.workspace_id = ${workspaceId} AND fv.field_definition_id = ${fieldId} AND ${valueClause}${fieldWindow.length > 0 ? sql` AND ${sql.join(fieldWindow, sql` AND `)}` : sql``})`;
   }
 
   const hasStates = stateIds.length > 0;
@@ -149,11 +154,11 @@ async function stageEntries(
   const where = sql.join(conditions, sql` AND `);
 
   const rows = await db.all<{
-    ticket_id: string;
+    item_id: string;
     state_entry: number | null;
     field_entry: number | null;
   }>(
-    sql`SELECT ${tickets.id} AS ticket_id, ${stateEntry} AS state_entry, ${fieldEntry ?? sql`NULL`} AS field_entry FROM ${tickets} WHERE ${where}`
+    sql`SELECT ${workflowItems.id} AS item_id, ${stateEntry} AS state_entry, ${fieldEntry ?? sql`NULL`} AS field_entry FROM ${workflowItems} JOIN ${records} ON ${records.id} = ${workflowItems.recordId} WHERE ${where}`
   );
 
   const entries: StageEntry[] = [];
@@ -163,7 +168,7 @@ async function stageEntries(
     if (fieldEntry && row.field_entry !== null) candidates.push(Number(row.field_entry));
     if (candidates.length === 0) continue;
     const enteredAt = candidates.length === 1 ? (candidates[0] as number) : Math.max(...candidates);
-    entries.push({ ticketId: row.ticket_id, enteredAt });
+    entries.push({ itemId: row.item_id, enteredAt });
   }
   return entries;
 }
@@ -171,7 +176,7 @@ async function stageEntries(
 /**
  * Run a funnel. Returns per-stage counts, conversions and inter-stage times.
  * The time window is applied to *milestone entry* timestamps, and the filter is
- * the shared ticket filter AST (field filters included).
+ * the shared workflow-item filter AST (field filters included).
  */
 export async function runFunnel(db: Executor, options: RunFunnelOptions): Promise<FunnelResult> {
   const stages = options.definition.funnelStages ?? [];
@@ -179,16 +184,19 @@ export async function runFunnel(db: Executor, options: RunFunnelOptions): Promis
     return { stages: [], overallConversion: null, empty: true };
   }
 
-  const compiled = await compileTicketFilterDetailed(db, {
+  const compiled = await compileWorkflowItemFilterDetailed(db, {
     workspaceId: options.workspaceId,
     filter: options.filter ?? null,
     now: options.now
   });
-  const conditions: SQL[] = [sql`${tickets.workspaceId} = ${options.workspaceId}`, compiled.sql];
+  const conditions: SQL[] = [
+    sql`${workflowItems.workspaceId} = ${options.workspaceId}`,
+    compiled.sql
+  ];
   const workflowIds = options.definition.workflowIds ?? [];
   if (workflowIds.length > 0) {
     conditions.push(
-      sql`${tickets.workflowId} IN (${sql.join(
+      sql`${workflowItems.workflowId} IN (${sql.join(
         workflowIds.map((id) => sql`${id}`),
         sql`, `
       )})`
@@ -201,9 +209,9 @@ export async function runFunnel(db: Executor, options: RunFunnelOptions): Promis
     const entries = await stageEntries(db, options, stage, scopeWhere);
     const map = new Map<string, number>();
     for (const entry of entries) {
-      const existing = map.get(entry.ticketId);
+      const existing = map.get(entry.itemId);
       if (existing === undefined || entry.enteredAt < existing) {
-        map.set(entry.ticketId, entry.enteredAt);
+        map.set(entry.itemId, entry.enteredAt);
       }
     }
     perStage.push(map);
@@ -215,8 +223,8 @@ export async function runFunnel(db: Executor, options: RunFunnelOptions): Promis
     const current = perStage[index]!;
     const deltas: number[] = [];
     if (previous) {
-      for (const [ticketId, enteredAt] of current) {
-        const previousEntry = previous.get(ticketId);
+      for (const [itemId, enteredAt] of current) {
+        const previousEntry = previous.get(itemId);
         if (previousEntry !== undefined) deltas.push((enteredAt - previousEntry) / 1000);
       }
     }

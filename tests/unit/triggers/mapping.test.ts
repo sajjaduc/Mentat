@@ -1,26 +1,76 @@
 /**
  * Mapping templates and dot-paths.
  *
- * The mapping is data-driven, so these tests pin the contract: templates read
+ * ADR-0021 removed the Ticket primitive: mapping now routes work through the real
+ * records + workflow-items services. These tests therefore run against a real
+ * in-memory database with an Object Type and workflow, and assert on the persisted
+ * `records` / `workflow_items` / field values rather than a recording stand-in.
+ *
+ * The mapping contract itself is unchanged and remains data-driven: templates read
  * exactly the paths they name, missing required inputs fail loudly instead of
- * producing blank tickets, and attachments carry provenance into the file store.
+ * producing blank work, and attachments carry provenance into the file store.
  */
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { eq } from 'drizzle-orm';
+import { systemActor } from '../../../src/lib/server/core/context';
 import { isAppError } from '../../../src/lib/server/core/errors';
-import type { Executor } from '../../../src/lib/server/db/client';
-import type { Trigger } from '../../../src/lib/server/db/schema';
-import { applyTriggerMapping } from '../../../src/lib/server/triggers/mapping';
-import { createFakeFileService, createFakeTicketService } from '../../helpers/factories';
+import {
+  labels,
+  recordExternalIds,
+  records,
+  type Trigger,
+  workflowItemLabels,
+  workflowItemRelationships,
+  workflowItems
+} from '../../../src/lib/server/db/schema';
+import {
+  applyTriggerMapping,
+  TRIGGER_EXTERNAL_SYSTEM
+} from '../../../src/lib/server/triggers/mapping';
+import { getWorkflowItemDetail } from '../../../src/lib/server/workflow-items/service';
+import { createTestDatabase, type TestDatabase } from '../../helpers/db';
+import {
+  createFakeFileService,
+  createObjectType,
+  createTeam,
+  createUser,
+  createWorkflow,
+  createWorkflowItem,
+  createWorkspace,
+  type WorkflowFixture
+} from '../../helpers/factories';
 
-// Mapping never touches the database itself; it delegates through the service
-// locators. A stand-in executor keeps these tests pure.
-const noDb = {} as unknown as Executor;
+let handle: TestDatabase;
+let workspaceId: string;
+let workflow: WorkflowFixture;
+
+beforeEach(async () => {
+  handle = createTestDatabase();
+  const workspace = await createWorkspace(handle.db, 'Mapping unit');
+  workspaceId = workspace.id;
+  const objectType = await createObjectType(handle.db, {
+    workspaceId,
+    name: 'Order',
+    fields: [
+      { key: 'orderId', type: 'short_text' },
+      { key: 'firstTag', type: 'short_text' },
+      { key: 'summary', type: 'short_text' },
+      { key: 'status', type: 'short_text' },
+      { key: 'externalId', type: 'short_text' }
+    ]
+  });
+  workflow = await createWorkflow(handle.db, workspaceId, { objectTypeId: objectType.id });
+});
+
+afterEach(() => {
+  handle.cleanup();
+});
 
 function makeTrigger(overrides: Partial<Trigger> = {}): Trigger {
   return {
     id: 'trigger-1',
-    workspaceId: 'ws-1',
-    workflowId: 'wf-1',
+    workspaceId,
+    workflowId: workflow.id,
     name: 'Intake',
     description: null,
     type: 'webhook',
@@ -41,10 +91,21 @@ function makeTrigger(overrides: Partial<Trigger> = {}): Trigger {
   };
 }
 
+function recordRow(id: string) {
+  return handle.db.select().from(records).where(eq(records.id, id)).all()[0];
+}
+
+function itemRow(id: string) {
+  return handle.db.select().from(workflowItems).where(eq(workflowItems.id, id)).all()[0];
+}
+
+function itemFieldValues(workflowItemId: string) {
+  return getWorkflowItemDetail(handle.db, systemActor(workspaceId), workflowItemId);
+}
+
 describe('triggers/mapping title and description', () => {
   test('renders templates from nested dot-paths', async () => {
-    const tickets = createFakeTicketService();
-    const result = await applyTriggerMapping(noDb, {
+    const result = await applyTriggerMapping(handle.db, {
       trigger: makeTrigger({
         config: {
           mapping: {
@@ -56,46 +117,41 @@ describe('triggers/mapping title and description', () => {
       payload: {
         data: { id: 42 },
         customer: { name: 'Ada', email: 'ada@example.test' }
-      },
-      ticketService: tickets.service
+      }
     });
 
-    expect(result.ticketId).toBeTruthy();
-    expect(tickets.createCalls).toHaveLength(1);
-    expect(tickets.createCalls[0]?.title).toBe('Order 42 for Ada');
-    expect(tickets.createCalls[0]?.description).toBe('Raised by ada@example.test');
-    expect(result.workflowId).toBe('wf-1');
+    const record = recordRow(result.recordId);
+    expect(record?.displayName).toBe('Order 42 for Ada');
+    expect((record?.structuredData as Record<string, unknown>)?.description).toBe(
+      'Raised by ada@example.test'
+    );
+    expect(result.workflowId).toBe(workflow.id);
+    expect(result.upserted).toBe(false);
   });
 
   test('reads a plain dot-path title', async () => {
-    const tickets = createFakeTicketService();
-    await applyTriggerMapping(noDb, {
+    const result = await applyTriggerMapping(handle.db, {
       trigger: makeTrigger({ config: { mapping: { titlePath: 'subject' } } }),
-      payload: { subject: 'Broken printer' },
-      ticketService: tickets.service
+      payload: { subject: 'Broken printer' }
     });
-    expect(tickets.createCalls[0]?.title).toBe('Broken printer');
+    expect(recordRow(result.recordId)?.displayName).toBe('Broken printer');
   });
 
   test('falls back to the trigger name when no title is configured', async () => {
-    const tickets = createFakeTicketService();
-    await applyTriggerMapping(noDb, {
+    const result = await applyTriggerMapping(handle.db, {
       trigger: makeTrigger({ name: 'Nightly import', config: { mapping: {} } }),
-      payload: {},
-      ticketService: tickets.service
+      payload: {}
     });
-    expect(tickets.createCalls[0]?.title).toBe('Nightly import');
+    expect(recordRow(result.recordId)?.displayName).toBe('Nightly import');
   });
 
   test('fails with a validation error when a template input is missing', async () => {
-    const tickets = createFakeTicketService();
     try {
-      await applyTriggerMapping(noDb, {
+      await applyTriggerMapping(handle.db, {
         trigger: makeTrigger({
           config: { mapping: { titleTemplate: 'Order {{data.missing}}' } }
         }),
-        payload: { data: {} },
-        ticketService: tickets.service
+        payload: { data: {} }
       });
       throw new Error('expected mapping to throw');
     } catch (error) {
@@ -105,16 +161,15 @@ describe('triggers/mapping title and description', () => {
         expect(error.details).toMatchObject({ missing: ['data.missing'] });
       }
     }
-    expect(tickets.createCalls).toHaveLength(0);
+    expect(handle.db.select().from(records).all()).toHaveLength(0);
+    expect(handle.db.select().from(workflowItems).all()).toHaveLength(0);
   });
 
   test('fails when a required title path resolves to nothing', async () => {
-    const tickets = createFakeTicketService();
     await expect(
-      applyTriggerMapping(noDb, {
+      applyTriggerMapping(handle.db, {
         trigger: makeTrigger({ config: { mapping: { titlePath: 'data.subject' } } }),
-        payload: { data: {} },
-        ticketService: tickets.service
+        payload: { data: {} }
       })
     ).rejects.toMatchObject({ code: 'validation_failed' });
   });
@@ -122,8 +177,7 @@ describe('triggers/mapping title and description', () => {
 
 describe('triggers/mapping fields, priority, ownership and labels', () => {
   test('sets typed fields from dot-paths and templates', async () => {
-    const tickets = createFakeTicketService();
-    const result = await applyTriggerMapping(noDb, {
+    const result = await applyTriggerMapping(handle.db, {
       trigger: makeTrigger({
         config: {
           mapping: {
@@ -133,11 +187,11 @@ describe('triggers/mapping fields, priority, ownership and labels', () => {
           }
         }
       }),
-      payload: { data: { id: 7, order: { id: 'ORD-9' } }, tags: ['alpha', 'beta'] },
-      ticketService: tickets.service
+      payload: { data: { id: 7, order: { id: 'ORD-9' } }, tags: ['alpha', 'beta'] }
     });
 
-    expect(tickets.createCalls[0]?.fields).toEqual({
+    const detail = await itemFieldValues(result.workflowItemId);
+    expect(detail.fields).toEqual({
       orderId: 'ORD-9',
       firstTag: 'alpha',
       summary: 'Order ORD-9 (7)'
@@ -146,95 +200,114 @@ describe('triggers/mapping fields, priority, ownership and labels', () => {
   });
 
   test('skips a field path that is absent rather than writing null', async () => {
-    const tickets = createFakeTicketService();
-    await applyTriggerMapping(noDb, {
+    const result = await applyTriggerMapping(handle.db, {
       trigger: makeTrigger({
-        config: { mapping: { titlePath: 'subject', fieldPaths: { missing: 'data.nope' } } }
+        config: { mapping: { titlePath: 'subject', fieldPaths: { status: 'data.nope' } } }
       }),
-      payload: { subject: 'x' },
-      ticketService: tickets.service
+      payload: { subject: 'x' }
     });
-    expect(tickets.createCalls[0]?.fields).toEqual({});
+    const fields = (await itemFieldValues(result.workflowItemId)).fields;
+    expect(fields.status).toBeUndefined();
+    expect(result.fieldKeysSet).not.toContain('status');
   });
 
   test('maps priority, owner, team and labels', async () => {
-    const tickets = createFakeTicketService();
-    const result = await applyTriggerMapping(noDb, {
+    const owner = await createUser(handle.db, { name: 'Owner' });
+    const teamId = await createTeam(handle.db, workspaceId, 'Triage');
+    const result = await applyTriggerMapping(handle.db, {
       trigger: makeTrigger({
         config: {
           mapping: {
             titlePath: 'subject',
             priorityPath: 'priority',
-            ownerUserId: 'user-1',
-            ownerTeamId: 'team-1',
+            ownerUserId: owner.id,
+            ownerTeamId: teamId,
             labels: ['vip', 'urgent']
           }
         }
       }),
-      payload: { subject: 'Escalation', priority: 'HIGH' },
-      ticketService: tickets.service
+      payload: { subject: 'Escalation', priority: 'HIGH' }
     });
 
-    expect(tickets.createCalls[0]?.priority).toBe('high');
-    expect(tickets.createCalls[0]?.ownerUserId).toBe('user-1');
-    expect(tickets.createCalls[0]?.ownerTeamId).toBe('team-1');
-    expect(tickets.createCalls[0]?.labelNames).toEqual(['vip', 'urgent']);
-    expect(result.stateId).toBe('state-default');
+    const item = itemRow(result.workflowItemId);
+    expect((item?.structuredData as Record<string, unknown>)?.priority).toBe('high');
+    expect(item?.ownerUserId).toBe(owner.id);
+    expect(item?.ownerTeamId).toBe(teamId);
+
+    const applied = handle.db
+      .select({ name: labels.name })
+      .from(workflowItemLabels)
+      .innerJoin(labels, eq(labels.id, workflowItemLabels.labelId))
+      .where(eq(workflowItemLabels.workflowItemId, result.workflowItemId))
+      .all()
+      .map((row) => row.name)
+      .sort();
+    expect(applied).toEqual(['urgent', 'vip']);
+    expect(result.stateId).toBe(workflow.states[0]!);
   });
 
   test('rejects an unknown priority value', async () => {
-    const tickets = createFakeTicketService();
     await expect(
-      applyTriggerMapping(noDb, {
+      applyTriggerMapping(handle.db, {
         trigger: makeTrigger({
           config: { mapping: { titlePath: 'subject', priorityPath: 'priority' } }
         }),
-        payload: { subject: 'x', priority: 'whenever' },
-        ticketService: tickets.service
+        payload: { subject: 'x', priority: 'whenever' }
       })
     ).rejects.toMatchObject({ code: 'validation_failed' });
   });
 
   test('honours target workflow and state overrides', async () => {
-    const tickets = createFakeTicketService();
-    const result = await applyTriggerMapping(noDb, {
+    const otherObjectType = await createObjectType(handle.db, {
+      workspaceId,
+      name: 'Routing'
+    });
+    const otherWorkflow = await createWorkflow(handle.db, workspaceId, {
+      name: 'Routing workflow',
+      objectTypeId: otherObjectType.id
+    });
+    const result = await applyTriggerMapping(handle.db, {
       trigger: makeTrigger({
-        targetStateId: 'state-from-trigger',
+        targetStateId: workflow.states[1],
         config: {
           mapping: {
             titlePath: 'subject',
-            targetWorkflowId: 'wf-2',
-            targetStateId: 'state-from-mapping'
+            targetWorkflowId: otherWorkflow.id,
+            targetStateId: otherWorkflow.states[1]
           }
         }
       }),
-      payload: { subject: 'Routed' },
-      ticketService: tickets.service
+      payload: { subject: 'Routed' }
     });
-    expect(tickets.createCalls[0]?.workflowId).toBe('wf-2');
-    expect(tickets.createCalls[0]?.stateId).toBe('state-from-mapping');
-    expect(result.workflowId).toBe('wf-2');
+    expect(itemRow(result.workflowItemId)?.workflowId).toBe(otherWorkflow.id);
+    expect(result.workflowId).toBe(otherWorkflow.id);
+    expect(result.stateId).toBe(otherWorkflow.states[1]!);
   });
 });
 
 describe('triggers/mapping dedupe and parent links', () => {
-  test('computes a dedupe key from a template', async () => {
-    const tickets = createFakeTicketService();
-    const result = await applyTriggerMapping(noDb, {
+  test('computes a dedupe key from a template and records the external id', async () => {
+    const result = await applyTriggerMapping(handle.db, {
       trigger: makeTrigger({
         config: {
           mapping: { titlePath: 'subject', dedupeTemplate: 'ext-{{data.id}}' }
         }
       }),
-      payload: { subject: 'x', data: { id: 42 } },
-      ticketService: tickets.service
+      payload: { subject: 'x', data: { id: 42 } }
     });
     expect(result.dedupeKey).toBe('ext-42');
-    expect(tickets.createCalls[0]?.dedupeKey).toBe('ext-42');
+    const external = handle.db
+      .select()
+      .from(recordExternalIds)
+      .where(eq(recordExternalIds.externalId, 'ext-42'))
+      .all()[0];
+    expect(external).toMatchObject({
+      recordId: result.recordId,
+      system: TRIGGER_EXTERNAL_SYSTEM
+    });
   });
 
-  test('upsertOnDedupe refreshes the existing ticket instead of duplicating', async () => {
-    const tickets = createFakeTicketService();
+  test('upsertOnDedupe refreshes the existing work instead of duplicating', async () => {
     const trigger = makeTrigger({
       upsertOnDedupe: true,
       config: {
@@ -245,63 +318,72 @@ describe('triggers/mapping dedupe and parent links', () => {
         }
       }
     });
-    const first = await applyTriggerMapping(noDb, {
+    const first = await applyTriggerMapping(handle.db, {
       trigger,
-      payload: { subject: 'first', status: 'open', data: { id: 42 } },
-      ticketService: tickets.service
+      payload: { subject: 'first', status: 'open', data: { id: 42 } }
     });
-    const second = await applyTriggerMapping(noDb, {
+    const second = await applyTriggerMapping(handle.db, {
       trigger,
-      payload: { subject: 'second', status: 'closed', data: { id: 42 } },
-      ticketService: tickets.service
+      payload: { subject: 'second', status: 'closed', data: { id: 42 } }
     });
 
-    expect(first.ticketId).toBe(second.ticketId);
-    expect(tickets.tickets()).toHaveLength(1);
-    expect(tickets.createCalls).toHaveLength(2);
-    // `create` does not report whether it reused the dedupe match, so an upsert
-    // re-applies the mapped fields on every delivery; the latest payload wins and
-    // the ticket is never duplicated.
-    expect(tickets.fieldCalls).toHaveLength(2);
-    expect(tickets.fieldCalls[1]).toMatchObject({
-      ticketId: first.ticketId,
-      values: { status: 'closed' }
-    });
+    expect(first.upserted).toBe(false);
     expect(second.upserted).toBe(true);
+    expect(second.recordId).toBe(first.recordId);
+    expect(second.workflowItemId).toBe(first.workflowItemId);
+    expect(handle.db.select().from(records).all()).toHaveLength(1);
+    expect(handle.db.select().from(workflowItems).all()).toHaveLength(1);
+    // The latest payload wins on the mapped field; work is never duplicated.
+    expect((await itemFieldValues(second.workflowItemId)).fields.status).toBe('closed');
   });
 
-  test('links the new ticket to a parent referenced by the payload', async () => {
-    const tickets = createFakeTicketService();
-    await applyTriggerMapping(noDb, {
+  test('links the new work item to a parent referenced by the payload', async () => {
+    const parent = await createWorkflowItem(handle.db, { workspaceId, workflow });
+    const result = await applyTriggerMapping(handle.db, {
       trigger: makeTrigger({
-        config: { mapping: { titlePath: 'subject', parentTicketPath: 'parentTicketId' } }
+        config: { mapping: { titlePath: 'subject', parentRecordPath: 'parentRecordId' } }
       }),
-      payload: { subject: 'Sub-task', parentTicketId: 'parent-123' },
-      ticketService: tickets.service
+      payload: { subject: 'Sub-task', parentRecordId: parent.recordId }
     });
-    expect(tickets.createCalls[0]?.parentTicketId).toBe('parent-123');
+    const relationship = handle.db
+      .select()
+      .from(workflowItemRelationships)
+      .where(eq(workflowItemRelationships.fromWorkflowItemId, result.workflowItemId))
+      .all()[0];
+    expect(relationship).toMatchObject({
+      toWorkflowItemId: parent.id,
+      type: 'parent'
+    });
   });
 
-  test('fails when parentTicketPath does not resolve to a ticket id', async () => {
-    const tickets = createFakeTicketService();
+  test('fails when parentRecordPath does not resolve to a record id', async () => {
     await expect(
-      applyTriggerMapping(noDb, {
+      applyTriggerMapping(handle.db, {
         trigger: makeTrigger({
-          config: { mapping: { titlePath: 'subject', parentTicketPath: 'parentTicketId' } }
+          config: { mapping: { titlePath: 'subject', parentRecordPath: 'parentRecordId' } }
         }),
-        payload: { subject: 'Sub-task' },
-        ticketService: tickets.service
+        payload: { subject: 'Sub-task' }
+      })
+    ).rejects.toMatchObject({ code: 'validation_failed' });
+  });
+
+  test('fails when parentRecordPath names an unknown record', async () => {
+    await expect(
+      applyTriggerMapping(handle.db, {
+        trigger: makeTrigger({
+          config: { mapping: { titlePath: 'subject', parentRecordPath: 'parentRecordId' } }
+        }),
+        payload: { subject: 'Sub-task', parentRecordId: 'record-missing' }
       })
     ).rejects.toMatchObject({ code: 'validation_failed' });
   });
 });
 
 describe('triggers/mapping attachments', () => {
-  test('ingests attachments with source provenance and a ticket link', async () => {
-    const tickets = createFakeTicketService();
+  test('ingests attachments with source provenance and links to record and work item', async () => {
     const files = createFakeFileService();
     const content = Buffer.from('invoice-bytes').toString('base64');
-    const result = await applyTriggerMapping(noDb, {
+    const result = await applyTriggerMapping(handle.db, {
       trigger: makeTrigger({
         config: { mapping: { titlePath: 'subject', attachmentPaths: ['attachments'] } }
       }),
@@ -312,7 +394,6 @@ describe('triggers/mapping attachments', () => {
           { filename: 'note.txt', content: 'hello', mimeType: 'text/plain' }
         ]
       },
-      ticketService: tickets.service,
       fileService: files.service,
       sourceType: 'incoming_email',
       reference: 'message-1',
@@ -325,7 +406,8 @@ describe('triggers/mapping attachments', () => {
     expect(first?.source.type).toBe('incoming_email');
     expect(first?.source.reference).toBe('message-1');
     expect(first?.source.triggerEventId).toBe('event-1');
-    expect(first?.ticketId).toBe(result.ticketId);
+    expect(first?.workflowItemId).toBe(result.workflowItemId);
+    expect(first?.recordId).toBe(result.recordId);
     expect(first?.relationship).toBe('attachment');
     expect(first?.filename).toBe('invoice.pdf');
     expect(new TextDecoder().decode(first?.bytes)).toBe('invoice-bytes');
@@ -333,15 +415,13 @@ describe('triggers/mapping attachments', () => {
   });
 
   test('rejects an attachment path that resolves to nothing', async () => {
-    const tickets = createFakeTicketService();
     const files = createFakeFileService();
     await expect(
-      applyTriggerMapping(noDb, {
+      applyTriggerMapping(handle.db, {
         trigger: makeTrigger({
           config: { mapping: { titlePath: 'subject', attachmentPaths: ['attachments'] } }
         }),
         payload: { subject: 'x' },
-        ticketService: tickets.service,
         fileService: files.service
       })
     ).rejects.toMatchObject({ code: 'validation_failed' });

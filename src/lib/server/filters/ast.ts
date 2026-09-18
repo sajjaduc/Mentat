@@ -2,9 +2,9 @@
  * Structured filter AST.
  *
  * There is exactly one filtering language in Mentat: the serializable AST defined
- * here. Ticket lists, file lists, saved views and dashboard widgets all compile
- * through the same evaluator, so a saved view and a widget can never disagree
- * about what "Open claims" means (ADR-0012).
+ * here. Workflow-item lists, file lists, saved views and dashboard widgets all
+ * compile through the same evaluator, so a saved view and a widget can never
+ * disagree about what "Open claims" means (ADR-0012).
  *
  * The AST is also the seam for a future textual query language: a parser can emit
  * this structure without touching storage code.
@@ -53,7 +53,10 @@ export const filterFieldKindSchema = z.enum([
   'run',
   'approval',
   'file',
-  'collection'
+  'collection',
+  // Universal-model kinds (ADR-0021): record base fields and domain relationships.
+  'record_field',
+  'relationship'
 ]);
 export type FilterFieldKind = z.infer<typeof filterFieldKindSchema>;
 
@@ -86,13 +89,26 @@ export type FilterNode = FilterGroup | FilterCondition;
 export const filterAstSchema = z.union([filterGroupSchema, filterConditionSchema]);
 export type FilterAst = FilterNode;
 
-/** System field keys that are valid in a `system` condition. */
-export const TicketSystemFields = {
+/** System field keys that are valid in a `system` condition.
+ *
+ * Keys split into two sources: Record facts (`key`, `title`/`displayName`,
+ * `number`, `objectTypeId`, record timestamps) and WorkflowItem process facts
+ * (`stateId`, `workflowId`, owner, state timestamps, run/approval status). The
+ * compiler resolves each key against the matching table (ADR-0021).
+ */
+export const WorkflowItemSystemFields = {
+  // Record-level facts.
   key: 'key',
   number: 'number',
   title: 'title',
+  displayName: 'displayName',
   description: 'description',
   priority: 'priority',
+  objectTypeId: 'objectTypeId',
+  recordId: 'recordId',
+  recordCreatedAt: 'recordCreatedAt',
+  recordUpdatedAt: 'recordUpdatedAt',
+  // WorkflowItem-level process facts.
   stateId: 'stateId',
   stateName: 'stateName',
   stateKind: 'stateKind',
@@ -107,15 +123,18 @@ export const TicketSystemFields = {
   lastActivityAt: 'lastActivityAt',
   dueAt: 'dueAt',
   closedAt: 'closedAt',
+  completedAt: 'completedAt',
   waitingOn: 'waitingOn',
   timeInStateSeconds: 'timeInStateSeconds',
   runStatus: 'runStatus',
   approvalStatus: 'approvalStatus',
   sourceType: 'sourceType',
-  originTicketId: 'originTicketId',
-  stateRunCount: 'stateRunCount'
+  originWorkflowItemId: 'originWorkflowItemId',
+  stateRunCount: 'stateRunCount',
+  participation: 'participation'
 } as const;
-export type TicketSystemField = (typeof TicketSystemFields)[keyof typeof TicketSystemFields];
+export type WorkflowItemSystemField =
+  (typeof WorkflowItemSystemFields)[keyof typeof WorkflowItemSystemFields];
 
 export const FileSystemFields = {
   filename: 'filename',
@@ -128,7 +147,8 @@ export const FileSystemFields = {
   updatedAt: 'updatedAt',
   sourceType: 'sourceType',
   workflowId: 'workflowId',
-  ticketId: 'ticketId',
+  workflowItemId: 'workflowItemId',
+  recordId: 'recordId',
   contentHash: 'contentHash',
   contextLabel: 'contextLabel',
   pageCount: 'pageCount',
@@ -190,7 +210,9 @@ export function collectFieldKeys(node: FilterNode | null, out = new Set<string>(
     for (const child of node.children) collectFieldKeys(child, out);
     return out;
   }
-  if (node.kind === 'field' || node.kind === 'file_field') out.add(node.key);
+  if (node.kind === 'field' || node.kind === 'file_field' || node.kind === 'record_field') {
+    out.add(node.key);
+  }
   return out;
 }
 

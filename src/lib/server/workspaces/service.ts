@@ -596,14 +596,26 @@ export function setTeamMembers(
 }
 
 /**
- * First-run bootstrap: give a brand-new installation a workspace so a fresh clone
- * is usable immediately. Returns null when any workspace already exists.
+ * Give an account somewhere to work.
+ *
+ * Returns the workspace the user already belongs to, or creates a personal
+ * workspace they own. Provisioning is deliberately per-account rather than
+ * per-installation: on an instance that already has workspaces (the seeded demo, a
+ * colleague's workspace) a newly registered account would otherwise be created with
+ * no membership at all. It could sign in, but every workspace-scoped request would
+ * fail with `Workspace none not found` and the shell would render with no workspace
+ * and no way to create one.
  */
-export function ensureStarterWorkspace(db: Executor, owner: User): Workspace | null {
-  const anyWorkspace = db.select().from(workspaces).limit(1).all();
-  if (anyWorkspace[0]) return null;
+export function ensurePersonalWorkspace(db: Executor, owner: User): Workspace {
+  const existing = listWorkspacesForUser(db, owner.id)[0];
+  if (existing) return existing;
   return createWorkspaceWithOwner(db, {
-    name: `${owner.name.split(' ')[0] ?? 'My'}'s Workspace`,
+    name: `${firstName(owner.name)}'s Workspace`,
     ownerUserId: owner.id
   });
+}
+
+/** First word of a display name, used to name a personal workspace. */
+function firstName(name: string): string {
+  return name.trim().split(/\s+/)[0] || 'My';
 }

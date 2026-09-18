@@ -38,7 +38,7 @@ const sources: Array<{
     title: 'Platform capability',
     description: 'Use something Mentat already does',
     detail:
-      'Tickets, state, data, cache and files ship as native tools. Browse them and grant to an agent — no connection needed.'
+      'Work items, state, data, cache and files ship as native tools. Browse them and grant to an agent — no connection needed.'
   },
   {
     id: 'http',

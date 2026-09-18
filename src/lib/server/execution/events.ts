@@ -33,15 +33,31 @@ export const RunEventTypes = {
   approvalDecided: 'approval.decided',
   retryScheduled: 'retry.scheduled',
   stateTransition: 'state.transition',
-  fieldChanged: 'ticket.field.changed',
-  noteAdded: 'ticket.note.added',
-  fileAttached: 'ticket.file.attached',
   runPaused: 'run.paused',
   runResumed: 'run.resumed',
   runCompleted: 'run.completed',
   runFailed: 'run.failed',
   runCancelled: 'run.cancelled',
-  ticketUpdated: 'ticket.updated'
+
+  // Universal Record events (ADR-0021) — durable facts about domain data.
+  recordCreated: 'record.created',
+  recordUpdated: 'record.updated',
+  recordFieldChanged: 'record.field.changed',
+  recordRelationshipCreated: 'record.relationship.created',
+  recordArchived: 'record.archived',
+
+  // WorkflowItem events — the process family, distinct from durable Record facts.
+  workflowItemCreated: 'workflow_item.created',
+  workflowItemUpdated: 'workflow_item.updated',
+  workflowItemStateEntered: 'workflow_item.state.entered',
+  workflowItemStateExited: 'workflow_item.state.exited',
+  workflowItemCompleted: 'workflow_item.completed',
+  workflowItemTransferred: 'workflow_item.transferred',
+  workflowItemParticipationAdded: 'workflow_item.participation.added',
+  workflowItemOwnerChanged: 'workflow_item.owner.changed',
+  workflowItemFieldChanged: 'workflow_item.field.changed',
+  workflowItemNoteAdded: 'workflow_item.note.added',
+  workflowItemFileAttached: 'workflow_item.file.attached'
 } as const;
 
 export type RunEventType = (typeof RunEventTypes)[keyof typeof RunEventTypes] | (string & {});
@@ -49,7 +65,8 @@ export type RunEventType = (typeof RunEventTypes)[keyof typeof RunEventTypes] | 
 export interface PublishRunEventInput {
   workspaceId: string;
   runId?: string | null;
-  ticketId?: string | null;
+  recordId?: string | null;
+  workflowItemId?: string | null;
   type: RunEventType;
   data?: unknown;
 }
@@ -59,7 +76,8 @@ export interface PersistedRunEvent {
   id: string;
   workspaceId: string;
   runId: string | null;
-  ticketId: string | null;
+  recordId: string | null;
+  workflowItemId: string | null;
   type: string;
   data: unknown;
   createdAt: number;
@@ -77,7 +95,8 @@ export function publishRunEvent(
       id: uuidv7(now),
       workspaceId: input.workspaceId,
       runId: input.runId ?? null,
-      ticketId: input.ticketId ?? null,
+      recordId: input.recordId ?? null,
+      workflowItemId: input.workflowItemId ?? null,
       type: input.type,
       data: (input.data ?? null) as never,
       createdAt: now
@@ -91,7 +110,8 @@ export function publishRunEvent(
     id: row?.id ?? uuidv7(now),
     workspaceId: input.workspaceId,
     runId: input.runId ?? null,
-    ticketId: input.ticketId ?? null,
+    recordId: input.recordId ?? null,
+    workflowItemId: input.workflowItemId ?? null,
     type: input.type,
     data: input.data ?? null,
     createdAt: now
@@ -106,7 +126,8 @@ export function publishRunEvent(
 export interface RunEventFilter {
   workspaceId: string;
   runId?: string | null;
-  ticketId?: string | null;
+  recordId?: string | null;
+  workflowItemId?: string | null;
   types?: string[];
 }
 
@@ -129,7 +150,10 @@ class RunEventBus {
     for (const { filter, listener } of this.listeners) {
       if (filter.workspaceId !== event.workspaceId) continue;
       if (filter.runId !== undefined && filter.runId !== event.runId) continue;
-      if (filter.ticketId !== undefined && filter.ticketId !== event.ticketId) continue;
+      if (filter.recordId !== undefined && filter.recordId !== event.recordId) continue;
+      if (filter.workflowItemId !== undefined && filter.workflowItemId !== event.workflowItemId) {
+        continue;
+      }
       if (filter.types && !filter.types.includes(event.type)) continue;
       try {
         listener(event);
@@ -160,14 +184,18 @@ export async function listRunEvents(
   options: {
     workspaceId: string;
     runId?: string;
-    ticketId?: string;
+    recordId?: string;
+    workflowItemId?: string;
     since?: number;
     limit?: number;
   }
 ): Promise<PersistedRunEvent[]> {
   const conditions = [eq(runEvents.workspaceId, options.workspaceId)];
   if (options.runId) conditions.push(eq(runEvents.runId, options.runId));
-  if (options.ticketId) conditions.push(eq(runEvents.ticketId, options.ticketId));
+  if (options.recordId) conditions.push(eq(runEvents.recordId, options.recordId));
+  if (options.workflowItemId) {
+    conditions.push(eq(runEvents.workflowItemId, options.workflowItemId));
+  }
   if (options.since !== undefined) conditions.push(gt(runEvents.seq, options.since));
 
   const rows: RunEvent[] = await db
@@ -183,7 +211,8 @@ export async function listRunEvents(
     id: row.id,
     workspaceId: row.workspaceId,
     runId: row.runId,
-    ticketId: row.ticketId,
+    recordId: row.recordId,
+    workflowItemId: row.workflowItemId,
     type: row.type,
     data: row.data,
     createdAt: row.createdAt

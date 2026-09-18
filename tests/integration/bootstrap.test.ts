@@ -6,12 +6,13 @@
  * work from a persisted state entry through to a completed agent run — without any
  * test-only shortcut such as calling the runner directly.
  *
- * It deliberately drives the *durable* path: create a ticket (which enqueues
- * `state.enter` in the same transaction), then run the worker until the queue is
- * drained, then assert on the persisted outcome.
+ * It deliberately drives the *durable* path: start work (which enqueues
+ * `workflow_item.enter` in the same transaction), then run the worker until the
+ * queue is drained, then assert on the persisted outcome. ADR-0021 removed the
+ * Ticket primitive; the work model is Records + WorkflowItems.
  */
 import { beforeEach, describe, expect, test } from 'bun:test';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { createAgent } from '../../src/lib/server/agents/service';
 import { resetBootstrap, runBootstrap } from '../../src/lib/server/bootstrap';
 import { uuidv7 } from '../../src/lib/server/core/ids';
@@ -20,29 +21,56 @@ import {
   jobs,
   models,
   providers,
+  records,
   runEvents,
-  ticketFieldValues,
-  tickets,
   tools,
-  users
+  users,
+  workflowItemFieldValues,
+  workflowItems
 } from '../../src/lib/server/db/schema';
 import { createFieldDefinition, setWorkflowFields } from '../../src/lib/server/fields/service';
+import { filterWorkflowItems } from '../../src/lib/server/filters/compile';
 import { registeredJobTypes } from '../../src/lib/server/jobs/handlers';
 import { FakeProvider } from '../../src/lib/server/providers/fake';
 import {
   clearProviderOverrides,
   setProviderOverride
 } from '../../src/lib/server/providers/registry';
-import { listTickets } from '../../src/lib/server/tickets/query';
-import { createTicketSync } from '../../src/lib/server/tickets/service';
+import { createRecord } from '../../src/lib/server/records/service';
 import { getDefaultToolRegistry, resetToolRegistry } from '../../src/lib/server/tools/registry';
+import { listWorkflowItems } from '../../src/lib/server/workflow-items/query';
+import {
+  createWorkflowItem as createWorkflowItemService,
+  getWorkflowItemDetail
+} from '../../src/lib/server/workflow-items/service';
 import { createState } from '../../src/lib/server/workflows/service';
 import { createTestDatabase, type TestDatabase } from '../helpers/db';
-import { createWorkflow, createWorkspace, ownerActor } from '../helpers/factories';
+import {
+  createWorkflow,
+  createWorkflowItem as createWorkflowItemFixture,
+  createWorkspace,
+  ownerActor
+} from '../helpers/factories';
 
 let handle: TestDatabase;
 let workspaceId: string;
 let owner: ReturnType<typeof ownerActor>;
+
+/**
+ * `workflow_item.enter` jobs for one item. Filtered through the payload rather
+ * than the `jobs.workflow_item_id` column because the workflow-item enqueue paths
+ * do not populate that column (see the migration report).
+ */
+function entryJobsFor(workflowItemId: string) {
+  return handle.db
+    .select()
+    .from(jobs)
+    .where(eq(jobs.type, 'workflow_item.enter'))
+    .all()
+    .filter(
+      (job) => (job.payload as { workflowItemId?: string }).workflowItemId === workflowItemId
+    );
+}
 
 async function seedProviderWithModel(): Promise<{ providerId: string; modelId: string }> {
   const now = Date.now();
@@ -116,7 +144,7 @@ describe('bootstrap wiring', () => {
   test('registers every durable job type', () => {
     const types = registeredJobTypes();
     for (const expected of [
-      'state.enter',
+      'workflow_item.enter',
       'approval.resume',
       'maintenance.reap',
       'file.process',
@@ -132,7 +160,7 @@ describe('bootstrap wiring', () => {
     const keys = registry.list().map((tool) => tool.key);
     expect(keys.length).toBeGreaterThan(25);
     // One tool from each owning module proves the composition worked.
-    expect(keys).toContain('mentat.ticket.fields.set');
+    expect(keys).toContain('workflowItems.setFields');
     expect(keys).toContain('mentat.state.set');
     expect(keys).toContain('mentat.data.find');
     expect(keys).toContain('mentat.cache.getOrCompute');
@@ -154,26 +182,34 @@ describe('bootstrap wiring', () => {
     expect(first.nativeToolCount).toBeGreaterThan(25);
   });
 
-  test('installs the ticket filter compiler, so the board query filters', async () => {
+  test('installs the shared workflow-item filter compiler, so record facts filter', async () => {
     const workflow = await createWorkflow(handle.db, workspaceId, { name: 'Filtered' });
-    createTicketSync(handle.db, owner, {
-      workflowId: workflow.id,
-      title: 'High',
-      priority: 'high'
-    });
-    createTicketSync(handle.db, owner, { workflowId: workflow.id, title: 'Low', priority: 'low' });
+    await createWorkflowItemFixture(handle.db, { workspaceId, workflow, title: 'High' });
+    await createWorkflowItemFixture(handle.db, { workspaceId, workflow, title: 'Low' });
 
-    const page = await listTickets(handle.db, {
+    const page = await filterWorkflowItems(handle.db, {
       workspaceId,
-      filter: { type: 'condition', kind: 'system', key: 'priority', operator: 'eq', value: 'high' }
+      filter: {
+        type: 'condition',
+        kind: 'system',
+        key: 'displayName',
+        operator: 'eq',
+        value: 'High'
+      } as never
     });
-    expect(page.rows.map((row) => row.ticket.title)).toEqual(['High']);
+    expect(page.rows).toHaveLength(1);
+    const record = handle.db
+      .select()
+      .from(records)
+      .where(eq(records.id, page.rows[0]!.recordId))
+      .all()[0];
+    expect(record?.displayName).toBe('High');
   });
 
   test('reports unknown filter keys instead of failing', async () => {
     const workflow = await createWorkflow(handle.db, workspaceId, { name: 'Unknown key' });
-    createTicketSync(handle.db, owner, { workflowId: workflow.id, title: 'Anything' });
-    const page = await listTickets(handle.db, {
+    await createWorkflowItemFixture(handle.db, { workspaceId, workflow, title: 'Anything' });
+    const page = await filterWorkflowItems(handle.db, {
       workspaceId,
       filter: {
         type: 'condition',
@@ -181,9 +217,10 @@ describe('bootstrap wiring', () => {
         key: 'does_not_exist',
         operator: 'eq',
         value: 'x'
-      }
+      } as never
     });
     expect(page.rows).toHaveLength(0);
+    expect(page.unresolved).toContain('does_not_exist');
   });
 });
 
@@ -205,18 +242,18 @@ describe('bootstrap end-to-end durable execution', () => {
       .values({
         id: toolId,
         workspaceId,
-        key: 'mentat.ticket.fields.set',
-        name: 'Set a ticket field',
-        description: 'Set one typed field value.',
+        key: 'workflowItems.setFields',
+        name: 'Set work item fields',
+        description: 'Set typed field values on the work item.',
         kind: 'native',
-        implementation: { kind: 'native', key: 'mentat.ticket.fields.set' } as never,
+        implementation: { kind: 'native', key: 'workflowItems.setFields' } as never,
         inputSchema: {
           type: 'object',
-          properties: { fieldKey: { type: 'string' }, value: {} },
-          required: ['fieldKey'],
+          properties: { values: { type: 'object' } },
+          required: ['values'],
           additionalProperties: false
         } as never,
-        permissions: ['ticket:write'] as never,
+        permissions: ['workflow_item:write'] as never,
         timeoutSeconds: 15,
         enabled: true,
         createdAt: Date.now(),
@@ -231,7 +268,7 @@ describe('bootstrap end-to-end durable execution', () => {
       providerId,
       modelId,
       toolIds: [toolId],
-      permissions: { native: ['mentat.ticket.fields.set'] } as never
+      permissions: { native: ['workflowItems.setFields'] } as never
     });
 
     // A deterministic scripted provider stands in for a real model.
@@ -244,8 +281,8 @@ describe('bootstrap end-to-end durable execution', () => {
             toolCalls: [
               {
                 id: 'call_reply',
-                name: 'mentat.ticket.fields.set',
-                arguments: { fieldKey: 'reply', value: 'Thanks for getting in touch.' }
+                name: 'workflowItems.setFields',
+                arguments: { values: { reply: 'Thanks for getting in touch.' } }
               }
             ],
             finishReason: 'tool_calls'
@@ -262,18 +299,18 @@ describe('bootstrap end-to-end durable execution', () => {
       maxAttempts: 2
     });
 
-    const ticket = createTicketSync(handle.db, owner, {
+    const record = await createRecord(handle.db, owner, {
+      objectTypeId: workflow.objectTypeId,
+      displayName: 'Customer question'
+    });
+    const item = await createWorkflowItemService(handle.db, owner, {
       workflowId: workflow.id,
-      stateId: state.id,
-      title: 'Customer question'
+      recordId: record.id,
+      stateId: state.id
     });
 
-    // The state entry job was written in the ticket's transaction.
-    const queued = handle.db
-      .select()
-      .from(jobs)
-      .where(and(eq(jobs.ticketId, ticket.id), eq(jobs.type, 'state.enter')))
-      .all();
+    // The state entry job was written in the work item's transaction.
+    const queued = entryJobsFor(item.id);
     expect(queued).toHaveLength(1);
     expect(queued[0]?.status).toBe('pending');
 
@@ -290,15 +327,15 @@ describe('bootstrap end-to-end durable execution', () => {
     const run = handle.db
       .select()
       .from(agentRuns)
-      .where(eq(agentRuns.ticketId, ticket.id))
+      .where(eq(agentRuns.workflowItemId, item.id))
       .all()[0];
     expect(run?.status, run?.error ?? 'no error').toBe('succeeded');
     expect(run?.outputText).toBe('Reply filed.');
 
     const values = handle.db
       .select()
-      .from(ticketFieldValues)
-      .where(eq(ticketFieldValues.ticketId, ticket.id))
+      .from(workflowItemFieldValues)
+      .where(eq(workflowItemFieldValues.workflowItemId, item.id))
       .all();
     expect(values[0]?.valueText).toBe('Thanks for getting in touch.');
 
@@ -314,33 +351,43 @@ describe('bootstrap end-to-end durable execution', () => {
     const finished = handle.db.select().from(jobs).where(eq(jobs.id, queued[0]!.id)).all()[0]!;
     expect(finished.status).toBe('completed');
 
-    // The board still shows the ticket in its state (the agent did not move it).
-    const board = await listTickets(handle.db, { workspaceId, workflowId: workflow.id });
-    expect(board.rows[0]?.ticket.stateId).toBe(state.id);
-    expect(board.rows[0]?.fields.reply).toBe('Thanks for getting in touch.');
+    // The board still shows the work in its state (the agent did not move it).
+    const board = await listWorkflowItems(handle.db, { workspaceId, workflowId: workflow.id });
+    expect(board.items[0]?.stateId).toBe(state.id);
+    const detail = await getWorkflowItemDetail(handle.db, owner, item.id);
+    expect(detail.fields.reply).toBe('Thanks for getting in touch.');
   });
 
   test('a human-gated state produces no job at all', async () => {
     const workflow = await createWorkflow(handle.db, workspaceId, {
       name: 'Gated',
       states: [
-        { name: 'Review', kind: 'manual', category: 'review', isStart: true },
+        {
+          name: 'Review',
+          kind: 'manual',
+          category: 'review',
+          isStart: true,
+          humanGate: { enabled: true }
+        },
         { name: 'Done', kind: 'terminal', category: 'done', isTerminal: true }
       ],
       transitions: [['Review', 'Done', 'Approve']]
     });
-    const state = createState(handle.db, owner, workflow.id, {
-      name: 'Gate check',
-      kind: 'manual'
+    const record = await createRecord(handle.db, owner, {
+      objectTypeId: workflow.objectTypeId,
+      displayName: 'Needs a human'
     });
-    void state;
-    const ticket = createTicketSync(handle.db, owner, {
+    const item = await createWorkflowItemService(handle.db, owner, {
       workflowId: workflow.id,
-      title: 'Needs a human'
+      recordId: record.id
     });
-    const queued = handle.db.select().from(jobs).where(eq(jobs.ticketId, ticket.id)).all();
+    const queued = entryJobsFor(item.id);
     expect(queued).toHaveLength(0);
-    const row = handle.db.select().from(tickets).where(eq(tickets.id, ticket.id)).all()[0]!;
+    const row = handle.db
+      .select()
+      .from(workflowItems)
+      .where(eq(workflowItems.id, item.id))
+      .all()[0]!;
     expect(row.waitingOn).toBe('human');
   });
 });

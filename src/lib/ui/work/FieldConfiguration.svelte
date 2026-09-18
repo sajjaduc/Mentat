@@ -1,69 +1,48 @@
 <script lang="ts">
 /**
- * Workflow field configuration.
+ * Workflow overlay schema.
  *
- * Fields are reusable workspace definitions; attaching one to a workflow decides
- * how it behaves here. Flag changes are applied optimistically and rolled back
- * together, because the API replaces the whole set in one write.
+ * The overlay is authored as Zod source in the same box used for Object Types, so a
+ * schema tested here is the exact contract the engine compiles when work items are
+ * validated. The typed fields below the box are the projection of that source; their
+ * display and state requirements are still configurable, and flag changes are applied
+ * optimistically and rolled back together because the API replaces the whole set.
  */
 import { untrack } from 'svelte';
 import { api, describeApiError } from '$ui/api';
 import Badge from '$ui/primitives/Badge.svelte';
 import Button from '$ui/primitives/Button.svelte';
 import EmptyState from '$ui/primitives/EmptyState.svelte';
-import Input from '$ui/primitives/Input.svelte';
-import Select from '$ui/primitives/Select.svelte';
+import { schemaApi } from '$ui/schema/api';
+import { buildStarterZodSchema } from '$ui/schema/starter';
+import ZodSchemaBox from '$ui/schema/ZodSchemaBox.svelte';
 import { pushToast } from '$ui/toast';
 import MultiSelect from '$ui/work/MultiSelect.svelte';
-import type { FieldDefinition, FieldType, WorkflowFieldView, WorkflowState } from '$ui/work/types';
+import type { FieldDefinition, WorkflowFieldView, WorkflowState } from '$ui/work/types';
 
 interface Props {
   workflowId: string;
+  /** The workflow's stored Zod source, if any. */
+  schemaSource: string;
   fields: WorkflowFieldView[];
   workspaceFields: FieldDefinition[];
   states: WorkflowState[];
   onReload: () => Promise<void>;
 }
 
-let { workflowId, fields, workspaceFields, states, onReload }: Props = $props();
-
-const FIELD_TYPES: FieldType[] = [
-  'short_text',
-  'long_text',
-  'number',
-  'currency',
-  'boolean',
-  'date',
-  'datetime',
-  'select',
-  'multi_select',
-  'user',
-  'team',
-  'url',
-  'email',
-  'phone',
-  'json'
-];
+let { workflowId, schemaSource, fields, workspaceFields, states, onReload }: Props = $props();
 
 // Seeded once, then re-synced by the effect below.
 let rows = $state<WorkflowFieldView[]>(untrack(() => [...fields]));
 let error = $state<string | null>(null);
-let attaching = $state('');
-let createOpen = $state(false);
-let creating = $state(false);
-let createError = $state<string | null>(null);
-let draft = $state({ name: '', key: '', type: 'short_text' as FieldType, choices: '' });
+let savingSchema = $state(false);
+let starter = $state('');
 
 $effect(() => {
   rows = [...fields];
 });
 
 const stateOptions = $derived(states.map((state) => ({ value: state.id, label: state.name })));
-const unattached = $derived(
-  workspaceFields.filter(
-    (definition) => !rows.some((row) => row.fieldDefinitionId === definition.id)
-  )
-);
 
 function payload(list: WorkflowFieldView[]): Record<string, unknown> {
   return {
@@ -110,63 +89,34 @@ function toggleFlag(
   void commit(rows.map((row) => (row.id === view.id ? { ...row, [key]: !row[key] } : row)));
 }
 
-async function attach(definitionId: string) {
-  if (definitionId === '') return;
-  const definition = workspaceFields.find((entry) => entry.id === definitionId);
-  if (!definition) return;
-  const placeholder: WorkflowFieldView = {
-    id: `pending-${definition.id}`,
-    workspaceId: '',
-    workflowId,
-    fieldDefinitionId: definition.id,
-    position: rows.length,
-    required: false,
-    visible: true,
-    editable: true,
-    defaultValue: null,
-    requiredInStates: null,
-    showOnCard: false,
-    showInList: true,
-    filterable: true,
-    requiredForTransfer: false,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    definition
-  };
-  attaching = '';
-  await commit([...rows, placeholder]);
+async function saveSchema(source: string) {
+  savingSchema = true;
+  try {
+    await schemaApi.saveWorkflow(workflowId, source);
+    await onReload();
+    starter = '';
+    pushToast({ tone: 'success', title: 'Workflow schema saved' });
+  } catch (failure) {
+    pushToast({ tone: 'error', title: describeApiError(failure) });
+    throw failure;
+  } finally {
+    savingSchema = false;
+  }
 }
 
-async function createField() {
-  const name = draft.name.trim();
-  if (name === '') return;
-  creating = true;
-  createError = null;
-  try {
-    const choices = draft.choices
-      .split(',')
-      .map((entry) => entry.trim())
-      .filter((entry) => entry !== '')
-      .map((entry) => {
-        const [value, label] = entry.split(':');
-        return { value: (value ?? '').trim(), label: (label ?? value ?? '').trim() };
-      });
-    const response = await api.post<{ field: FieldDefinition }>('/api/fields', {
-      name,
-      key: draft.key.trim() === '' ? undefined : draft.key.trim(),
-      type: draft.type,
-      scope: 'ticket',
-      options: choices.length > 0 ? { choices } : undefined
-    });
-    await onReload();
-    await attach(response.field.id);
-    draft = { name: '', key: '', type: 'short_text', choices: '' };
-    createOpen = false;
-  } catch (failure) {
-    createError = describeApiError(failure);
-  } finally {
-    creating = false;
-  }
+function generateStarter() {
+  starter = buildStarterZodSchema(
+    rows.map((row) => ({
+      key: row.definition.key,
+      name: row.definition.name,
+      type: row.definition.type,
+      required: row.required,
+      options: row.definition.options,
+      showInList: row.showInList,
+      showOnCard: row.showOnCard,
+      filterable: row.filterable
+    }))
+  );
 }
 </script>
 
@@ -175,60 +125,35 @@ async function createField() {
     <p class="text-xs text-[var(--color-danger)]" role="alert">{error}</p>
   {/if}
 
-  <div class="flex flex-wrap items-center gap-2">
-    <div class="w-64">
-      <Select
-        label="Attach a workspace field"
-        placeholder="Choose a field"
-        value={attaching}
-        options={unattached.map((definition) => ({
-          value: definition.id,
-          label: `${definition.name} (${definition.type})`
-        }))}
-        onchange={(event) => attach((event.currentTarget as HTMLSelectElement).value)}
-      />
-    </div>
-    <Button size="sm" variant="secondary" onclick={() => (createOpen = !createOpen)}>
-      {createOpen ? 'Cancel' : 'Create new field'}
-    </Button>
-  </div>
-
-  {#if createOpen}
-    <div class="space-y-3 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] p-3">
-      <div class="grid gap-3 sm:grid-cols-3">
-        <Input value={draft.name} oninput={(event) => (draft.name = (event.currentTarget as HTMLInputElement).value)} label="Name" placeholder="Claim amount" />
-        <Input value={draft.key} oninput={(event) => (draft.key = (event.currentTarget as HTMLInputElement).value)} label="Key" placeholder="claim_amount" hint="Generated when empty." />
-        <Select
-          label="Type"
-          value={draft.type}
-          options={FIELD_TYPES.map((type) => ({ value: type, label: type }))}
-          onchange={(event) =>
-            (draft.type = (event.currentTarget as HTMLSelectElement).value as FieldType)}
-        />
-      </div>
-      {#if draft.type === 'select' || draft.type === 'multi_select'}
-        <Input
-          value={draft.choices} oninput={(event) => (draft.choices = (event.currentTarget as HTMLInputElement).value)}
-          label="Choices"
-          placeholder="low:Low, high:High"
-          hint="Comma separated value:label pairs."
-        />
-      {/if}
-      {#if createError}
-        <p class="text-xs text-[var(--color-danger)]" role="alert">{createError}</p>
-      {/if}
-      <div class="flex justify-end">
-        <Button size="sm" variant="primary" loading={creating} onclick={createField}>
-          Create and attach
+  <div class="rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] p-3">
+    {#if schemaSource === '' && rows.length > 0}
+      <div
+        class="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius-sm)] bg-[var(--color-surface-muted)]/50 p-2"
+      >
+        <p class="text-xs text-[var(--color-ink-muted)]">
+          These fields are attached but have no Zod source. Generate a starter schema from them to
+          make the contract explicit.
+        </p>
+        <Button size="sm" variant="secondary" onclick={generateStarter}>
+          Generate starter schema
         </Button>
       </div>
-    </div>
-  {/if}
+    {/if}
+    <ZodSchemaBox
+      value={schemaSource}
+      draftSeed={starter}
+      saving={savingSchema}
+      saveLabel="Save workflow schema"
+      hint="Overlay fields for work items in this workflow. Validated in addition to the Object Type schema."
+      placeholder={'z.object({\n  reviewer_note: z.string(),\n  approved: z.boolean()\n})'}
+      onSave={saveSchema}
+    />
+  </div>
 
   {#if rows.length === 0}
     <EmptyState
-      title="No fields configured"
-      description="Attach reusable workspace fields to give tickets a schema; they appear on cards and in the list when you say so."
+      title="No overlay fields configured"
+      description="Save a Zod schema above to give work items in this workflow extra typed fields. They appear on cards and in the list when you say so."
     />
   {:else}
     <div class="space-y-2">
@@ -240,15 +165,17 @@ async function createField() {
             <span class="font-mono text-[11px] text-[var(--color-ink-subtle)]"
               >{view.definition.key}</span
             >
-            <span class="ml-auto">
-              <Button
-                size="sm"
-                variant="ghost"
-                onclick={() => commit(rows.filter((row) => row.id !== view.id))}
-              >
-                Detach
-              </Button>
-            </span>
+            {#if schemaSource === ''}
+              <span class="ml-auto">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onclick={() => commit(rows.filter((row) => row.id !== view.id))}
+                >
+                  Detach
+                </Button>
+              </span>
+            {/if}
           </div>
           <div class="mt-2 flex flex-wrap items-center gap-3">
             <label class="flex items-center gap-1.5 text-xs">
@@ -310,5 +237,11 @@ async function createField() {
         </div>
       {/each}
     </div>
+    {#if workspaceFields.length > 0}
+      <p class="text-[11px] text-[var(--color-ink-subtle)]">
+        {workspaceFields.length} reusable workspace field{workspaceFields.length === 1 ? '' : 's'} available
+        to other workflows.
+      </p>
+    {/if}
   {/if}
 </div>

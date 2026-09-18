@@ -1,11 +1,12 @@
 /**
  * File lifecycle and safe deletion.
  *
- * Removing a file from a ticket, removing a workflow's interpretation of it and
- * deleting the logical file are three *different* operations. Collapsing them is
- * how attachment-style systems lose shared content, so each is explicit here:
+ * Removing a file from work, removing a durable record link, removing a
+ * workflow's interpretation of it and deleting the logical file are four
+ * *different* operations. Collapsing them is how attachment-style systems lose
+ * shared content, so each is explicit here:
  *
- *  - unlink only clears the ticket↔file relationship;
+ *  - unlink only clears the work-item or record ↔file relationship;
  *  - removing workflow context only clears `workflow_files.removedAt`;
  *  - deleting a logical file soft-deletes it, clears its links and its content
  *    index, and leaves the blob alone;
@@ -22,16 +23,16 @@ import { type ActorContext, assertPermission, Permissions } from '../core/contex
 import { errors } from '../core/errors';
 import { moduleLogger } from '../core/logger';
 import { type Executor, withTransaction } from '../db/client';
-import { blobs, files, ticketFiles, workflowFiles } from '../db/schema';
+import { blobs, fileRecords, files, fileWorkflowItems, workflowFiles } from '../db/schema';
 import { resolveBlobStore } from '../storage/index';
 import * as repo from './repository';
 import { removeFileContentIndex } from './retrieval';
 
 const log = moduleLogger('files.lifecycle');
 
-export async function unlinkFromTicket(
+export async function unlinkFromWorkflowItem(
   actor: ActorContext,
-  input: { fileId: string; ticketId: string },
+  input: { fileId: string; workflowItemId: string },
   db?: Executor
 ): Promise<void> {
   assertPermission(actor, Permissions.fileWrite, 'Not permitted to unlink files');
@@ -40,29 +41,72 @@ export async function unlinkFromTicket(
     const file = repo.findFile(tx, actor.workspaceId, input.fileId);
     if (!file) throw errors.notFound('File', input.fileId);
     const now = Date.now();
-    tx.update(ticketFiles)
+    tx.update(fileWorkflowItems)
       .set({ removedAt: now })
       .where(
         and(
-          eq(ticketFiles.workspaceId, actor.workspaceId),
-          eq(ticketFiles.fileId, input.fileId),
-          eq(ticketFiles.ticketId, input.ticketId),
-          isNull(ticketFiles.removedAt)
+          eq(fileWorkflowItems.workspaceId, actor.workspaceId),
+          eq(fileWorkflowItems.fileId, input.fileId),
+          eq(fileWorkflowItems.workflowItemId, input.workflowItemId),
+          isNull(fileWorkflowItems.removedAt)
         )
       )
       .run();
     writeAudit(tx, {
       workspaceId: actor.workspaceId,
-      action: AuditActions.fileUnlinkedFromTicket,
+      action: AuditActions.workflowItemFileUnlinked,
       actorType: actor.actorType,
       actorId: actor.actorId,
       actorLabel: actor.actorLabel,
       entityType: 'file',
       entityId: input.fileId,
       fileId: input.fileId,
-      ticketId: input.ticketId,
+      workflowItemId: input.workflowItemId,
       runId: actor.runId ?? null,
-      summary: `File unlinked from ticket ${input.ticketId}`,
+      summary: `File unlinked from work item ${input.workflowItemId}`,
+      data: {}
+    });
+  });
+}
+
+/**
+ * Remove a durable Record↔file link. The file stays; only this evidence
+ * association is cleared.
+ */
+export async function unlinkFromRecord(
+  actor: ActorContext,
+  input: { fileId: string; recordId: string },
+  db?: Executor
+): Promise<void> {
+  assertPermission(actor, Permissions.fileWrite, 'Not permitted to unlink files');
+  const executor = requireExecutor(db);
+  await withTransaction(executor, (tx) => {
+    const file = repo.findFile(tx, actor.workspaceId, input.fileId);
+    if (!file) throw errors.notFound('File', input.fileId);
+    const now = Date.now();
+    tx.update(fileRecords)
+      .set({ removedAt: now })
+      .where(
+        and(
+          eq(fileRecords.workspaceId, actor.workspaceId),
+          eq(fileRecords.fileId, input.fileId),
+          eq(fileRecords.recordId, input.recordId),
+          isNull(fileRecords.removedAt)
+        )
+      )
+      .run();
+    writeAudit(tx, {
+      workspaceId: actor.workspaceId,
+      action: AuditActions.recordFileUnlinked,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      actorLabel: actor.actorLabel,
+      entityType: 'file',
+      entityId: input.fileId,
+      fileId: input.fileId,
+      recordId: input.recordId,
+      runId: actor.runId ?? null,
+      summary: `File unlinked from record ${input.recordId}`,
       data: {}
     });
   });
@@ -126,13 +170,23 @@ export async function deleteFile(
       .set({ deletedAt: now, updatedAt: now, version: sql`${files.version} + 1` })
       .where(and(eq(files.id, fileId), eq(files.workspaceId, actor.workspaceId)))
       .run();
-    tx.update(ticketFiles)
+    tx.update(fileWorkflowItems)
       .set({ removedAt: now })
       .where(
         and(
-          eq(ticketFiles.workspaceId, actor.workspaceId),
-          eq(ticketFiles.fileId, fileId),
-          isNull(ticketFiles.removedAt)
+          eq(fileWorkflowItems.workspaceId, actor.workspaceId),
+          eq(fileWorkflowItems.fileId, fileId),
+          isNull(fileWorkflowItems.removedAt)
+        )
+      )
+      .run();
+    tx.update(fileRecords)
+      .set({ removedAt: now })
+      .where(
+        and(
+          eq(fileRecords.workspaceId, actor.workspaceId),
+          eq(fileRecords.fileId, fileId),
+          isNull(fileRecords.removedAt)
         )
       )
       .run();

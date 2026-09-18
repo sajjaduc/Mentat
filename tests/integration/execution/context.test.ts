@@ -5,9 +5,12 @@
  * injected into every prompt: agent, skill and state configuration control what the
  * model sees. That is a token-efficiency requirement and a data-minimisation one, so
  * it is tested by asserting what is *absent* as much as what is present.
+ *
+ * ADR-0021 replaced the legacy ticket primitive: context is now assembled for a
+ * Record + WorkflowItem (`buildRecordRunContext`), and the effective contract is the
+ * Object Type schema plus the workflow overlay.
  */
 import { beforeEach, describe, expect, test } from 'bun:test';
-import { eq } from 'drizzle-orm';
 import { resetBootstrap, runBootstrap } from '../../../src/lib/server/bootstrap';
 import {
   type ActorContext,
@@ -21,18 +24,23 @@ import {
 } from '../../../src/lib/server/core/secret-registry';
 import type { AgentSnapshot } from '../../../src/lib/server/db/schema';
 import {
+  blobs,
+  fileExtractedContent,
+  fileProcessingRuns,
   files as filesTable,
-  ticketFiles,
-  ticketNotes,
+  fileWorkflowItems,
   users
 } from '../../../src/lib/server/db/schema';
-import { buildAgentRunContext } from '../../../src/lib/server/execution/context';
-import { createFieldDefinition, setWorkflowFields } from '../../../src/lib/server/fields/service';
+import { buildRecordRunContext } from '../../../src/lib/server/execution/context';
 import { clearProviderOverrides } from '../../../src/lib/server/providers/registry';
-import { addNoteSync, createTicketSync } from '../../../src/lib/server/tickets/service';
-import { writeTicketFieldValues } from '../../../src/lib/server/tickets/values';
+import { createObjectType, setBaseFields } from '../../../src/lib/server/records/object-types';
+import { addRecordNote, createRecord, updateRecord } from '../../../src/lib/server/records/service';
 import { resetToolRegistry } from '../../../src/lib/server/tools/registry';
-import { createWorkflow, updateState } from '../../../src/lib/server/workflows/service';
+import {
+  addWorkflowItemNote,
+  createWorkflowItem
+} from '../../../src/lib/server/workflow-items/service';
+import { createWorkflow } from '../../../src/lib/server/workflows/service';
 import { createTestDatabase, type TestDatabase } from '../../helpers/db';
 import { addMember, createWorkspace } from '../../helpers/factories';
 
@@ -40,7 +48,8 @@ let handle: TestDatabase;
 let actor: ActorContext;
 let workflowId: string;
 let stateId: string;
-let ticketId: string;
+let recordId: string;
+let workflowItemId: string;
 
 const agent: AgentSnapshot = {
   id: 'agent-1',
@@ -53,14 +62,10 @@ const agent: AgentSnapshot = {
 };
 
 async function build(config: Record<string, unknown> | null, extra: Record<string, unknown> = {}) {
-  const ticket = handle.db
-    .select()
-    .from((await import('../../../src/lib/server/db/schema')).tickets)
-    .where(eq((await import('../../../src/lib/server/db/schema')).tickets.id, ticketId))
-    .all()[0]!;
-  return buildAgentRunContext(handle.db, {
+  return buildRecordRunContext(handle.db, {
     workspaceId: actor.workspaceId,
-    ticket,
+    workflowItemId,
+    recordId,
     workflowId,
     stateId,
     stateName: 'Investigation',
@@ -68,6 +73,10 @@ async function build(config: Record<string, unknown> | null, extra: Record<strin
     config: config as never,
     ...extra
   });
+}
+
+function promptOf(context: { messages: Array<{ content: string }> }): string {
+  return context.messages.map((message) => message.content).join('\n');
 }
 
 beforeEach(async () => {
@@ -107,49 +116,50 @@ beforeEach(async () => {
     startWorker: false
   } as never);
 
-  const workflow = createWorkflow(handle.db, actor, { name: 'Claims', template: 'claims' });
+  const objectType = createObjectType(handle.db, actor, { name: 'Claim' });
+  await setBaseFields(handle.db, actor, objectType.id, [
+    {
+      key: 'customer',
+      name: 'Customer',
+      type: 'short_text',
+      isPrimaryDisplay: true
+    },
+    { key: 'claim_amount', name: 'Claim Amount', type: 'currency' }
+  ] as never);
+
+  const workflow = createWorkflow(handle.db, actor, {
+    name: 'Claims',
+    template: 'claims',
+    objectTypeId: objectType.id
+  });
   workflowId = workflow.workflow.id;
   stateId = workflow.states.find((state) => state.name === 'Investigation')!.id;
 
-  const customer = createFieldDefinition(handle.db, actor, {
-    key: 'customer',
-    name: 'Customer',
-    type: 'short_text'
-  });
-  const amount = createFieldDefinition(handle.db, actor, {
-    key: 'claim_amount',
-    name: 'Claim Amount',
-    type: 'currency'
-  });
-  setWorkflowFields(handle.db, actor, workflowId, [
-    { fieldDefinitionId: customer.id },
-    { fieldDefinitionId: amount.id }
-  ]);
-
-  const ticket = createTicketSync(handle.db, actor, {
-    workflowId,
-    stateId,
-    title: 'Storm damage claim',
-    description: 'Hail damage to the roof.',
+  const record = await createRecord(handle.db, actor, {
+    objectTypeId: objectType.id,
     fields: { customer: 'ACME Pty Ltd', claim_amount: 12_500 }
   });
-  ticketId = ticket.id;
-  writeTicketFieldValues(handle.db, {
-    workspaceId: actor.workspaceId,
-    ticketId,
+  recordId = record.id;
+
+  const item = await createWorkflowItem(handle.db, actor, {
     workflowId,
-    values: { customer: 'ACME Pty Ltd' },
-    actor
+    recordId,
+    stateId,
+    deferExecution: true
   });
-  addNoteSync(handle.db, actor, {
-    ticketId,
-    body: 'Called the customer to confirm access.',
-    authorLabel: 'Context Owner'
+  workflowItemId = item.id;
+
+  await addRecordNote(handle.db, actor, {
+    recordId,
+    body: 'Called the customer to confirm access.'
+  });
+  await addWorkflowItemNote(handle.db, actor, {
+    workflowItemId,
+    body: 'Waiting on the assessor to return.'
   });
 
   // A linked file with extracted content, so file context selection is exercised.
   const now = Date.now();
-  const { blobs } = await import('../../../src/lib/server/db/schema');
   const blobId = uuidv7(now);
   handle.db
     .insert(blobs)
@@ -183,23 +193,21 @@ beforeEach(async () => {
     })
     .run();
   handle.db
-    .insert(ticketFiles)
+    .insert(fileWorkflowItems)
     .values({
       id: uuidv7(now),
       workspaceId: actor.workspaceId,
-      ticketId,
+      workflowItemId,
       fileId,
       relationship: 'attachment',
       createdAt: now
     })
     .run();
-  const { fileExtractedContent } = await import('../../../src/lib/server/db/schema');
-  const { fileProcessingRuns } = await import('../../../src/lib/server/db/schema');
-  const runId = uuidv7(now);
+  const processingRunId = uuidv7(now);
   handle.db
     .insert(fileProcessingRuns)
     .values({
-      id: runId,
+      id: processingRunId,
       workspaceId: actor.workspaceId,
       fileId,
       processorType: 'plain_text',
@@ -216,116 +224,112 @@ beforeEach(async () => {
       id: uuidv7(now),
       workspaceId: actor.workspaceId,
       fileId,
-      processingRunId: runId,
+      processingRunId,
       contentKind: 'text',
       text: 'The engineer recommends full roof replacement at a cost of $12,500.',
       charCount: 68,
       createdAt: now
     })
     .run();
-
-  void updateState;
-  void ticketNotes;
 });
 
 describe('context selection', () => {
-  test('a minimal configuration includes only the title', async () => {
-    const context = await build({
-      includeTitle: true,
-      includeDescription: false,
-      fieldKeys: [],
-      includeRecentNotes: 0,
-      includeFileSummaries: false,
-      includeFileFields: [],
-      includeFullFileContent: false
-    });
+  test('assembles the record, its contract and a namespaced system prompt', async () => {
+    const context = await build({});
+    const prompt = promptOf(context);
 
-    const prompt = context.messages.map((message) => message.content).join('\n');
-    expect(prompt).toContain('Storm damage claim');
-    expect(prompt).not.toContain('Hail damage to the roof.');
-    expect(prompt).not.toContain('ACME Pty Ltd');
-    expect(prompt).not.toContain('Called the customer');
-    expect(prompt).not.toContain('roof replacement');
-    expect(context.sections).toEqual(['title']);
-  });
-
-  test('selected field keys are included and others are not', async () => {
-    const context = await build({
-      includeTitle: true,
-      includeDescription: false,
-      fieldKeys: ['customer'],
-      includeRecentNotes: 0,
-      includeFileSummaries: false
-    });
-
-    const prompt = context.messages.map((message) => message.content).join('\n');
+    // The header names the Object Type and the record's display value.
+    expect(prompt).toContain('# Claim ACME Pty Ltd');
     expect(prompt).toContain('Customer');
     expect(prompt).toContain('ACME Pty Ltd');
-    // `claim_amount` was not requested, so it must not be assembled.
-    expect(prompt).not.toContain('12,500');
-    expect(prompt).not.toContain('Claim Amount');
+    expect(prompt).toContain('Claim Amount');
     expect(context.sections).toContain('fields');
+    expect(context.sections).toContain('record_contract');
+
+    const system = context.messages[0]?.content ?? '';
+    expect(system).toContain('Assessment Agent');
+    expect(system).toContain('Investigation');
+    expect(system).toContain('Assess the claim.');
+    // The model is told it must not invent ids it has not been given.
+    expect(system).toContain('Never invent');
+  });
+
+  test('the record contract can be omitted while the field values remain', async () => {
+    const context = await build({ includeRecordSchema: false });
+    const prompt = promptOf(context);
+    expect(context.sections).not.toContain('record_contract');
+    expect(prompt).not.toContain('Record contract');
+    expect(prompt).toContain('ACME Pty Ltd');
+    expect(context.sections).toContain('fields');
+  });
+
+  test('an enforced submission contract is stated in the system prompt', async () => {
+    const context = await build(
+      {},
+      { requiredSubmission: { toolKey: 'workflowItems.submit', allowWorkflowChange: false } }
+    );
+    const system = context.messages[0]?.content ?? '';
+    expect(system).toContain('workflowItems.submit');
+    expect(system).toContain('record');
+    expect(system).toContain('workflow');
   });
 
   test('notes are included only when requested, and bounded', async () => {
     for (let index = 0; index < 5; index++) {
-      addNoteSync(handle.db, actor, { ticketId, body: `Follow-up note ${index}` });
+      await addRecordNote(handle.db, actor, { recordId, body: `Follow-up note ${index}` });
     }
 
-    const none = await build({ includeTitle: true, includeRecentNotes: 0 });
-    expect(none.messages.map((m) => m.content).join('\n')).not.toContain('Follow-up note');
+    const none = await build({ includeRecentNotes: 0 });
+    const nonePrompt = promptOf(none);
+    expect(nonePrompt).not.toContain('Follow-up note');
+    expect(nonePrompt).not.toContain('Called the customer');
 
-    const recent = await build({ includeTitle: true, includeRecentNotes: 2 });
-    const prompt = recent.messages.map((m) => m.content).join('\n');
+    const recent = await build({ includeRecentNotes: 2 });
+    const prompt = promptOf(recent);
     expect(prompt).toContain('Follow-up note 4');
     expect(prompt).toContain('Follow-up note 3');
     // Only the two most recent notes, so an older one is absent.
     expect(prompt).not.toContain('Follow-up note 0');
-    expect(recent.sections).toContain('notes');
+    expect(recent.sections).toContain('record_notes');
   });
 
-  test('a file summary is included, but not the full content, unless asked', async () => {
-    const summaryOnly = await build({
-      includeTitle: true,
-      includeFileSummaries: true,
-      includeFullFileContent: false
-    });
-    const summaryPrompt = summaryOnly.messages.map((m) => m.content).join('\n');
+  test('record notes and work notes are assembled as distinguishable sections', async () => {
+    const context = await build({ includeRecentNotes: 5 });
+    const prompt = promptOf(context);
+    expect(prompt).toContain('## Record notes');
+    expect(prompt).toContain('Called the customer to confirm access.');
+    expect(prompt).toContain('## Work notes');
+    expect(prompt).toContain('Waiting on the assessor to return.');
+    expect(context.sections).toContain('record_notes');
+    expect(context.sections).toContain('work_notes');
+  });
+
+  test('a file summary is included, but extracted content never is', async () => {
+    const summary = await build({ includeFileSummaries: true });
+    const summaryPrompt = promptOf(summary);
     expect(summaryPrompt).toContain('assessment.txt');
     expect(summaryPrompt).toContain('roof replacement required');
+    // Full extracted file content is never assembled into the prompt.
     expect(summaryPrompt).not.toContain('at a cost of $12,500');
-    expect(summaryOnly.sections).toContain('files');
+    expect(summary.sections).toContain('files');
 
-    const withContent = await build({
-      includeTitle: true,
-      includeFileSummaries: false,
-      includeFullFileContent: true
-    });
-    const contentPrompt = withContent.messages.map((m) => m.content).join('\n');
-    expect(contentPrompt).toContain('at a cost of $12,500');
-  });
-
-  test('full content is truncated at the configured budget', async () => {
-    const context = await build(
-      { includeTitle: true, includeFileSummaries: false, includeFullFileContent: true },
-      { maxFileContentChars: 20 }
-    );
-    const prompt = context.messages.map((m) => m.content).join('\n');
-    expect(prompt).toContain('…[truncated]');
-    expect(prompt).not.toContain('at a cost of');
+    const without = await build({ includeFileSummaries: false });
+    const withoutPrompt = promptOf(without);
+    expect(withoutPrompt).not.toContain('assessment.txt');
+    expect(without.sections).not.toContain('files');
   });
 
   test('state history is opt-in', async () => {
-    const without = await build({ includeTitle: true, includeStateHistory: false });
-    expect(without.messages.map((m) => m.content).join('\n')).not.toContain('State history');
+    const without = await build({ includeStateHistory: false });
+    expect(promptOf(without)).not.toContain('State history');
 
-    const withHistory = await build({ includeTitle: true, includeStateHistory: true });
-    expect(withHistory.messages.map((m) => m.content).join('\n')).toContain('State history');
+    const withHistory = await build({ includeStateHistory: true });
+    expect(promptOf(withHistory)).toContain('State history');
   });
 
   test('the persisted snapshot is redacted and records what was assembled', async () => {
     registerSecretValue('sk-context-canary-123456');
-    const context = await build({ includeTitle: true, includeDescription: true });
+    const context = await build({});
 
     expect(context.snapshot).toHaveProperty('sections');
     expect(context.snapshot).toHaveProperty('system');
@@ -335,32 +339,18 @@ describe('context selection', () => {
     // The snapshot is what an operator inspects, so it must not contain secrets or
     // anything that was not deliberately assembled.
     expect(Array.isArray(context.snapshot.sections)).toBe(true);
+    expect((context.snapshot as { workflowItemId?: string }).workflowItemId).toBe(workflowItemId);
+    expect((context.snapshot as { recordId?: string }).recordId).toBe(recordId);
   });
 
-  test('a secret value that somehow reached the ticket is still masked', async () => {
-    const canary = 'sk-ticket-canary-abcdef';
+  test('a secret value that somehow reached the record is still masked', async () => {
+    const canary = 'sk-record-canary-abcdef';
     registerSecretValue(canary);
-    writeTicketFieldValues(handle.db, {
-      workspaceId: actor.workspaceId,
-      ticketId,
-      workflowId,
-      values: { customer: canary },
-      actor
-    });
+    await updateRecord(handle.db, actor, { recordId, fields: { customer: canary } });
 
-    const context = await build({ includeTitle: true, fieldKeys: ['customer'] });
-    const prompt = context.messages.map((m) => m.content).join('\n');
+    const context = await build({});
+    const prompt = promptOf(context);
     expect(prompt).not.toContain(canary);
     expect(prompt).toContain('[redacted]');
-  });
-
-  test('the system prompt names the agent, the state and the ticket', async () => {
-    const context = await build({ includeTitle: true });
-    const system = context.messages[0]?.content ?? '';
-    expect(system).toContain('Assessment Agent');
-    expect(system).toContain('Investigation');
-    expect(system).toContain('Assess the claim.');
-    // The model is told it must not invent ids it has not been given.
-    expect(system).toContain('Never invent');
   });
 });

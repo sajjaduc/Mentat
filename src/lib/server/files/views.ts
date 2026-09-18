@@ -2,9 +2,9 @@
  * File read models.
  *
  * The Files UI and agent tools both need the same projection: identity, blob
- * hash, latest provenance, workflow contexts and linked tickets. Building it in
- * one place keeps `requireFile`, `listForTicket` and `findFiles` from drifting
- * into three subtly different shapes.
+ * hash, latest provenance, workflow contexts and the work/record links. Building
+ * it in one place keeps `requireFile`, `listForWorkflowItem` and `findFiles` from
+ * drifting into three subtly different shapes.
  */
 import type { Executor } from '../db/client';
 import type { FileRecord } from '../db/schema';
@@ -17,9 +17,12 @@ export function fileSummaryView(executor: Executor, file: FileRecord): FileSumma
   const workflowIds = repo
     .listWorkflowFilesForFile(executor, file.workspaceId, file.id)
     .map((row) => row.workflowId);
-  const ticketIds = repo
-    .listTicketFilesForFile(executor, file.workspaceId, file.id)
-    .map((row) => row.ticketId);
+  const workflowItemIds = repo
+    .listFileWorkflowItemLinksForFile(executor, file.workspaceId, file.id)
+    .map((row) => row.workflowItemId);
+  const recordIds = repo
+    .listFileRecordLinksForFile(executor, file.workspaceId, file.id)
+    .map((row) => row.recordId);
   const latest = sources[0];
   return {
     id: file.id,
@@ -32,7 +35,8 @@ export function fileSummaryView(executor: Executor, file: FileRecord): FileSumma
     createdAt: file.createdAt,
     provenance: latest ? { sourceType: latest.sourceType, sourceLabel: latest.sourceLabel } : null,
     workflowIds,
-    ticketIds
+    workflowItemIds,
+    recordIds
   };
 }
 

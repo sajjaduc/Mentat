@@ -62,7 +62,7 @@ backup. Store it encrypted, or keep the key out of the volume by setting
 
 | Path | Contents | Back up? |
 | --- | --- | --- |
-| `./data/mentat.db` (+ `-wal`, `-shm`) | All state: tickets, runs, audit, metadata | **Yes** |
+| `./data/mentat.db` (+ `-wal`, `-shm`) | All state: records, work items, runs, audit, metadata | **Yes** |
 | `./data/blobs/` | Raw file bytes, content-addressed | **Yes** (unless you use GCS) |
 | `./data/master.key` | Generated secrets key | **Yes, separately** |
 | `./data/` others | Local scratch | No |
@@ -101,7 +101,7 @@ is the format you want to restore from.
 ### Retention
 
 Nothing is deleted automatically except expired cache entries, expired sessions
-(past 90 days), and consumed idempotency keys. Tickets, files, runs and audit rows
+(past 90 days), and consumed idempotency keys. Records, work items, files, runs and audit rows
 are retained indefinitely. Workspace `retentionDays` is stored in workspace settings
 and is enforced by policy rather than by a background reaper, so a future retention
 job can implement it without a schema change.
@@ -138,9 +138,10 @@ explicit error naming the version — it is never silently returned as blank.
 - **Retries.** A failed job retries with exponential backoff and full jitter. Once
   attempts are exhausted it becomes `dead` (retryable but exhausted) or `failed`
   (not retryable). Both are visible in **Settings → Jobs**.
-- **Agent-run retries.** A `state.enter` job's attempt budget comes from the state's
-  `maxAttempts`. On the final failed attempt the ticket moves to the state's
-  `failureStateId`, if configured, so a stuck ticket lands somewhere a human will see.
+- **Agent-run retries.** A `workflow_item.enter` job's attempt budget comes from the
+  state's `maxAttempts`. On the final failed attempt the work item moves to the
+  state's `failureStateId`, if configured, so a stuck item lands somewhere a human
+  will see.
 - **Idempotency.** Jobs carry a dedupe key for their unit of work and the payload
   includes the state-entry timestamp, so a stale job for a superseded entry is
   skipped rather than re-executed. Handlers are written to be safe to run twice.
@@ -155,7 +156,7 @@ explicit error naming the version — it is never silently returned as blank.
 | Long provider calls lose their lease | Raise `MENTAT_JOB_LEASE_SECONDS` (or the state's `timeoutSeconds` below it) |
 | Queue drains slowly with many HTTP tools | Raise `MENTAT_WORKER_CONCURRENCY`; check the service's rate-limit concurrency |
 | CPU idle between jobs | Lower `MENTAT_WORKER_POLL_MS` |
-| Many `dead` jobs after a provider outage | Raise the job's `maxAttempts`, then re-dispatch affected tickets |
+| Many `dead` jobs after a provider outage | Raise the job's `maxAttempts`, then re-dispatch affected work |
 
 ## Troubleshooting
 
@@ -167,11 +168,11 @@ Expected on first run without `MENTAT_MASTER_KEY`. Back the file up. If you see 
 again after previously having secrets, you have lost the original key: existing
 secrets cannot be decrypted, so recreate them.
 
-**A ticket sits in an agent state and nothing happens**
+**A work item sits in an agent state and nothing happens**
 Check, in order: the state has a bound agent (**Configuration → States**); the agent
 has a model (**Agents → the agent**); the provider is healthy (**Models → Check
-health**); the queue has a pending or dead `state.enter` job for that ticket
-(**Settings → Jobs**); then open the ticket's **Agent Work** tab for the last run's
+health**); the queue has a pending or dead `workflow_item.enter` job for that item
+(**Settings → Jobs**); then open the item's **Agent Work** tab for the last run's
 error.
 
 **A run fails with `provider_error`**
@@ -181,7 +182,7 @@ needs `toolCalling`.
 
 **A transfer is refused**
 Transfer policy, an unmet destination requirement, or an approval gate. The message
-names the fields or the reason. `POST /api/tickets/:id/transfer-preview` explains
+names the fields or the reason. `POST /api/workflow-items/:id/transfer-preview` explains
 compatible, mapped, missing and source-only fields before you commit to the move.
 
 **A file stays `pending`**

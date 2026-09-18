@@ -7,10 +7,10 @@
  * tables.
  *
  * Relation fields use scalar subqueries (`EXISTS`/correlated `SELECT`) rather than
- * joins: a file can carry many sources, tickets and workflow contexts, and a join
- * would multiply rows and make `limit` mean the wrong thing. JSON columns are read
- * with `json_extract`, which is the one SQLite-specific construct here and is
- * isolated so a PostgreSQL compiler can replace it.
+ * joins: a file can carry many sources, work items, records and workflow contexts,
+ * and a join would multiply rows and make `limit` mean the wrong thing. JSON
+ * columns are read with `json_extract`, which is the one SQLite-specific construct
+ * here and is isolated so a PostgreSQL compiler can replace it.
  */
 import { and, eq, or, type SQL, sql } from 'drizzle-orm';
 import { errors } from '../core/errors';
@@ -123,9 +123,14 @@ function systemExpression(key: string): { expression: SQL; valueType: ValueType 
         expression: sql`(SELECT wf.workflow_id FROM workflow_files wf WHERE wf.file_id = files.id AND wf.removed_at IS NULL LIMIT 1)`,
         valueType: 'text'
       };
-    case FileSystemFields.ticketId:
+    case FileSystemFields.workflowItemId:
       return {
-        expression: sql`(SELECT tf.ticket_id FROM ticket_files tf WHERE tf.file_id = files.id AND tf.removed_at IS NULL LIMIT 1)`,
+        expression: sql`(SELECT fwi.workflow_item_id FROM file_workflow_items fwi WHERE fwi.file_id = files.id AND fwi.removed_at IS NULL LIMIT 1)`,
+        valueType: 'text'
+      };
+    case FileSystemFields.recordId:
+      return {
+        expression: sql`(SELECT fr.record_id FROM file_records fr WHERE fr.file_id = files.id AND fr.removed_at IS NULL LIMIT 1)`,
         valueType: 'text'
       };
     case FileSystemFields.contextLabel:

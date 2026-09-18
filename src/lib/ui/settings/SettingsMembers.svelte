@@ -250,7 +250,7 @@ async function remove(member: WorkspaceMember) {
     </DataTable>
 
     <p class="text-[11px] leading-relaxed text-[var(--color-ink-subtle)]">
-      Removing a member removes their access to this workspace. It never deletes tickets, files or
+      Removing a member removes their access to this workspace. It never deletes work items, files or
       history they created, which stay attributed to them in the audit ledger.
     </p>
   {/if}

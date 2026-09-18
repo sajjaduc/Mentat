@@ -80,7 +80,7 @@ const widgetTypeSchema = z.enum([
 ]);
 
 const dataSourceSchema = z.object({
-  kind: z.enum(['tickets', 'state_history', 'field_history', 'runs', 'files']),
+  kind: z.enum(['state_history', 'field_history', 'runs', 'files', 'records', 'workflow_items']),
   workflowIds: z.array(z.string()).optional(),
   funnelStages: z
     .array(
@@ -104,6 +104,7 @@ const measureSchema = z.object({
 const groupingSchema = z.object({
   by: z.enum([
     'none',
+    'objectType',
     'state',
     'priority',
     'owner',

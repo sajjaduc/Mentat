@@ -3,24 +3,21 @@
  *
  * The contract is that a sender may retry freely (redelivery is a no-op), an
  * unsigned or wrongly signed payload never creates work, and whatever is
- * persisted is safe to look at later.
+ * persisted is safe to look at later. Accepted deliveries become a Record +
+ * WorkflowItem through the real services (ADR-0021).
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { ActorContext } from '../../../src/lib/server/core/context';
 import { systemActor } from '../../../src/lib/server/core/context';
 import { hmacSha256Hex } from '../../../src/lib/server/core/crypto';
 import type { Executor } from '../../../src/lib/server/db/client';
-import { setFileService } from '../../../src/lib/server/files/contracts';
 import { clearJobHandlers, requireJobHandler } from '../../../src/lib/server/jobs/handlers';
 import { SqliteJobQueue } from '../../../src/lib/server/jobs/queue';
 import { createSecret } from '../../../src/lib/server/secrets/service';
-import { setTicketService } from '../../../src/lib/server/tickets/contracts';
 import { registerTriggerJobHandlers } from '../../../src/lib/server/triggers/handlers';
 import { receiveWebhook } from '../../../src/lib/server/triggers/webhook';
 import { createTestDatabase, type TestDatabase } from '../../helpers/db';
 import {
-  createFakeFileService,
-  createFakeTicketService,
   createTriggerRecord,
   createUser,
   createWorkflow,
@@ -36,8 +33,6 @@ let workspaceId: string;
 let workflow: WorkflowFixture;
 let actor: ActorContext;
 let system: ActorContext;
-let tickets: ReturnType<typeof createFakeTicketService>;
-let files: ReturnType<typeof createFakeFileService>;
 let secretId: string;
 
 beforeEach(async () => {
@@ -52,17 +47,11 @@ beforeEach(async () => {
     value: SIGNATURE_SECRET
   });
   secretId = secret.id;
-  tickets = createFakeTicketService({ defaultStateId: workflow.states[0] });
-  files = createFakeFileService();
-  setTicketService(tickets.service);
-  setFileService(files.service);
   clearJobHandlers();
   registerTriggerJobHandlers();
 });
 
 afterEach(() => {
-  setTicketService(null);
-  setFileService(null);
   clearJobHandlers();
   handle.cleanup();
 });
@@ -70,6 +59,12 @@ afterEach(() => {
 function sign(body: string, prefix = true): string {
   const digest = hmacSha256Hex(SIGNATURE_SECRET, body, 'hex');
   return prefix ? `sha256=${digest}` : digest;
+}
+
+function count(table: 'records' | 'workflow_items'): number {
+  return Number(
+    handle.sqlite.query<{ n: number }, []>(`SELECT count(*) AS n FROM ${table}`).get()?.n ?? 0
+  );
 }
 
 async function createWebhook(
@@ -257,7 +252,7 @@ describe('triggers/webhook size limits and disabled triggers', () => {
 });
 
 describe('triggers/webhook idempotency and redaction', () => {
-  test('redelivery returns duplicate and creates exactly one ticket', async () => {
+  test('redelivery returns duplicate and creates exactly one unit of work', async () => {
     const token = await createWebhook();
     const body = JSON.stringify({ subject: 'Idempotent', data: { id: 1 } });
     const headers = {
@@ -270,20 +265,24 @@ describe('triggers/webhook idempotency and redaction', () => {
 
     expect(first.duplicate).toBe(false);
     expect(second.duplicate).toBe(true);
-    expect(second.ticketId).toBeNull();
+    expect(second.recordId).toBeNull();
+    expect(second.workflowItemId).toBeNull();
 
     expect(await runPendingJobs(handle.db)).toBe(1);
-    expect(tickets.createCalls).toHaveLength(1);
+    expect(count('records')).toBe(1);
+    expect(count('workflow_items')).toBe(1);
     expect(handle.sqlite.query('SELECT count(*) AS n FROM trigger_events').get()).toMatchObject({
       n: 1
     });
 
-    // Once processed, a redelivery reports the original ticket.
+    // Once processed, a redelivery reports the original record/work item.
     const third = await receiveWebhook(handle.db, system, { token, rawBody: body, headers });
     expect(third.duplicate).toBe(true);
-    expect(third.ticketId).toBeTruthy();
+    expect(third.recordId).toBeTruthy();
+    expect(third.workflowItemId).toBeTruthy();
     expect(await runPendingJobs(handle.db)).toBe(0);
-    expect(tickets.createCalls).toHaveLength(1);
+    expect(count('records')).toBe(1);
+    expect(count('workflow_items')).toBe(1);
   });
 
   test('uses the body hash when no idempotency header is present', async () => {

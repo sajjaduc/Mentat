@@ -2,36 +2,59 @@
  * Mapping against a persisted trigger.
  *
  * This is the integration half of the mapping contract: a stored trigger row is
- * read back and applied to a payload, with the recording ticket/file services
- * standing in for the separately owned implementations.
+ * read back and applied to a payload, and the real records + workflow-items
+ * services must produce the work. Assertions read the persisted
+ * `records` / `workflow_items` / field values directly (ADR-0021) rather than a
+ * recording ticket stand-in.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { and, eq } from 'drizzle-orm';
 import { systemActor } from '../../../src/lib/server/core/context';
 import type { Executor } from '../../../src/lib/server/db/client';
+import {
+  labels,
+  records,
+  workflowItemLabels,
+  workflowItemRelationships,
+  workflowItems
+} from '../../../src/lib/server/db/schema';
 import { applyTriggerMapping } from '../../../src/lib/server/triggers/mapping';
 import { requireTriggerRow } from '../../../src/lib/server/triggers/service';
+import { getWorkflowItemDetail } from '../../../src/lib/server/workflow-items/service';
 import { createTestDatabase, type TestDatabase } from '../../helpers/db';
 import {
   createFakeFileService,
-  createFakeTicketService,
+  createObjectType,
+  createRecord,
   createTriggerRecord,
+  createUser,
   createWorkflow,
+  createWorkflowItem,
   createWorkspace,
   type WorkflowFixture
 } from '../../helpers/factories';
 
 let handle: TestDatabase;
 let workspaceId: string;
+let ownerId: string;
 let workflow: WorkflowFixture;
-let tickets: ReturnType<typeof createFakeTicketService>;
 let files: ReturnType<typeof createFakeFileService>;
 
 beforeEach(async () => {
   handle = createTestDatabase();
   const workspace = await createWorkspace(handle.db, 'Mapping');
   workspaceId = workspace.id;
-  workflow = await createWorkflow(handle.db, workspaceId);
-  tickets = createFakeTicketService({ defaultStateId: workflow.states[1] });
+  ownerId = (await createUser(handle.db, { name: 'Owner' })).id;
+  const objectType = await createObjectType(handle.db, {
+    workspaceId,
+    name: 'Order',
+    fields: [
+      { key: 'name', type: 'short_text' },
+      { key: 'externalId', type: 'short_text' },
+      { key: 'status', type: 'short_text' }
+    ]
+  });
+  workflow = await createWorkflow(handle.db, workspaceId, { objectTypeId: objectType.id });
   files = createFakeFileService();
 });
 
@@ -43,6 +66,7 @@ afterEach(() => {
 async function persistTrigger(options: {
   name: string;
   upsertOnDedupe?: boolean;
+  targetStateId?: string | null;
   mapping: Record<string, unknown>;
 }) {
   const created = await createTriggerRecord(handle.db, {
@@ -51,20 +75,34 @@ async function persistTrigger(options: {
     name: options.name,
     type: 'manual',
     upsertOnDedupe: options.upsertOnDedupe,
+    targetStateId: options.targetStateId ?? null,
     config: { mapping: options.mapping }
   });
   return requireTriggerRow(handle.db, workspaceId, created.id);
 }
 
+function recordRow(id: string) {
+  return handle.db.select().from(records).where(eq(records.id, id)).all()[0];
+}
+
+function itemRow(id: string) {
+  return handle.db.select().from(workflowItems).where(eq(workflowItems.id, id)).all()[0];
+}
+
+function fieldValues(workflowItemId: string) {
+  return getWorkflowItemDetail(handle.db, systemActor(workspaceId), workflowItemId);
+}
+
 describe('triggers/mapping integration', () => {
-  test('creates a ticket with typed fields, priority, ownership and labels', async () => {
+  test('creates work with typed fields, priority, ownership and labels', async () => {
     const trigger = await persistTrigger({
       name: 'Fields',
+      targetStateId: workflow.states[1],
       mapping: {
         titleTemplate: '{{subject}}',
         fieldPaths: { externalId: 'id' },
         priorityPath: 'priority',
-        ownerUserId: 'user-owner',
+        ownerUserId: ownerId,
         labels: ['intake']
       }
     });
@@ -72,24 +110,31 @@ describe('triggers/mapping integration', () => {
     const result = await applyTriggerMapping(handle.db as Executor, {
       trigger,
       payload: { subject: 'New order', id: 'ORD-1', priority: 'urgent' },
-      ticketService: tickets.service,
       fileService: files.service
     });
 
-    expect(tickets.createCalls).toHaveLength(1);
-    expect(tickets.createCalls[0]).toMatchObject({
-      title: 'New order',
-      workflowId: workflow.id,
-      priority: 'urgent',
-      ownerUserId: 'user-owner',
-      labelNames: ['intake'],
-      fields: { externalId: 'ORD-1' }
-    });
-    expect(result.fieldKeysSet).toEqual(['externalId']);
+    const record = recordRow(result.recordId);
+    expect(record?.displayName).toBe('New order');
+    expect((await fieldValues(result.workflowItemId)).fields.externalId).toBe('ORD-1');
+
+    const item = itemRow(result.workflowItemId);
+    expect(item?.ownerUserId).toBe(ownerId);
+    expect((item?.structuredData as Record<string, unknown>)?.priority).toBe('urgent');
+
+    const applied = handle.db
+      .select({ name: labels.name })
+      .from(workflowItemLabels)
+      .innerJoin(labels, eq(labels.id, workflowItemLabels.labelId))
+      .where(eq(workflowItemLabels.workflowItemId, result.workflowItemId))
+      .all()
+      .map((row) => row.name);
+    expect(applied).toEqual(['intake']);
+
+    expect(result.fieldKeysSet).toContain('externalId');
     expect(result.stateId).toBe(workflow.states[1]!);
   });
 
-  test('ingests attachments with incoming_email provenance and a ticket link', async () => {
+  test('ingests attachments with incoming_email provenance and links to work', async () => {
     const trigger = await persistTrigger({
       name: 'Attachments',
       mapping: {
@@ -110,7 +155,6 @@ describe('triggers/mapping integration', () => {
           }
         ]
       },
-      ticketService: tickets.service,
       fileService: files.service,
       sourceType: 'incoming_email',
       reference: 'imap-message-9',
@@ -121,7 +165,8 @@ describe('triggers/mapping integration', () => {
     expect(files.ingestCalls[0]).toMatchObject({
       filename: 'contract.pdf',
       relationship: 'attachment',
-      ticketId: result.ticketId,
+      workflowItemId: result.workflowItemId,
+      recordId: result.recordId,
       workflowId: workflow.id
     });
     expect(files.ingestCalls[0]?.source).toMatchObject({
@@ -131,19 +176,55 @@ describe('triggers/mapping integration', () => {
     });
   });
 
-  test('parentTicketPath asks the ticket service to create a child', async () => {
+  test('parentRecordPath links the created work under the parent work item', async () => {
+    const parent = await createWorkflowItem(handle.db, { workspaceId, workflow });
     const trigger = await persistTrigger({
       name: 'Sub task',
-      mapping: { titlePath: 'subject', parentTicketPath: 'parent' }
+      mapping: { titlePath: 'subject', parentRecordPath: 'parent' }
     });
 
-    await applyTriggerMapping(handle.db as Executor, {
+    const result = await applyTriggerMapping(handle.db as Executor, {
       trigger,
-      payload: { subject: 'Child', parent: 'TICKET-1' },
-      ticketService: tickets.service,
+      payload: { subject: 'Child', parent: parent.recordId },
       fileService: files.service
     });
-    expect(tickets.createCalls[0]?.parentTicketId).toBe('TICKET-1');
+    const relationship = handle.db
+      .select()
+      .from(workflowItemRelationships)
+      .where(
+        and(
+          eq(workflowItemRelationships.fromWorkflowItemId, result.workflowItemId),
+          eq(workflowItemRelationships.type, 'parent')
+        )
+      )
+      .all()[0];
+    expect(relationship?.toWorkflowItemId).toBe(parent.id);
+  });
+
+  test('parentRecordPath for a record with no active work is skipped, not failed', async () => {
+    // A Record that has no WorkflowItem in the destination workflow.
+    const record = await createRecord(handle.db, {
+      workspaceId,
+      objectTypeId: workflow.objectTypeId,
+      displayName: 'Orphan record'
+    });
+    const trigger = await persistTrigger({
+      name: 'Skip parent',
+      mapping: { titlePath: 'subject', parentRecordPath: 'parent' }
+    });
+    const result = await applyTriggerMapping(handle.db as Executor, {
+      trigger,
+      payload: { subject: 'Child', parent: record.id },
+      fileService: files.service
+    });
+    expect(itemRow(result.workflowItemId)?.recordId).toBeTruthy();
+    expect(
+      handle.db
+        .select()
+        .from(workflowItemRelationships)
+        .where(eq(workflowItemRelationships.fromWorkflowItemId, result.workflowItemId))
+        .all()
+    ).toHaveLength(0);
   });
 
   test('upsertOnDedupe refreshes rather than duplicating', async () => {
@@ -160,19 +241,21 @@ describe('triggers/mapping integration', () => {
     const first = await applyTriggerMapping(handle.db as Executor, {
       trigger,
       payload: { subject: 'One', id: 'X', status: 'open' },
-      ticketService: tickets.service,
       fileService: files.service
     });
     const second = await applyTriggerMapping(handle.db as Executor, {
       trigger,
       payload: { subject: 'Two', id: 'X', status: 'closed' },
-      ticketService: tickets.service,
       fileService: files.service
     });
 
-    expect(first.ticketId).toBe(second.ticketId);
-    expect(tickets.tickets()).toHaveLength(1);
-    expect(tickets.fieldCalls.at(-1)?.values).toEqual({ status: 'closed' });
+    expect(first.upserted).toBe(false);
+    expect(second.upserted).toBe(true);
+    expect(second.recordId).toBe(first.recordId);
+    expect(second.workflowItemId).toBe(first.workflowItemId);
+    expect(handle.db.select().from(records).all()).toHaveLength(1);
+    expect(handle.db.select().from(workflowItems).all()).toHaveLength(1);
+    expect((await fieldValues(second.workflowItemId)).fields.status).toBe('closed');
   });
 
   test('missing required template input fails the mapping', async () => {
@@ -185,29 +268,32 @@ describe('triggers/mapping integration', () => {
       applyTriggerMapping(handle.db as Executor, {
         trigger,
         payload: {},
-        ticketService: tickets.service,
         fileService: files.service,
         actor: systemActor(workspaceId)
       })
     ).rejects.toMatchObject({ code: 'validation_failed' });
-    expect(tickets.createCalls).toHaveLength(0);
+    expect(handle.db.select().from(records).all()).toHaveLength(0);
   });
 
-  test('records trigger provenance on the created ticket', async () => {
+  test('records trigger provenance on the created record and work item', async () => {
     const trigger = await persistTrigger({
       name: 'Provenance',
       mapping: { titleTemplate: '{{subject}}' }
     });
 
-    await applyTriggerMapping(handle.db as Executor, {
+    const result = await applyTriggerMapping(handle.db as Executor, {
       trigger,
       payload: { subject: 'Prov' },
-      ticketService: tickets.service,
       fileService: files.service,
       reference: 'delivery-7',
       triggerEventId: 'event-7'
     });
-    expect(tickets.createCalls[0]?.provenance).toMatchObject({
+    expect(recordRow(result.recordId)?.provenance).toMatchObject({
+      triggerId: trigger.id,
+      triggerEventId: 'event-7',
+      sourceReference: 'delivery-7'
+    });
+    expect(itemRow(result.workflowItemId)?.provenance).toMatchObject({
       triggerId: trigger.id,
       triggerEventId: 'event-7',
       sourceReference: 'delivery-7'

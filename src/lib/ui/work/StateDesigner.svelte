@@ -3,7 +3,7 @@
  * State and transition designer.
  *
  * Order is the board order, so reordering is an explicit, persisted operation.
- * Deletion is confirmed because a state with tickets cannot be removed, and the
+ * Deletion is confirmed because a state with workItems cannot be removed, and the
  * server's refusal is worth reading rather than losing to a toast.
  */
 import { api, describeApiError } from '$ui/api';
@@ -192,7 +192,7 @@ const transitionRows = $derived(
     {#if ordered.length === 0}
       <EmptyState
         title="No states yet"
-        description="Every workflow needs at least one state before tickets can move."
+        description="Every workflow needs at least one state before work items can move."
       >
         <Button variant="primary" onclick={openCreate}>Add the first state</Button>
       </EmptyState>
@@ -302,7 +302,7 @@ const transitionRows = $derived(
 
     {#if transitionRows.length === 0}
       <p class="text-xs text-[var(--color-ink-subtle)]">
-        No transitions yet. Without one, tickets cannot move between states.
+        No transitions yet. Without one, work items cannot move between states.
       </p>
     {:else}
       <ul class="divide-y divide-[var(--color-border-subtle)] rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)]">
@@ -350,7 +350,7 @@ const transitionRows = $derived(
 <Modal
   open={confirmDelete !== null}
   title="Delete state"
-  description="A state that still holds tickets cannot be deleted; move them first."
+  description="A state that still holds work items cannot be deleted; move them first."
   onclose={() => (confirmDelete = null)}
 >
   <p class="text-sm">Delete “{confirmDelete?.name}”? This cannot be undone.</p>

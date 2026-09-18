@@ -26,12 +26,16 @@ import {
   type CronTriggerConfig,
   dashboards,
   dashboardWidgets,
+  type FieldScope,
   type FieldType,
+  type FileLinkRelationship,
   fieldDefinitions,
   fieldValueHistory,
   fileFieldValues,
+  fileRecords,
   fileSources,
   files,
+  fileWorkflowItems,
   type HttpAuthConfig,
   type HttpAuthType,
   type HttpBodyMapping,
@@ -49,21 +53,21 @@ import {
   type ModelCapabilities,
   type ModelInferenceDefaults,
   models,
+  objectTypeFields,
+  objectTypes,
+  type ParticipationKind,
   type Provider,
   type ProviderConfig,
   type ProviderType,
   providers,
   type RateLimitConfig,
   type RetryPolicy,
+  recordFieldValues,
+  records,
   type StateKind,
   type TriggerType,
   teamMembers,
   teams,
-  ticketFieldValues,
-  ticketFiles,
-  ticketLabels,
-  ticketStateHistory,
-  tickets,
   triggers,
   users,
   type WebhookTriggerConfig,
@@ -73,6 +77,10 @@ import {
   type WidgetTimeRange,
   type WidgetType,
   type WorkspaceRole,
+  workflowItemFieldValues,
+  workflowItemLabels,
+  workflowItemStateHistory,
+  workflowItems,
   workflowStates,
   workflows,
   workflowTransitions,
@@ -80,12 +88,6 @@ import {
   workspaces
 } from '../../src/lib/server/db/schema';
 import type { FileService, IngestFileInput } from '../../src/lib/server/files/contracts';
-import type {
-  CreateTicketInput,
-  TicketService,
-  TicketSummary
-} from '../../src/lib/server/tickets/contracts';
-import type { TicketRelationshipType } from '../../src/lib/server/tickets/types';
 
 export interface WorkspaceFixture {
   id: string;
@@ -186,11 +188,126 @@ export async function addTeamMember(
 export interface WorkflowFixture {
   id: string;
   key: string;
+  /** The Object Type this workflow processes (ADR-0021: never implicit). */
+  objectTypeId: string;
   stateIds: Record<string, string>;
   /** Ordered list of state ids, matching `stateNames`. */
   states: string[];
   stateNames: string[];
   transitionIds: string[];
+}
+
+export interface ObjectTypeFieldSpec {
+  key?: string;
+  name?: string;
+  type?: FieldType;
+  scope?: FieldScope;
+  options?: Record<string, unknown>;
+  required?: boolean;
+  isIdentity?: boolean;
+  isPrimaryDisplay?: boolean;
+  isSecondaryDisplay?: boolean;
+  showInList?: boolean;
+  showOnCard?: boolean;
+  filterable?: boolean;
+  position?: number;
+  defaultValue?: unknown;
+  /** Bind an existing workspace field definition instead of creating one. */
+  fieldDefinitionId?: string;
+}
+
+export interface ObjectTypeFixture {
+  id: string;
+  key: string;
+  name: string;
+  /** Field definition ids, keyed by field key. */
+  fieldIds: Record<string, string>;
+}
+
+/**
+ * Create an Object Type and bind its base fields. Tests own their Object Types:
+ * there is no seeded Ticket Object Type to rely on (ADR-0021).
+ */
+export async function createObjectType(
+  db: Executor,
+  options: {
+    workspaceId: string;
+    key?: string;
+    name?: string;
+    pluralName?: string;
+    settings?: Record<string, unknown> | null;
+    fields?: ObjectTypeFieldSpec[];
+  }
+): Promise<ObjectTypeFixture> {
+  const id = uuidv7();
+  const now = Date.now();
+  const name = options.name ?? unique('Object');
+  const key = options.key ?? `${slugify(name)}-${unique('ot').split('-').at(-1)}`;
+  await db
+    .insert(objectTypes)
+    .values({
+      id,
+      workspaceId: options.workspaceId,
+      key,
+      name,
+      pluralName: options.pluralName ?? `${name}s`,
+      settings: (options.settings as never) ?? null,
+      position: 0,
+      createdAt: now,
+      updatedAt: now
+    })
+    .run();
+
+  const fieldIds: Record<string, string> = {};
+  const specs = options.fields ?? [];
+  for (const [index, spec] of specs.entries()) {
+    const fieldDefinitionId =
+      spec.fieldDefinitionId ??
+      (await createField(db, {
+        workspaceId: options.workspaceId,
+        key: spec.key,
+        name: spec.name,
+        type: spec.type,
+        scope: spec.scope ?? 'record',
+        options: spec.options
+      }));
+    const binding = db
+      .select({ key: fieldDefinitions.key })
+      .from(fieldDefinitions)
+      .where(eq(fieldDefinitions.id, fieldDefinitionId))
+      .all()[0];
+    if (binding) fieldIds[binding.key] = fieldDefinitionId;
+    await db
+      .insert(objectTypeFields)
+      .values({
+        id: uuidv7(),
+        workspaceId: options.workspaceId,
+        objectTypeId: id,
+        fieldDefinitionId,
+        position: spec.position ?? index,
+        required: spec.required ?? false,
+        isIdentity: spec.isIdentity ?? false,
+        isPrimaryDisplay: spec.isPrimaryDisplay ?? index === 0,
+        isSecondaryDisplay: spec.isSecondaryDisplay ?? false,
+        showInList: spec.showInList ?? true,
+        showOnCard: spec.showOnCard ?? false,
+        filterable: spec.filterable ?? true,
+        defaultValue: (spec.defaultValue ?? null) as never,
+        createdAt: now,
+        updatedAt: now
+      })
+      .run();
+  }
+
+  return { id, key, name, fieldIds };
+}
+
+function slugify(value: string): string {
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return slug.length > 0 ? slug.slice(0, 40) : 'object';
 }
 
 export interface WorkflowStateSpec {
@@ -210,6 +327,12 @@ export async function createWorkflow(
   options: {
     name?: string;
     key?: string;
+    /**
+     * The Object Type this workflow processes. Required by the universal model;
+     * when omitted a fresh Object Type is created so callers that do not care
+     * about the shape still get a valid workflow (ADR-0021).
+     */
+    objectTypeId?: string;
     states?: WorkflowStateSpec[];
     /** `[fromName, toName, transitionName?]` tuples. */
     transitions?: Array<[string, string, string?]>;
@@ -220,6 +343,9 @@ export async function createWorkflow(
   const name = options.name ?? unique('Workflow');
   const key = options.key ?? keyPrefix(name, 'WF');
   const now = Date.now();
+  const objectTypeId =
+    options.objectTypeId ??
+    (await createObjectType(db, { workspaceId, name: `${name} Object` })).id;
   await db
     .insert(workflows)
     .values({
@@ -227,6 +353,7 @@ export async function createWorkflow(
       workspaceId,
       name,
       key,
+      objectTypeId,
       createdByUserId: options.createdByUserId ?? null,
       createdAt: now,
       updatedAt: now
@@ -268,7 +395,7 @@ export async function createWorkflow(
       .run();
   }
 
-  // Point defaultStateId at the first state so ticket creation works out of the box.
+  // Point defaultStateId at the first state so work can start out of the box.
   await db
     .update(workflows)
     .set({ defaultStateId: stateOrder[0] ?? null })
@@ -304,20 +431,84 @@ export async function createWorkflow(
       .run();
   }
 
-  return { id, key, stateIds, states: stateOrder, stateNames, transitionIds };
+  return { id, key, objectTypeId, stateIds, states: stateOrder, stateNames, transitionIds };
 }
 
-export interface TicketFixture {
+export interface RecordFixture {
   id: string;
+  objectTypeId: string;
+  displayName: string;
+  key: string | null;
+  number: number | null;
+}
+
+/** Insert a Record row directly (no workflow participation). */
+export async function createRecord(
+  db: Executor,
+  options: {
+    workspaceId: string;
+    objectTypeId: string;
+    displayName?: string;
+    key?: string | null;
+    number?: number | null;
+    structuredData?: Record<string, unknown> | null;
+    provenance?: Record<string, unknown> | null;
+    createdByType?: ActorType;
+    createdById?: string | null;
+    createdAt?: number;
+    updatedAt?: number;
+    lastActivityAt?: number;
+  }
+): Promise<RecordFixture> {
+  const id = uuidv7(options.createdAt ?? Date.now());
+  const createdAt = options.createdAt ?? Date.now();
+  const displayName = options.displayName ?? unique('Record');
+  await db
+    .insert(records)
+    .values({
+      id,
+      workspaceId: options.workspaceId,
+      objectTypeId: options.objectTypeId,
+      displayName,
+      key: options.key ?? null,
+      number: options.number ?? null,
+      createdByType: options.createdByType ?? 'user',
+      createdById: options.createdById ?? null,
+      structuredData: (options.structuredData as never) ?? null,
+      provenance: (options.provenance as never) ?? null,
+      lastActivityAt: options.lastActivityAt ?? createdAt,
+      createdAt,
+      updatedAt: options.updatedAt ?? createdAt
+    })
+    .run();
+  return {
+    id,
+    objectTypeId: options.objectTypeId,
+    displayName,
+    key: options.key ?? null,
+    number: options.number ?? null
+  };
+}
+
+export interface WorkflowItemFixture {
+  id: string;
+  recordId: string;
   key: string;
   number: number;
 }
 
-export async function createTicket(
+/**
+ * Start work: create (or reuse) a Record and put it into the workflow. Mirrors
+ * the shape the old `createWorkItem` fixture produced so lifecycle tests read the
+ * same way, but writes only the universal tables (ADR-0021).
+ */
+export async function createWorkflowItem(
   db: Executor,
   options: {
     workspaceId: string;
     workflow: WorkflowFixture;
+    /** Put an existing Record into the workflow instead of creating one. */
+    recordId?: string;
     stateId?: string;
     title?: string;
     description?: string;
@@ -327,44 +518,115 @@ export async function createTicket(
     createdByType?: ActorType;
     createdById?: string;
     number?: number;
+    structuredData?: Record<string, unknown> | null;
+    provenance?: Record<string, unknown> | null;
+    participation?: ParticipationKind;
+    createdAt?: number;
+    updatedAt?: number;
   }
-): Promise<TicketFixture> {
+): Promise<WorkflowItemFixture> {
   const id = uuidv7();
   const stateId = options.stateId ?? options.workflow.states[0]!;
-  const number = options.number ?? (await nextTicketNumber(db, options.workspaceId));
-  const now = Date.now();
+  const now = options.createdAt ?? Date.now();
+  let recordId = options.recordId ?? null;
+  let number = options.number ?? 0;
+  let key = '';
+  if (recordId) {
+    const record = db
+      .select({ key: records.key, number: records.number })
+      .from(records)
+      .where(eq(records.id, recordId))
+      .all()[0];
+    number = options.number ?? record?.number ?? 0;
+    key = record?.key ?? `${options.workflow.key}-${number}`;
+  } else {
+    number =
+      options.number ??
+      (await nextRecordNumber(db, options.workspaceId, options.workflow.objectTypeId));
+    key = `${options.workflow.key}-${number}`;
+    const created = await createRecord(db, {
+      workspaceId: options.workspaceId,
+      objectTypeId: options.workflow.objectTypeId,
+      displayName: options.title ?? unique('Record'),
+      key,
+      number,
+      createdByType: options.createdByType,
+      createdById: options.createdById,
+      createdAt: now,
+      updatedAt: options.updatedAt ?? now,
+      lastActivityAt: now
+    });
+    recordId = created.id;
+  }
+
+  const structuredData: Record<string, unknown> = { ...(options.structuredData ?? {}) };
+  if (options.description !== undefined && structuredData.description === undefined) {
+    structuredData.description = options.description;
+  }
+  if (options.priority !== undefined && structuredData.priority === undefined) {
+    structuredData.priority = options.priority;
+  }
+
   await db
-    .insert(tickets)
+    .insert(workflowItems)
     .values({
       id,
       workspaceId: options.workspaceId,
       workflowId: options.workflow.id,
+      recordId,
       stateId,
-      key: `${options.workflow.key}-${number}`,
-      number,
-      title: options.title ?? unique('Ticket'),
-      description: options.description ?? null,
-      priority: options.priority ?? 'none',
       ownerUserId: options.ownerUserId ?? null,
       ownerTeamId: options.ownerTeamId ?? null,
+      version: 1,
+      structuredData: (Object.keys(structuredData).length > 0 ? structuredData : null) as never,
+      participation: options.participation ?? 'primary',
       createdByType: options.createdByType ?? 'user',
       createdById: options.createdById ?? null,
+      provenance: (options.provenance as never) ?? null,
       enteredStateAt: now,
       lastActivityAt: now,
+      stateRunCount: 0,
       createdAt: now,
-      updatedAt: now
+      updatedAt: options.updatedAt ?? now
     })
     .run();
-  return { id, key: `${options.workflow.key}-${number}`, number };
+
+  const stateName =
+    options.workflow.stateNames[options.workflow.states.indexOf(stateId)] ??
+    options.workflow.stateNames[0] ??
+    'State';
+  await db
+    .insert(workflowItemStateHistory)
+    .values({
+      id: uuidv7(now),
+      workspaceId: options.workspaceId,
+      workflowItemId: id,
+      workflowId: options.workflow.id,
+      stateId,
+      stateName,
+      stateKind: 'manual',
+      previousStateId: null,
+      enteredAt: now,
+      enteredByType: options.createdByType ?? 'user',
+      enteredById: options.createdById ?? null
+    })
+    .run();
+
+  return { id, recordId, key, number };
 }
 
-async function nextTicketNumber(db: Executor, workspaceId: string): Promise<number> {
+/** Next per-Object-Type record number, mirroring the service's counter. */
+async function nextRecordNumber(
+  db: Executor,
+  workspaceId: string,
+  objectTypeId: string
+): Promise<number> {
   const rows = await db
-    .select({ number: tickets.number })
-    .from(tickets)
-    .where(eq(tickets.workspaceId, workspaceId))
+    .select({ number: records.number })
+    .from(records)
+    .where(and(eq(records.workspaceId, workspaceId), eq(records.objectTypeId, objectTypeId)))
     .all();
-  return rows.reduce((max, row) => Math.max(max, row.number), 0) + 1;
+  return rows.reduce((max, row) => Math.max(max, row.number ?? 0), 0) + 1;
 }
 
 export async function createField(
@@ -374,7 +636,7 @@ export async function createField(
     key?: string;
     name?: string;
     type?: FieldType;
-    scope?: 'ticket' | 'file';
+    scope?: FieldScope;
     options?: Record<string, unknown>;
   }
 ): Promise<string> {
@@ -388,7 +650,7 @@ export async function createField(
       key: options.key ?? unique('field'),
       name: options.name ?? 'Field',
       type: options.type ?? 'short_text',
-      scope: options.scope ?? 'ticket',
+      scope: options.scope ?? 'record',
       options: (options.options as never) ?? null,
       createdAt: now,
       updatedAt: now
@@ -397,21 +659,51 @@ export async function createField(
   return id;
 }
 
-export async function setTicketFieldValue(
+export async function setWorkflowItemFieldValue(
   db: Executor,
   options: {
     workspaceId: string;
-    ticketId: string;
+    workflowItemId: string;
+    fieldDefinitionId: string;
+    value: unknown;
+  }
+): Promise<void> {
+  const item = db
+    .select({ workflowId: workflowItems.workflowId })
+    .from(workflowItems)
+    .where(eq(workflowItems.id, options.workflowItemId))
+    .all()[0];
+  await db
+    .insert(workflowItemFieldValues)
+    .values({
+      id: uuidv7(),
+      workspaceId: options.workspaceId,
+      workflowItemId: options.workflowItemId,
+      workflowId: item?.workflowId ?? '',
+      fieldDefinitionId: options.fieldDefinitionId,
+      valueJson: options.value as never,
+      searchText: typeof options.value === 'string' ? options.value.toLowerCase() : null,
+      updatedAt: Date.now()
+    })
+    .run();
+}
+
+/** Bind a typed base-field value directly to a Record. */
+export async function setRecordFieldValue(
+  db: Executor,
+  options: {
+    workspaceId: string;
+    recordId: string;
     fieldDefinitionId: string;
     value: unknown;
   }
 ): Promise<void> {
   await db
-    .insert(ticketFieldValues)
+    .insert(recordFieldValues)
     .values({
       id: uuidv7(),
       workspaceId: options.workspaceId,
-      ticketId: options.ticketId,
+      recordId: options.recordId,
       fieldDefinitionId: options.fieldDefinitionId,
       valueJson: options.value as never,
       searchText: typeof options.value === 'string' ? options.value.toLowerCase() : null,
@@ -718,132 +1010,15 @@ export async function createTriggerRecord(
   return { id, webhookToken };
 }
 
-export interface FakeTicketService {
-  service: TicketService;
-  createCalls: CreateTicketInput[];
-  fieldCalls: Array<{ ticketId: string; values: Record<string, unknown>; force?: boolean }>;
-  attachCalls: Array<{ ticketId: string; fileId: string; relationship?: string }>;
-  relationshipCalls: Array<{
-    fromTicketId: string;
-    toTicketId: string;
-    type: TicketRelationshipType;
-  }>;
-  noteCalls: Array<{ ticketId: string; body: string }>;
-  /** Pre-register a ticket, e.g. a parent referenced by `parentTicketPath`. */
-  seed(ticket: TicketSummary): void;
-  tickets(): TicketSummary[];
-}
-
-/**
- * A recording TicketService. The locator seam (`setTicketService`) is exactly
- * for this: triggers depend on the contract, so their mapping logic is testable
- * without the (separately owned) ticket implementation.
- *
- * `create` honours `dedupeKey` the way the real service contract promises, so
- * upsert/dedupe tests exercise the mapping's decision rather than the fake's.
- */
-export function createFakeTicketService(
-  options: { defaultStateId?: string } = {}
-): FakeTicketService {
-  const defaultStateId = options.defaultStateId ?? 'state-default';
-  const byId = new Map<string, TicketSummary>();
-  const byDedupe = new Map<string, string>();
-  const createCalls: CreateTicketInput[] = [];
-  const fieldCalls: FakeTicketService['fieldCalls'] = [];
-  const attachCalls: FakeTicketService['attachCalls'] = [];
-  const relationshipCalls: FakeTicketService['relationshipCalls'] = [];
-  const noteCalls: FakeTicketService['noteCalls'] = [];
-  let counter = 0;
-
-  const service: TicketService = {
-    async create(_actor, input) {
-      createCalls.push(input);
-      if (input.dedupeKey) {
-        const existingId = byDedupe.get(input.dedupeKey);
-        const existing = existingId ? byId.get(existingId) : undefined;
-        if (existing) return existing;
-      }
-      counter += 1;
-      const ticket: TicketSummary = {
-        id: uuidv7(),
-        key: `FAKE-${counter}`,
-        number: counter,
-        title: input.title,
-        workflowId: input.workflowId,
-        stateId: input.stateId ?? defaultStateId,
-        priority: input.priority ?? 'none',
-        ownerUserId: input.ownerUserId ?? null,
-        ownerTeamId: input.ownerTeamId ?? null,
-        version: 1,
-        createdAt: Date.now(),
-        updatedAt: Date.now()
-      };
-      byId.set(ticket.id, ticket);
-      if (input.dedupeKey) byDedupe.set(input.dedupeKey, ticket.id);
-      return ticket;
-    },
-    async requireTicket(_actor, ticketId) {
-      const ticket = byId.get(ticketId);
-      if (!ticket) throw new Error(`Fake ticket ${ticketId} not found`);
-      return ticket;
-    },
-    async addNote(_actor, input) {
-      noteCalls.push({ ticketId: input.ticketId, body: input.body });
-      return { noteId: uuidv7() };
-    },
-    async setFields(_actor, input) {
-      fieldCalls.push({ ticketId: input.ticketId, values: input.values, force: input.force });
-      return { changed: [] };
-    },
-    async requestTransition(_actor, ticketId) {
-      const ticket = byId.get(ticketId);
-      return { enteredStateId: ticket?.stateId ?? defaultStateId, transitionId: null };
-    },
-    async transfer(_actor, ticketId, input) {
-      const ticket = byId.get(ticketId);
-      return {
-        ticketId,
-        workflowId: input.targetWorkflowId,
-        stateId: input.targetStateId ?? ticket?.stateId ?? defaultStateId
-      };
-    },
-    async attachFile(_actor, input) {
-      attachCalls.push({
-        ticketId: input.ticketId,
-        fileId: input.fileId,
-        relationship: input.relationship
-      });
-    },
-    async linkRelationship(_actor, input) {
-      relationshipCalls.push({
-        fromTicketId: input.fromTicketId,
-        toTicketId: input.toTicketId,
-        type: input.type
-      });
-    },
-    async setWaitingOn() {
-      // No-op: waiting state is asserted through the real ticket suite.
-    }
-  };
-
-  return {
-    service,
-    createCalls,
-    fieldCalls,
-    attachCalls,
-    relationshipCalls,
-    noteCalls,
-    seed: (ticket) => {
-      byId.set(ticket.id, ticket);
-    },
-    tickets: () => [...byId.values()]
-  };
-}
-
 export interface FakeFileService {
   service: FileService;
   ingestCalls: IngestFileInput[];
-  linkCalls: Array<{ fileId: string; ticketId: string; relationship?: string }>;
+  linkCalls: Array<{
+    fileId: string;
+    workflowItemId?: string;
+    recordId?: string;
+    relationship?: string;
+  }>;
   workflowContextCalls: Array<{ fileId: string; workflowId: string }>;
 }
 
@@ -880,16 +1055,27 @@ export function createFakeFileService(): FakeFileService {
         createdAt: Date.now(),
         provenance: null,
         workflowIds: [],
-        ticketIds: []
+        workflowItemIds: [],
+        recordIds: []
       };
     },
-    async listForTicket() {
+    async listForWorkflowItem() {
       return [];
     },
-    async linkToTicket(_actor, input) {
+    async listForRecord() {
+      return [];
+    },
+    async linkToWorkflowItem(_actor, input) {
       linkCalls.push({
         fileId: input.fileId,
-        ticketId: input.ticketId,
+        workflowItemId: input.workflowItemId,
+        relationship: input.relationship
+      });
+    },
+    async linkToRecord(_actor, input) {
+      linkCalls.push({
+        fileId: input.fileId,
+        recordId: input.recordId,
         relationship: input.relationship
       });
     },
@@ -907,24 +1093,74 @@ export function createFakeFileService(): FakeFileService {
   return { service, ingestCalls, linkCalls, workflowContextCalls };
 }
 
-export async function updateTicketRow(
+export async function updateWorkflowItemRow(
   db: Executor,
-  ticketId: string,
-  values: Partial<typeof tickets.$inferInsert>
+  workflowItemId: string,
+  values: Partial<typeof workflowItems.$inferInsert>
 ): Promise<void> {
-  await db.update(tickets).set(values).where(eq(tickets.id, ticketId)).run();
+  await db.update(workflowItems).set(values).where(eq(workflowItems.id, workflowItemId)).run();
+}
+
+export async function updateRecordRow(
+  db: Executor,
+  recordId: string,
+  values: Partial<typeof records.$inferInsert>
+): Promise<void> {
+  await db.update(records).set(values).where(eq(records.id, recordId)).run();
 }
 
 /**
- * Persist a typed ticket field value in the *correct* typed column. The original
- * `setTicketFieldValue` only writes `valueJson`, which is not what filtering and
- * analytics read.
+ * Persist a typed workflow-overlay field value in the *correct* typed column.
+ * The overlay row shadows the Record's base value in filtering and analytics, so
+ * this is what tests should use when they set a per-participation value.
  */
 export async function setTypedFieldValue(
   db: Executor,
   options: {
     workspaceId: string;
-    ticketId: string;
+    workflowItemId: string;
+    fieldDefinitionId: string;
+    type: FieldType;
+    value: unknown;
+    updatedAt?: number;
+  }
+): Promise<void> {
+  const columns = typedValueColumns(options.type, options.value);
+  const item = db
+    .select({ workflowId: workflowItems.workflowId })
+    .from(workflowItems)
+    .where(eq(workflowItems.id, options.workflowItemId))
+    .all()[0];
+  if (!item) throw new Error(`Workflow item ${options.workflowItemId} not found`);
+  await db
+    .delete(workflowItemFieldValues)
+    .where(
+      and(
+        eq(workflowItemFieldValues.workflowItemId, options.workflowItemId),
+        eq(workflowItemFieldValues.fieldDefinitionId, options.fieldDefinitionId)
+      )
+    )
+    .run();
+  await db
+    .insert(workflowItemFieldValues)
+    .values({
+      id: uuidv7(),
+      workspaceId: options.workspaceId,
+      workflowItemId: options.workflowItemId,
+      workflowId: item.workflowId,
+      fieldDefinitionId: options.fieldDefinitionId,
+      ...columns,
+      updatedAt: options.updatedAt ?? Date.now()
+    } as never)
+    .run();
+}
+
+/** Persist a typed base-field value on the Record (does not shadow the overlay). */
+export async function setRecordFieldValueTyped(
+  db: Executor,
+  options: {
+    workspaceId: string;
+    recordId: string;
     fieldDefinitionId: string;
     type: FieldType;
     value: unknown;
@@ -933,20 +1169,20 @@ export async function setTypedFieldValue(
 ): Promise<void> {
   const columns = typedValueColumns(options.type, options.value);
   await db
-    .delete(ticketFieldValues)
+    .delete(recordFieldValues)
     .where(
       and(
-        eq(ticketFieldValues.ticketId, options.ticketId),
-        eq(ticketFieldValues.fieldDefinitionId, options.fieldDefinitionId)
+        eq(recordFieldValues.recordId, options.recordId),
+        eq(recordFieldValues.fieldDefinitionId, options.fieldDefinitionId)
       )
     )
     .run();
   await db
-    .insert(ticketFieldValues)
+    .insert(recordFieldValues)
     .values({
       id: uuidv7(),
       workspaceId: options.workspaceId,
-      ticketId: options.ticketId,
+      recordId: options.recordId,
       fieldDefinitionId: options.fieldDefinitionId,
       ...columns,
       updatedAt: options.updatedAt ?? Date.now()
@@ -1029,17 +1265,17 @@ function typedValueColumns(type: FieldType, value: unknown): Record<string, unkn
   }
 }
 
-export async function addTicketLabel(
+export async function addWorkflowItemLabel(
   db: Executor,
-  options: { workspaceId: string; ticketId: string; labelId: string }
+  options: { workspaceId: string; workflowItemId: string; labelId: string }
 ): Promise<string> {
   const id = uuidv7();
   await db
-    .insert(ticketLabels)
+    .insert(workflowItemLabels)
     .values({
       id,
       workspaceId: options.workspaceId,
-      ticketId: options.ticketId,
+      workflowItemId: options.workflowItemId,
       labelId: options.labelId,
       createdAt: Date.now()
     })
@@ -1047,11 +1283,11 @@ export async function addTicketLabel(
   return id;
 }
 
-export async function createTicketStateInterval(
+export async function createWorkflowItemStateInterval(
   db: Executor,
   options: {
     workspaceId: string;
-    ticketId: string;
+    workflowItemId: string;
     workflowId: string;
     stateId: string;
     stateName: string;
@@ -1067,11 +1303,11 @@ export async function createTicketStateInterval(
   const id = uuidv7(options.enteredAt);
   const exitedAt = options.exitedAt ?? null;
   await db
-    .insert(ticketStateHistory)
+    .insert(workflowItemStateHistory)
     .values({
       id,
       workspaceId: options.workspaceId,
-      ticketId: options.ticketId,
+      workflowItemId: options.workflowItemId,
       workflowId: options.workflowId,
       stateId: options.stateId,
       stateName: options.stateName,
@@ -1093,7 +1329,7 @@ export async function createFieldValueHistory(
     workspaceId: string;
     ownerId: string;
     fieldDefinitionId: string;
-    ownerType?: 'ticket' | 'file';
+    ownerType?: 'workflowItem' | 'file' | 'record' | 'workflow_item';
     previousValue?: unknown;
     newValue?: unknown;
     createdAt?: number;
@@ -1106,7 +1342,7 @@ export async function createFieldValueHistory(
     .values({
       id,
       workspaceId: options.workspaceId,
-      ownerType: options.ownerType ?? 'ticket',
+      ownerType: options.ownerType ?? 'workflow_item',
       ownerId: options.ownerId,
       fieldDefinitionId: options.fieldDefinitionId,
       previousValue: (options.previousValue ?? null) as never,
@@ -1122,7 +1358,8 @@ export async function createAgentRun(
   db: Executor,
   options: {
     workspaceId: string;
-    ticketId: string;
+    workflowItemId: string;
+    recordId?: string | null;
     workflowId: string;
     stateId: string;
     status?:
@@ -1144,7 +1381,8 @@ export async function createAgentRun(
     .values({
       id,
       workspaceId: options.workspaceId,
-      ticketId: options.ticketId,
+      recordId: options.recordId ?? null,
+      workflowItemId: options.workflowItemId,
       workflowId: options.workflowId,
       stateId: options.stateId,
       agentId: options.agentId ?? 'agent-1',
@@ -1161,9 +1399,11 @@ export async function createApprovalRequest(
   db: Executor,
   options: {
     workspaceId: string;
-    ticketId: string;
+    workflowItemId?: string | null;
+    recordId?: string | null;
+    workflowId?: string | null;
     status?: 'pending' | 'approved' | 'rejected' | 'cancelled' | 'expired';
-    kind?: 'state_transition' | 'tool_call' | 'transfer' | 'ticket_creation';
+    kind?: 'state_transition' | 'tool_call' | 'transfer' | 'record_creation';
     createdAt?: number;
   }
 ): Promise<string> {
@@ -1174,7 +1414,9 @@ export async function createApprovalRequest(
     .values({
       id,
       workspaceId: options.workspaceId,
-      ticketId: options.ticketId,
+      recordId: options.recordId ?? null,
+      workflowItemId: options.workflowItemId ?? null,
+      workflowId: options.workflowId ?? null,
       kind: options.kind ?? 'state_transition',
       title: 'Approval',
       requestedAction: { type: 'transition' } as never,
@@ -1256,23 +1498,50 @@ export async function createFileRecord(
   return id;
 }
 
-export async function linkTicketFile(
+/** Attach a file to one participation (work context). */
+export async function linkWorkflowItemFile(
   db: Executor,
   options: {
     workspaceId: string;
-    ticketId: string;
+    workflowItemId: string;
     fileId: string;
-    relationship?: 'attachment' | 'reference' | 'output' | 'evidence';
+    relationship?: FileLinkRelationship;
     createdAt?: number;
   }
 ): Promise<string> {
   const id = uuidv7(options.createdAt ?? Date.now());
   await db
-    .insert(ticketFiles)
+    .insert(fileWorkflowItems)
     .values({
       id,
       workspaceId: options.workspaceId,
-      ticketId: options.ticketId,
+      workflowItemId: options.workflowItemId,
+      fileId: options.fileId,
+      relationship: options.relationship ?? 'attachment',
+      createdAt: options.createdAt ?? Date.now()
+    })
+    .run();
+  return id;
+}
+
+/** Attach a file to the durable Record (domain knowledge). */
+export async function linkRecordFile(
+  db: Executor,
+  options: {
+    workspaceId: string;
+    recordId: string;
+    fileId: string;
+    relationship?: FileLinkRelationship;
+    createdAt?: number;
+  }
+): Promise<string> {
+  const id = uuidv7(options.createdAt ?? Date.now());
+  await db
+    .insert(fileRecords)
+    .values({
+      id,
+      workspaceId: options.workspaceId,
+      recordId: options.recordId,
       fileId: options.fileId,
       relationship: options.relationship ?? 'attachment',
       createdAt: options.createdAt ?? Date.now()
@@ -1295,7 +1564,8 @@ export async function addFileSource(
       | 'http_connector'
       | 'api'
       | 'system';
-    ticketId?: string | null;
+    sourceReference?: string | null;
+    sourceLabel?: string | null;
     occurredAt?: number;
   }
 ): Promise<string> {
@@ -1307,7 +1577,8 @@ export async function addFileSource(
       workspaceId: options.workspaceId,
       fileId: options.fileId,
       sourceType: options.sourceType,
-      ticketId: options.ticketId ?? null,
+      sourceReference: options.sourceReference ?? null,
+      sourceLabel: options.sourceLabel ?? null,
       occurredAt: options.occurredAt ?? Date.now(),
       createdAt: Date.now()
     })

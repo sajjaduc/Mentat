@@ -13,7 +13,7 @@
  *    not invent attempt numbers or durations it cannot observe.
  *  - **No fake writes.** The API has no `PATCH /api/files/:id`, so the summary is
  *    read-only here and the UI explains why rather than showing an Edit button that
- *    cannot persist. Field corrections, ticket links and workflow contexts are real
+ *    cannot persist. Field corrections, work item links and workflow contexts are real
  *    mutations and are optimistic with rollback.
  */
 import { untrack } from 'svelte';
@@ -43,10 +43,10 @@ import {
   type ExtractedContent,
   type FileFieldValueRow,
   type FileSummary,
-  TICKET_FILE_RELATIONSHIPS,
-  type TicketDetailView,
-  type TicketFileRelationship,
-  type WorkflowSummary
+  RECORD_FILE_RELATIONSHIPS,
+  type RecordFileRelationship,
+  type WorkflowSummary,
+  type WorkItemDetailView
 } from '$ui/types';
 
 interface Props {
@@ -74,15 +74,15 @@ let content = $state<ExtractedContent | null>(null);
 let contentPending = $state(false);
 let fieldRows = $state<FileFieldValueRow[]>([]);
 let workflows = $state<WorkflowSummary[]>([]);
-let tickets = $state<TicketDetailView[]>([]);
+let workItems = $state<WorkItemDetailView[]>([]);
 let audit = $state<AuditEventRecord[]>([]);
 let loading = $state(true);
 let error = $state<string | null>(null);
 let busy = $state(false);
 let fieldDrafts = $state<Record<string, string>>({});
 let savingField = $state<string | null>(null);
-let linkTicketId = $state('');
-let linkRelationship = $state<TicketFileRelationship>('attachment');
+let linkWorkItemId = $state('');
+let linkRelationship = $state<RecordFileRelationship>('attachment');
 let contextWorkflowId = $state('');
 let contextLabel = $state('');
 let contentPage = $state(0);
@@ -136,7 +136,7 @@ async function load() {
     const response = await api.get<{ file: FileSummary }>(`/files/${fileId}`);
     file = response.file;
     await Promise.all([loadContent(), loadFields(), loadWorkflows(), loadAudit()]);
-    await loadTickets(response.file.ticketIds);
+    await loadWorkItems(response.file.workflowItemIds);
   } catch (failure) {
     error = describeApiError(failure);
   } finally {
@@ -188,21 +188,21 @@ async function loadAudit() {
   }
 }
 
-async function loadTickets(ids: string[]) {
+async function loadWorkItems(ids: string[]) {
   if (ids.length === 0) {
-    tickets = [];
+    workItems = [];
     return;
   }
   const results = await Promise.all(
     ids.map(async (id) => {
       try {
-        return await api.get<TicketDetailView>(`/tickets/${id}`);
+        return await api.get<WorkItemDetailView>(`/workflow-items/${id}`);
       } catch {
         return null;
       }
     })
   );
-  tickets = results.filter((entry): entry is TicketDetailView => entry !== null);
+  workItems = results.filter((entry): entry is WorkItemDetailView => entry !== null);
 }
 
 $effect(() => {
@@ -350,21 +350,24 @@ async function removeContext(workflowIdValue: string) {
   }
 }
 
-async function linkTicket() {
-  const raw = linkTicketId.trim();
+async function linkWorkItem() {
+  const raw = linkWorkItemId.trim();
   if (!raw) return;
   busy = true;
   try {
-    const target = tickets.find((entry) => entry.ticket.id === raw || entry.key === raw);
-    const ticketId = target?.ticket.id ?? raw;
-    await api.post(`/tickets/${ticketId}/files`, { fileId, relationship: linkRelationship });
-    linkTicketId = '';
-    pushToast({ tone: 'success', title: 'Ticket linked' });
+    const target = workItems.find((entry) => entry.workItem.id === raw || entry.key === raw);
+    const workflowItemId = target?.workItem.id ?? raw;
+    await api.post(`/workflow-items/${workflowItemId}/files`, {
+      fileId,
+      relationship: linkRelationship
+    });
+    linkWorkItemId = '';
+    pushToast({ tone: 'success', title: 'Work item linked' });
     await load();
   } catch (failure) {
     pushToast({
       tone: 'error',
-      title: 'Could not link ticket',
+      title: 'Could not link work item',
       description: describeApiError(failure)
     });
   } finally {
@@ -372,21 +375,23 @@ async function linkTicket() {
   }
 }
 
-async function unlinkTicket(ticketId: string) {
-  const previousTickets = tickets;
+async function unlinkWorkItem(workflowItemId: string) {
+  const previousWorkItems = workItems;
   const previousFile = file;
   busy = true;
-  tickets = tickets.filter((entry) => entry.ticket.id !== ticketId);
-  file = file ? { ...file, ticketIds: file.ticketIds.filter((id) => id !== ticketId) } : file;
+  workItems = workItems.filter((entry) => entry.workItem.id !== workflowItemId);
+  file = file
+    ? { ...file, workflowItemIds: file.workflowItemIds.filter((id) => id !== workflowItemId) }
+    : file;
   try {
-    await api.post(`/files/${fileId}/unlink`, { ticketId });
+    await api.post(`/files/${fileId}/unlink`, { workflowItemId });
     pushToast({
       tone: 'success',
       title: 'Unlinked',
       description: 'Unlinking never deletes the file or its bytes; other links are unaffected.'
     });
   } catch (failure) {
-    tickets = previousTickets;
+    workItems = previousWorkItems;
     file = previousFile;
     pushToast({ tone: 'error', title: 'Could not unlink', description: describeApiError(failure) });
   } finally {
@@ -743,42 +748,42 @@ function processorOf(event: AuditEventRecord): string {
         </Card>
 
         <Card class="space-y-3">
-          <h2 class="text-sm font-semibold">Tickets</h2>
+          <h2 class="text-sm font-semibold">Work items</h2>
           <ul class="space-y-1.5">
-            {#each tickets as link (link.ticket.id)}
+            {#each workItems as link (link.workItem.id)}
               <li
                 class="flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--color-border-subtle)] px-2.5 py-1.5"
               >
                 <span class="min-w-0 flex-1 truncate text-xs">
                   <span class="font-mono text-[11px]">{link.key}</span>
-                  <span class="ml-2">{link.ticket.title}</span>
+                  <span class="ml-2">{link.workItem.title}</span>
                   <span class="ml-2 text-[10px] text-[var(--color-ink-subtle)]">{link.workflow.name}</span>
                 </span>
-                <Button size="sm" variant="ghost" disabled={busy} onclick={() => unlinkTicket(link.ticket.id)}>
+                <Button size="sm" variant="ghost" disabled={busy} onclick={() => unlinkWorkItem(link.workItem.id)}>
                   Unlink
                 </Button>
               </li>
             {/each}
-            {#if tickets.length === 0}
-              <li class="text-xs text-[var(--color-ink-subtle)]">Not linked to any ticket.</li>
+            {#if workItems.length === 0}
+              <li class="text-xs text-[var(--color-ink-subtle)]">Not linked to any work item.</li>
             {/if}
           </ul>
           <div class="flex flex-wrap items-end gap-2">
             <div class="min-w-48 flex-1">
-              <Input label="Link a ticket" bind:value={linkTicketId} placeholder="Ticket id or key" />
+              <Input label="Link a work item" bind:value={linkWorkItemId} placeholder="Work item id or key" />
             </div>
             <div class="w-40">
               <Select
                 label="Relationship"
-                options={TICKET_FILE_RELATIONSHIPS.map((value) => ({ value, label: value }))}
+                options={RECORD_FILE_RELATIONSHIPS.map((value) => ({ value, label: value }))}
                 bind:value={linkRelationship}
               />
             </div>
-            <Button variant="secondary" loading={busy} onclick={linkTicket}>Link</Button>
+            <Button variant="secondary" loading={busy} onclick={linkWorkItem}>Link</Button>
           </div>
           <p class="text-[11px] leading-relaxed text-[var(--color-ink-subtle)]">
             Unlinking removes only this association. It never deletes the file or its bytes, and it
-            does not affect the other tickets that share it.
+            does not affect the other work items that share it.
           </p>
         </Card>
       </div>

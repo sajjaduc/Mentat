@@ -14,7 +14,7 @@
  * import { registerCoreNativeTools } from '$server/tools/native/register';
  * const registry = getDefaultToolRegistry();
  * registerNativeTools(registry);        // state / data / cache tools
- * registerCoreNativeTools(registry);    // ticket / file tools
+ * registerCoreNativeTools(registry);    // work-item / record / file tools
  * ```
  *
  * Tool keys are namespaced per owning module, so the two entry points never

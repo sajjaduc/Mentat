@@ -28,7 +28,7 @@ export type FileSourceType =
   | 'api'
   | 'system';
 
-export type TicketFileRelationship = 'attachment' | 'reference' | 'output' | 'evidence';
+export type RecordFileRelationship = 'attachment' | 'reference' | 'output' | 'evidence';
 
 export const FILE_STATUSES: readonly FileStatus[] = [
   'pending',
@@ -49,7 +49,7 @@ export const FILE_SOURCE_TYPES: readonly FileSourceType[] = [
   'system'
 ];
 
-export const TICKET_FILE_RELATIONSHIPS: readonly TicketFileRelationship[] = [
+export const RECORD_FILE_RELATIONSHIPS: readonly RecordFileRelationship[] = [
   'attachment',
   'reference',
   'output',
@@ -68,7 +68,8 @@ export interface FileSummary {
   createdAt: number;
   provenance: { sourceType: string; sourceLabel: string | null } | null;
   workflowIds: string[];
-  ticketIds: string[];
+  workflowItemIds: string[];
+  recordIds: string[];
 }
 
 export interface WorkflowContext {
@@ -141,7 +142,7 @@ export interface UploadResult {
 
 // --------------------------------------------------------------- saved views
 
-export type ViewScope = 'tickets' | 'files';
+export type ViewScope = 'workflowItems' | 'files';
 
 export interface SavedView {
   id: string;
@@ -207,6 +208,7 @@ export type WidgetAggregation =
 
 export type WidgetGroupingBy =
   | 'none'
+  | 'objectType'
   | 'state'
   | 'priority'
   | 'owner'
@@ -218,7 +220,13 @@ export type WidgetGroupingBy =
   | 'week'
   | 'month';
 
-export type WidgetDataSourceKind = 'tickets' | 'state_history' | 'field_history' | 'runs' | 'files';
+export type WidgetDataSourceKind =
+  | 'state_history'
+  | 'field_history'
+  | 'runs'
+  | 'files'
+  | 'records'
+  | 'workflow_items';
 
 export interface FunnelStageDefinition {
   label: string;
@@ -360,7 +368,7 @@ export interface WorkspaceRecord {
 export interface WorkspaceSettings {
   defaultTimezone?: string;
   retentionDays?: number;
-  allowAgentTicketCreation?: boolean;
+  allowAgentWorkCreation?: boolean;
   allowAgentTransfer?: boolean;
   dailyRunLimit?: number;
   branding?: { accent?: string; logoUrl?: string };
@@ -512,7 +520,7 @@ export interface JobRecord {
   timeoutSeconds: number | null;
   dedupeKey: string | null;
   idempotencyKey: string | null;
-  ticketId: string | null;
+  workflowItemId: string | null;
   runId: string | null;
   parentJobId: string | null;
   createdAt: number;
@@ -543,7 +551,7 @@ export interface AuditEventRecord {
   actorLabel: string | null;
   entityType: string | null;
   entityId: string | null;
-  ticketId: string | null;
+  workflowItemId: string | null;
   workflowId: string | null;
   runId: string | null;
   jobId: string | null;
@@ -608,14 +616,14 @@ export interface RecordPage {
 
 // ------------------------------------------------------------ state / cache
 
-export type StateScope = 'workspace' | 'workflow' | 'ticket' | 'agent' | 'run';
+export type StateScope = 'workspace' | 'workflow' | 'workflowItem' | 'agent' | 'run';
 
 export interface StateEntry {
   id: string;
   workspaceId: string;
   scope: StateScope;
   workflowId: string | null;
-  ticketId: string | null;
+  workflowItemId: string | null;
   agentId: string | null;
   runId: string | null;
   namespace: string;
@@ -663,7 +671,7 @@ export interface WorkflowSummary {
   icon: string | null;
   color: string | null;
   stateCount: number;
-  ticketCount: number;
+  itemCount: number;
 }
 
 export interface WorkflowStateRecord {
@@ -679,7 +687,7 @@ export interface WorkflowStateRecord {
   color: string | null;
 }
 
-export interface TicketSummary {
+export interface WorkItemSummary {
   id: string;
   key: string;
   title: string;
@@ -688,11 +696,11 @@ export interface TicketSummary {
   priority: string | null;
 }
 
-/** `GET /api/tickets/:id` — the fields the Files detail Relationships tab reads. */
-export interface TicketDetailView {
-  ticket: {
+/** `GET /api/workflow-items/:id` — the fields the Files detail Relationships tab reads. */
+export interface WorkItemDetailView {
+  workItem: {
     id: string;
-    key: string;
+    key: string | null;
     title: string;
     workflowId: string;
     stateId: string | null;
@@ -704,8 +712,8 @@ export interface TicketDetailView {
   workflow: { id: string; name: string; key: string };
 }
 
-export interface TicketFileLink {
-  ticketId: string;
+export interface RecordFileLink {
+  workflowItemId: string;
   relationship: string;
   caption: string | null;
   createdAt: number | null;

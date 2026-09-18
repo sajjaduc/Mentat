@@ -33,7 +33,7 @@ let name = $state('');
 let description = $state('');
 let timezone = $state('UTC');
 let retentionDays = $state(90);
-let allowAgentTicketCreation = $state(true);
+let allowAgentWorkCreation = $state(true);
 let allowAgentTransfer = $state(false);
 let dailyRunLimit = $state(0);
 
@@ -60,7 +60,7 @@ async function load() {
     const settings = response.workspace.settings ?? {};
     timezone = settings.defaultTimezone ?? 'UTC';
     retentionDays = settings.retentionDays ?? 90;
-    allowAgentTicketCreation = settings.allowAgentTicketCreation ?? true;
+    allowAgentWorkCreation = settings.allowAgentWorkCreation ?? true;
     allowAgentTransfer = settings.allowAgentTransfer ?? false;
     dailyRunLimit = settings.dailyRunLimit ?? 0;
   } catch (failure) {
@@ -92,7 +92,7 @@ async function save() {
         settings: {
           defaultTimezone: timezone,
           retentionDays,
-          allowAgentTicketCreation,
+          allowAgentWorkCreation,
           allowAgentTransfer,
           ...(dailyRunLimit > 0 ? { dailyRunLimit } : {})
         }
@@ -150,18 +150,18 @@ async function save() {
     <Card class="space-y-4">
       <h2 class="text-sm font-semibold">Agent policy</h2>
       <label class="flex items-start gap-2 text-xs">
-        <input type="checkbox" bind:checked={allowAgentTicketCreation} class="mt-0.5" />
+        <input type="checkbox" bind:checked={allowAgentWorkCreation} class="mt-0.5" />
         <span>
-          <span class="font-medium">Agents may create tickets</span>
+          <span class="font-medium">Agents may create work items</span>
           <span class="block text-[11px] text-[var(--color-ink-subtle)]">
-            Agent-created tickets use the same validation, authorization and audit path as human ones.
+            Agent-created work uses the same validation, authorization and audit path as human-created work.
           </span>
         </span>
       </label>
       <label class="flex items-start gap-2 text-xs">
         <input type="checkbox" bind:checked={allowAgentTransfer} class="mt-0.5" />
         <span>
-          <span class="font-medium">Agents may transfer tickets across workflows</span>
+          <span class="font-medium">Agents may transfer work across workflows</span>
           <span class="block text-[11px] text-[var(--color-ink-subtle)]">
             Transfer is a controlled move: destination workflow, state, required fields and mappings
             are validated before the move commits.

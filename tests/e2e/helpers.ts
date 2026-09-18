@@ -109,9 +109,9 @@ export async function registerAndSignIn(
   useSessionCookie(cookie);
   const body = (await response.json()) as { workspaceId: string | null };
 
-  // Registration only creates a starter workspace on an empty instance. A second
-  // account (or a rerun against a warm database) must create its own, which a
-  // signed-in user with no workspace is allowed to do.
+  // Registration provisions a personal workspace, so this is normally already set.
+  // The fallback keeps the helper usable against an older database or a session whose
+  // membership was removed: a signed-in account with no workspace may create one.
   let workspaceId = body.workspaceId;
   if (!workspaceId) {
     const created = await apiCall<{ workspace: { id: string } }>(request, 'POST', '/workspaces', {
@@ -191,31 +191,81 @@ export async function signInThroughForm(page: Page, id: TestIdentity): Promise<v
   await expect(page).toHaveURL(/\/(workflows|my-work)/, { timeout: 20_000 });
 }
 
-/** Create a workflow through the API and return its id. */
+/** Create an Object Type (with a primary display field) through the API. */
+export async function createObjectType(
+  request: APIRequestContext,
+  name: string
+): Promise<{ id: string; key: string }> {
+  const created = await apiCall<{ objectType: { id: string; key: string } }>(
+    request,
+    'POST',
+    '/object-types',
+    { data: { name } }
+  );
+  await apiCall(request, 'PUT', `/object-types/${created.objectType.id}/fields`, {
+    data: {
+      fields: [{ key: 'title', name: 'Title', type: 'short_text', isPrimaryDisplay: true }]
+    }
+  });
+  return created.objectType;
+}
+
+/**
+ * Create a workflow through the API and return its id. Workflows require an
+ * Object Type (ADR-0021), so one is created unless the caller supplies one.
+ */
 export async function createWorkflow(
   request: APIRequestContext,
   name: string,
-  template: 'blank' | 'basic' | 'intake' | 'claims' | 'support' = 'basic'
-): Promise<{ id: string; states: Array<{ id: string; name: string }> }> {
+  template: 'blank' | 'basic' | 'intake' | 'claims' | 'support' = 'basic',
+  objectTypeId?: string
+): Promise<{
+  id: string;
+  objectTypeId: string;
+  states: Array<{ id: string; name: string }>;
+}> {
+  const typeId = objectTypeId ?? (await createObjectType(request, `${name} Object`)).id;
   const created = await apiCall<{
     workflow: { id: string };
     states: Array<{ id: string; name: string }>;
-  }>(request, 'POST', '/workflows', { data: { name, template } });
-  return { id: created.workflow.id, states: created.states };
+  }>(request, 'POST', '/workflows', { data: { name, template, objectTypeId: typeId } });
+  return { id: created.workflow.id, objectTypeId: typeId, states: created.states };
 }
 
-/** Create a ticket through the API and return its id. */
-export async function createTicket(
+/**
+ * Start work through the API: create (or reuse) a Record and put it into a
+ * workflow. Returns the workflow item id plus a human-readable label (the
+ * record's key when the Object Type is numbered, otherwise its display name).
+ */
+export async function createWorkItem(
   request: APIRequestContext,
   input: { workflowId: string; title: string; stateId?: string; fields?: Record<string, unknown> }
-): Promise<{ id: string; key: string }> {
-  const created = await apiCall<{ ticket: { id: string; key: string } }>(
+): Promise<{ id: string; recordId: string; key: string }> {
+  const created = await apiCall<{ workflowItem: { id: string; recordId: string } }>(
     request,
     'POST',
-    '/tickets',
-    { data: input }
+    '/workflow-items',
+    {
+      data: {
+        workflowId: input.workflowId,
+        stateId: input.stateId,
+        record: { displayName: input.title },
+        // `createObjectType` binds a primary-display `title` field. Set it too:
+        // `records.displayName` is derived from the primary field when one is bound.
+        fields: { title: input.title, ...(input.fields ?? {}) }
+      }
+    }
   );
-  return created.ticket;
+  const detail = await apiCall<{ record: { key: string | null; displayName: string } }>(
+    request,
+    'GET',
+    `/workflow-items/${created.workflowItem.id}`
+  );
+  return {
+    id: created.workflowItem.id,
+    recordId: created.workflowItem.recordId,
+    key: detail.record.key ?? detail.record.displayName
+  };
 }
 
 /**

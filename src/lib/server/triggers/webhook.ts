@@ -5,8 +5,8 @@
  * never lose a delivery. Receiving therefore does only the four things that must
  * happen before responding — resolve the trigger, authenticate, enforce size,
  * and persist an idempotent event — then enqueues a durable job. Mapping the
- * payload to a ticket happens in the worker (`trigger.webhook`), so a slow or
- * failing integration call cannot block the sender.
+ * payload to a Record + WorkflowItem happens in the worker (`trigger.webhook`), so
+ * a slow or failing integration call cannot block the sender.
  *
  * Security posture: the token is the addressing credential, the HMAC signature is
  * the authenticity check, and the persisted payload is always redacted. Secret
@@ -55,8 +55,10 @@ export interface WebhookReceiveResult {
   duplicate: boolean;
   ignored: boolean;
   eventId: string;
-  /** Original ticket id on a duplicate; null when the event is not processed yet. */
-  ticketId: string | null;
+  /** Original record id on a duplicate; null when the event is not processed yet. */
+  recordId: string | null;
+  /** Original workflow item id on a duplicate; null before processing. */
+  workflowItemId: string | null;
   jobId: string | null;
   status: TriggerEventStatus;
 }
@@ -177,8 +179,9 @@ function enforceSignature(
 /**
  * Receive one webhook delivery.
  *
- * Returns `{ duplicate: true }` (with the original ticket id when known) when the
- * idempotency key was already received, so a sender may safely retry.
+ * Returns `{ duplicate: true }` (with the original record/work-item ids when
+ * known) when the idempotency key was already received, so a sender may safely
+ * retry.
  */
 export async function receiveWebhook(
   db: Executor,
@@ -242,7 +245,8 @@ export async function receiveWebhook(
       duplicate: result.duplicate,
       ignored: true,
       eventId: result.event.id,
-      ticketId: result.ticketId,
+      recordId: result.recordId,
+      workflowItemId: result.workflowItemId,
       jobId: null,
       status: 'ignored'
     };
@@ -265,7 +269,8 @@ export async function receiveWebhook(
         actorType: 'system',
         entityType: 'trigger_event',
         entityId: result.event.id,
-        ticketId: result.ticketId,
+        recordId: result.recordId,
+        workflowItemId: result.workflowItemId,
         workflowId: trigger.workflowId,
         summary: `Duplicate webhook delivery for "${trigger.name}" ignored`,
         data: { triggerId: trigger.id, idempotencyKey },
@@ -293,7 +298,8 @@ export async function receiveWebhook(
       duplicate: true,
       ignored: false,
       eventId: eventResult.event.id,
-      ticketId: eventResult.ticketId,
+      recordId: eventResult.recordId,
+      workflowItemId: eventResult.workflowItemId,
       jobId: eventResult.event.jobId,
       status: eventResult.event.status
     };
@@ -314,7 +320,8 @@ export async function receiveWebhook(
     duplicate: false,
     ignored: false,
     eventId: eventResult.event.id,
-    ticketId: null,
+    recordId: null,
+    workflowItemId: null,
     jobId: job.id,
     status: 'received'
   };

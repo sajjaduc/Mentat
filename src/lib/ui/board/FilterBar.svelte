@@ -16,7 +16,7 @@ import {
   emptyFilterState,
   type FilterState,
   PRIORITIES,
-  type TicketPriority
+  type WorkItemPriority
 } from '$ui/work/filters';
 import { priorityLabel } from '$ui/work/format';
 import MultiSelect from '$ui/work/MultiSelect.svelte';
@@ -70,7 +70,7 @@ const hasUnresolvedOwner = $derived(
       size="sm"
       type="search"
       placeholder="Search title, key or description…"
-      aria-label="Search tickets"
+      aria-label="Search work items"
       value={filter.search}
       oninput={(event) => patch({ search: (event.currentTarget as HTMLInputElement).value })}
     />
@@ -89,7 +89,7 @@ const hasUnresolvedOwner = $derived(
     options={PRIORITIES.map((priority) => ({ value: priority, label: priorityLabel(priority) }))}
     onchange={(values) =>
       patch({
-        priorities: values.filter((value): value is TicketPriority =>
+        priorities: values.filter((value): value is WorkItemPriority =>
           (PRIORITIES as readonly string[]).includes(value)
         )
       })}

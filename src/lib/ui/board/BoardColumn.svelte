@@ -4,11 +4,11 @@
  *
  * The header carries everything a planner needs to read the workflow at a glance:
  * the state's colour, its kind (human gate or bound agent), the WIP limit and the
- * true ticket count. The inline create form is optimistic — the card appears in the
+ * true workItem count. The inline create form is optimistic — the card appears in the
  * column before the server assigns a key.
  */
 
-import TicketCard from '$ui/board/TicketCard.svelte';
+import WorkItemCard from '$ui/board/WorkItemCard.svelte';
 import Badge from '$ui/primitives/Badge.svelte';
 import Button from '$ui/primitives/Button.svelte';
 import Input from '$ui/primitives/Input.svelte';
@@ -27,19 +27,22 @@ interface Props {
   agentName: string | null;
   members?: MemberOption[];
   teams?: TeamOption[];
-  draggingTicketId: string | null;
+  draggingWorkItemId: string | null;
   dropActive: boolean;
   pendingIds: string[];
   errors: Record<string, string>;
   creating: boolean;
-  onOpenTicket: (ticketId: string) => void;
-  onMoveTicket: (ticketId: string, targetStateId: string, transitionId: string) => void;
-  onCardDragStart: (event: DragEvent, ticketId: string, fromStateId: string) => void;
+  onOpenWorkItem: (workflowItemId: string) => void;
+  onMoveWorkItem: (workflowItemId: string, targetStateId: string, transitionId: string) => void;
+  onCardDragStart: (event: DragEvent, workflowItemId: string, fromStateId: string) => void;
   onCardDragEnd: () => void;
   onDragOver: (event: DragEvent, stateId: string) => void;
   onDragLeave: (stateId: string) => void;
   onDrop: (event: DragEvent, stateId: string) => void;
-  onCreateTicket: (stateId: string, title: string) => Promise<boolean>;
+  onCreateWorkItem: (stateId: string, title: string) => Promise<boolean>;
+  /** The Workflow's Object Type plural name, so the column speaks the workspace's nouns. */
+  nounPlural?: string;
+  nounSingular?: string;
 }
 
 let {
@@ -49,19 +52,21 @@ let {
   agentName,
   members = [],
   teams = [],
-  draggingTicketId,
+  draggingWorkItemId,
   dropActive,
   pendingIds,
   errors,
   creating,
-  onOpenTicket,
-  onMoveTicket,
+  onOpenWorkItem,
+  onMoveWorkItem,
   onCardDragStart,
   onCardDragEnd,
   onDragOver,
   onDragLeave,
   onDrop,
-  onCreateTicket
+  onCreateWorkItem,
+  nounPlural = 'work items',
+  nounSingular = 'work item'
 }: Props = $props();
 
 let adding = $state(false);
@@ -71,21 +76,21 @@ let submitting = $state(false);
 
 const gate = $derived(column.state.humanGate?.enabled === true);
 const wipLimit = $derived(column.state.config?.wipLimit ?? 0);
-const overLimit = $derived(wipLimit > 0 && column.total > wipLimit);
-const hidden = $derived(Math.max(0, column.total - column.tickets.length));
+const overLimit = $derived(wipLimit > 0 && column.count > wipLimit);
+const hidden = $derived(Math.max(0, column.count - column.items.length));
 
 async function submit() {
   const value = title.trim();
   if (value === '') return;
   submitting = true;
   submitError = null;
-  const ok = await onCreateTicket(column.state.id, value);
+  const ok = await onCreateWorkItem(column.state.id, value);
   submitting = false;
   if (ok) {
     title = '';
     adding = false;
   } else {
-    submitError = 'Could not create the ticket. Check the title and try again.';
+    submitError = `Could not create the ${nounSingular}. Check the title and try again.`;
   }
 }
 </script>
@@ -113,15 +118,15 @@ async function submit() {
       ></span>
       <h3 class="truncate text-sm font-semibold">{column.state.name}</h3>
       <span class="ml-auto font-mono text-[11px] text-[var(--color-ink-subtle)]">
-        {column.total}{#if wipLimit > 0}<span class:text-[var(--color-danger)]={overLimit}
+        {column.count}{#if wipLimit > 0}<span class:text-[var(--color-danger)]={overLimit}
             >/{wipLimit}</span
           >{/if}
       </span>
       <button
         type="button"
         class="rounded-[var(--radius-sm)] px-1.5 py-0.5 text-xs text-[var(--color-ink-subtle)] hover:bg-[var(--color-surface)] hover:text-[var(--color-ink)]"
-        aria-label="Add ticket to {column.state.name}"
-        title="Add ticket"
+        aria-label={`Add ${nounSingular} to ${column.state.name}`}
+        title={`Add ${nounSingular}`}
         onclick={() => {
           adding = !adding;
           submitError = null;
@@ -162,8 +167,8 @@ async function submit() {
       <Input
         value={title} oninput={(event) => (title = (event.currentTarget as HTMLInputElement).value)}
         size="sm"
-        placeholder="Ticket title"
-        aria-label="New ticket title"
+        placeholder="Title"
+        aria-label="New item title"
         error={submitError}
       />
       <div class="flex items-center gap-1.5">
@@ -177,30 +182,31 @@ async function submit() {
 
   <div
     role="list"
-    aria-label="Tickets in {column.state.name}"
+    aria-label={`${nounPlural} in ${column.state.name}`}
     class="scrollbar-thin flex max-h-[calc(100vh-16rem)] min-h-16 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-3"
   >
-    {#each column.tickets as row (row.ticket.id)}
-      <TicketCard
+    {#each column.items as row (row.workItem.id)}
+      <WorkItemCard
         {row}
         {fields}
         {transitions}
         {members}
         {teams}
-        dragging={draggingTicketId === row.ticket.id}
-        pending={pendingIds.includes(row.ticket.id)}
-        errorMessage={errors[row.ticket.id] ?? null}
-        onOpen={() => onOpenTicket(row.ticket.id)}
+        dragging={draggingWorkItemId === row.workItem.id}
+        pending={pendingIds.includes(row.workItem.id)}
+        errorMessage={errors[row.workItem.id] ?? null}
+        onOpen={() => onOpenWorkItem(row.workItem.id)}
         onMove={(targetStateId, transitionId) =>
-          onMoveTicket(row.ticket.id, targetStateId, transitionId)}
-        onDragStart={(event) => onCardDragStart(event, row.ticket.id, column.state.id)}
+          onMoveWorkItem(row.workItem.id, targetStateId, transitionId)}
+        onDragStart={(event) => onCardDragStart(event, row.workItem.id, column.state.id)}
         onDragEnd={onCardDragEnd}
+        {nounSingular}
       />
     {/each}
 
-    {#if column.tickets.length === 0}
+    {#if column.items.length === 0}
       <p class="px-2 py-6 text-center text-xs text-[var(--color-ink-subtle)]">
-        {dropActive ? 'Drop here to move the ticket' : 'No tickets in this state'}
+        {dropActive ? `Drop here to move the ${nounSingular}` : `No ${nounPlural} in this state`}
       </p>
     {/if}
   </div>

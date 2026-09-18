@@ -2,7 +2,7 @@
 /**
  * PermissionEditor: the explicit grant surface for an agent.
  *
- * An agent begins with nothing but read access to the ticket it is working on, so
+ * An agent begins with nothing but read access to the work item it is working on, so
  * every checkbox here is a decision rather than a default. Native capabilities are
  * derived from the tool registry itself, which keeps the list in step with what the
  * runner can actually enforce, and they are stored in the prefixed `mentat.*` key
@@ -28,8 +28,8 @@ import { namespaceForKey, ToolGroup } from './tools';
 interface Props {
   native?: string[];
   httpOperationIds?: string[];
-  canCreateTickets?: boolean;
-  canTransferTickets?: boolean;
+  canCreateWork?: boolean;
+  canTransferWork?: boolean;
   canWriteWorkspaceState?: boolean;
   canUploadFiles?: boolean;
   writableFieldKeys?: string[];
@@ -38,8 +38,8 @@ interface Props {
 let {
   native = $bindable<string[]>([]),
   httpOperationIds = $bindable<string[]>([]),
-  canCreateTickets = $bindable(false),
-  canTransferTickets = $bindable(false),
+  canCreateWork = $bindable(false),
+  canTransferWork = $bindable(false),
   canWriteWorkspaceState = $bindable(false),
   canUploadFiles = $bindable(false),
   writableFieldKeys = $bindable<string[]>([])
@@ -136,8 +136,7 @@ const operationOptions = $derived(
 );
 
 const booleanGrants = $derived(
-  [canCreateTickets, canTransferTickets, canWriteWorkspaceState, canUploadFiles].filter(Boolean)
-    .length
+  [canCreateWork, canTransferWork, canWriteWorkspaceState, canUploadFiles].filter(Boolean).length
 );
 
 const grantedCount = $derived(native.length + httpOperationIds.length + booleanGrants);
@@ -153,7 +152,7 @@ const writableScope = $derived(
 
 <Section
   title="Permissions"
-  description="Nothing is granted by default. An agent can always read the ticket it is working on; every other capability is a deliberate grant."
+  description="Nothing is granted by default. An agent can always read the work item it is working on; every other capability is a deliberate grant."
 >
   {#if loading}
     <Skeleton lines={4} height="2.25rem" />
@@ -166,7 +165,7 @@ const writableScope = $derived(
       <Badge tone={grantedCount > 0 ? 'accent' : 'muted'}>{grantedCount} granted</Badge>
       <span class="text-[11px] text-[var(--color-ink-subtle)]">{writableScope}</span>
       <span class="text-[11px] text-[var(--color-ink-subtle)]">
-        Read access to the current ticket is implicit.
+        Read access to the current work item is implicit.
       </span>
     </div>
 
@@ -228,17 +227,17 @@ const writableScope = $derived(
     </div>
 
     <div class="space-y-3 border-t border-[var(--color-border-subtle)] pt-4">
-      <p class="text-sm font-medium text-[var(--color-ink)]">Ticket, file and state grants</p>
+      <p class="text-sm font-medium text-[var(--color-ink)]">Work item, file and state grants</p>
       <div class="grid gap-3 md:grid-cols-2">
         <Toggle
-          bind:checked={canCreateTickets}
-          label="Create tickets"
-          hint="Open new tickets in the workflows this agent can reach."
+          bind:checked={canCreateWork}
+          label="Create work items"
+          hint="Start new work in the workflows this agent can reach."
         />
         <Toggle
-          bind:checked={canTransferTickets}
-          label="Transfer tickets"
-          hint="Move a ticket to another workflow."
+          bind:checked={canTransferWork}
+          label="Transfer work"
+          hint="Move work to another workflow."
         />
         <Toggle
           bind:checked={canUploadFiles}

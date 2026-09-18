@@ -6,9 +6,9 @@ Shared context for every parallel workstream in the Mentat build. Read this and
 ## What Mentat is
 
 A self-hostable work-orchestration platform where humans and AI agents participate
-in durable workflows. A Workflow is a project and a state machine; Tickets move
-through user-defined States; states may wait for humans, invoke agents, require
-approvals, or run deterministic work. Mentat provides the infrastructure agents
+in durable workflows. A Workflow is a project and a state machine; WorkflowItems
+backed by Records move through user-defined States; states may wait for humans,
+invoke agents, require approvals, or run deterministic work. Mentat provides the infrastructure agents
 repeatedly need: HTTP integrations, persistent state, structured data, cache,
 secrets, webhooks, cron, approvals, retries, artifacts, audit history, providers
 and models.
@@ -33,7 +33,7 @@ Read the parts that touch your workstream. They are the acceptance criteria.
 
 ## Non-negotiable invariants
 
-1. Ticket is the central work object.
+1. A Record + WorkflowItem is the central work object.
 2. Workflow is a configurable state machine.
 3. Human owner and current agent worker are independent.
 4. Execution is durable, observable, retryable and auditable.
@@ -62,7 +62,7 @@ Read the parts that touch your workstream. They are the acceptance criteria.
   `notFound`, never `forbidden`, so probing cannot confirm existence.
 - Permissions: `assertPermission(actor, Permissions.x)` at the service boundary;
   repositories do not check permissions.
-- Optimistic concurrency: bump `version` and compare it for tickets/agent/files
+- Optimistic concurrency: bump `version` and compare it for work items/agent/files
   where workers may race.
 - Redaction: pass anything potentially sensitive through `redact()` or a
   `createRedactor()` instance before persisting it in audit, run snapshots or HTTP
@@ -108,7 +108,7 @@ bunx biome check --write src tests && bunx biome check src tests
 
 ```ts
 import { createTestDatabase } from '../../helpers/db';
-import { createWorkspace, createUser, addMember, createWorkflow, createTicket } from '../../helpers/factories';
+import { createWorkspace, createUser, addMember, createWorkflow, createWorkItem } from '../../helpers/factories';
 
 const handle = createTestDatabase();   // fresh in-memory SQLite + migrations
 // ... use handle.db (a Drizzle client) or handle.sqlite (raw Bun SQLite)

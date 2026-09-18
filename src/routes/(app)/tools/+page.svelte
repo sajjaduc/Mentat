@@ -196,7 +196,7 @@ function created(message: string) {
           <span class="font-medium text-[var(--color-ink)]">Native capabilities</span>
           are granted through the agent's
           <code class="font-mono text-[11px]">permissions.native</code> list, using the tool key
-          such as <code class="font-mono text-[11px]">mentat.ticket.fields.set</code>. The
+          such as <code class="font-mono text-[11px]">mentat.records.setFields</code>. The
           <code class="font-mono text-[11px]">permission</code> shown here is the workspace permission
           the runtime checks when the tool is called.
         </li>

@@ -7,6 +7,7 @@
  */
 import type { ActorContext } from '../core/context';
 import type { Executor } from '../db/client';
+import type { FileLinkRelationship } from '../db/schema';
 
 export type FileSourceType =
   | 'human_upload'
@@ -29,14 +30,17 @@ export interface IngestFileInput {
     label?: string | null;
     occurredAt?: number;
     detail?: Record<string, unknown>;
-    ticketId?: string | null;
+    recordId?: string | null;
+    workflowItemId?: string | null;
     triggerEventId?: string | null;
   };
   kind?: 'upload' | 'generated' | 'external';
   workflowId?: string | null;
-  /** Link the resulting logical file to a ticket in the same transaction. */
-  ticketId?: string | null;
-  relationship?: 'attachment' | 'reference' | 'output' | 'evidence';
+  /** Link the resulting logical file to work context in the same transaction. */
+  workflowItemId?: string | null;
+  /** Link the resulting logical file to a durable Record in the same transaction. */
+  recordId?: string | null;
+  relationship?: FileLinkRelationship;
   /** Queue durable processing after ingest. Defaults to true. */
   process?: boolean;
   runId?: string | null;
@@ -67,19 +71,36 @@ export interface FileSummaryView {
   createdAt: number;
   provenance: { sourceType: string; sourceLabel: string | null } | null;
   workflowIds: string[];
-  ticketIds: string[];
+  workflowItemIds: string[];
+  recordIds: string[];
 }
 
 export interface FileService {
   ingest(actor: ActorContext, input: IngestFileInput, db?: Executor): Promise<IngestFileResult>;
   requireFile(actor: ActorContext, fileId: string, db?: Executor): Promise<FileSummaryView>;
-  listForTicket(actor: ActorContext, ticketId: string, db?: Executor): Promise<FileSummaryView[]>;
-  linkToTicket(
+  listForWorkflowItem(
+    actor: ActorContext,
+    workflowItemId: string,
+    db?: Executor
+  ): Promise<FileSummaryView[]>;
+  listForRecord(actor: ActorContext, recordId: string, db?: Executor): Promise<FileSummaryView[]>;
+  linkToWorkflowItem(
     actor: ActorContext,
     input: {
       fileId: string;
-      ticketId: string;
-      relationship?: 'attachment' | 'reference' | 'output' | 'evidence';
+      workflowItemId: string;
+      relationship?: FileLinkRelationship;
+      caption?: string | null;
+      runId?: string | null;
+    },
+    db?: Executor
+  ): Promise<void>;
+  linkToRecord(
+    actor: ActorContext,
+    input: {
+      fileId: string;
+      recordId: string;
+      relationship?: FileLinkRelationship;
       caption?: string | null;
       runId?: string | null;
     },

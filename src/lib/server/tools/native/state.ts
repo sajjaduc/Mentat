@@ -20,11 +20,11 @@ import {
 import { defineNativeTool, type ToolInvocationContext, toolFailure, toolSuccess } from '../types';
 import { inputJsonSchema, outputJsonSchema, parseToolInput } from './schema';
 
-export const stateScopeSchema = z.enum(['workspace', 'workflow', 'ticket', 'agent', 'run']);
+export const stateScopeSchema = z.enum(['workspace', 'workflow', 'workflowItem', 'agent', 'run']);
 
 const ownerFields = {
   workflowId: z.string().min(1).optional(),
-  ticketId: z.string().min(1).optional(),
+  workflowItemId: z.string().min(1).optional(),
   agentId: z.string().min(1).optional(),
   runId: z.string().min(1).optional()
 };
@@ -33,7 +33,7 @@ const stateEntrySchema = z.object({
   id: z.string(),
   scope: stateScopeSchema,
   workflowId: z.string().nullable(),
-  ticketId: z.string().nullable(),
+  workflowItemId: z.string().nullable(),
   agentId: z.string().nullable(),
   runId: z.string().nullable(),
   namespace: z.string(),
@@ -89,19 +89,19 @@ const listOutput = z.object({ entries: z.array(stateEntrySchema) });
 
 type OwnerInput = {
   workflowId?: string;
-  ticketId?: string;
+  workflowItemId?: string;
   agentId?: string;
   runId?: string;
 };
 
 /**
- * Owner ids default from the invocation context so an agent running on a ticket can
- * address ticket-scoped state without echoing ids the runner already knows.
+ * Owner ids default from the invocation context so an agent running on a work item
+ * can address workflow-item-scoped state without echoing ids the runner already knows.
  */
 function resolveOwners(input: OwnerInput, context: ToolInvocationContext) {
   return {
     workflowId: input.workflowId ?? context.workflowId ?? undefined,
-    ticketId: input.ticketId ?? context.ticketId ?? undefined,
+    workflowItemId: input.workflowItemId ?? context.workflowItemId ?? undefined,
     agentId:
       input.agentId ??
       (context.actor.actorType === 'agent' ? (context.actor.actorId ?? undefined) : undefined),
@@ -113,7 +113,7 @@ export const stateGetTool = defineNativeTool({
   key: 'mentat.state.get',
   name: 'Get agent state',
   description:
-    'Read a scoped state value by key. Scopes are workspace, workflow, ticket, agent and run; ' +
+    'Read a scoped state value by key. Scopes are workspace, workflow, workflowItem, agent and run; ' +
     'the owner id for the scope is taken from the call or from the current run context. ' +
     'Returns found=false when the key is absent or expired. Idempotent.',
   inputSchema: inputJsonSchema(getInput),
@@ -199,7 +199,7 @@ export const stateListTool = defineNativeTool({
   description:
     'List the newest state entries in a scope, optionally filtered by namespace and key ' +
     'prefix. Non-workspace scopes require their owner id. Never returns another workspace ' +
-    'or another ticket’s values. Idempotent.',
+    'or another work item’s values. Idempotent.',
   inputSchema: inputJsonSchema(listInput),
   outputSchema: outputJsonSchema(listOutput),
   permission: Permissions.dataRead,

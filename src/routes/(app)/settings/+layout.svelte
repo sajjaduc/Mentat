@@ -21,6 +21,11 @@ const sections = [
     description: 'Roles, invitations and suspensions'
   },
   { href: '/settings/teams', label: 'Teams', description: 'Grouping for ownership and gates' },
+  {
+    href: '/settings/object-types',
+    label: 'Object Types',
+    description: 'Record schemas and the AI submission contract'
+  },
   { href: '/settings/secrets', label: 'Secrets', description: 'Write-only encrypted values' },
   {
     href: '/settings/environment',

@@ -11,7 +11,7 @@
  *     ├─ a local Ollama provider (health-checked, models discovered when reachable)
  *     ├─ an HTTP service with one semantic operation exposed as an agent tool
  *     ├─ a webhook trigger and a daily cron trigger
- *     ├─ a few tickets, including one already in Human review
+ *     ├─ a few work items, including one already in Human review
  *     └─ a dashboard with KPI, breakdown and funnel widgets
  *
  * Everything is created through the real services, so the seed exercises the same
@@ -43,19 +43,27 @@ import { setProviderLookup } from '../src/lib/server/execution/provider-lookup';
 import { createFieldDefinition, setWorkflowFields } from '../src/lib/server/fields/service';
 import { registerFileJobHandlers } from '../src/lib/server/files/handlers';
 import { installFileService } from '../src/lib/server/files/service';
-import { compileTicketFilterDetailed } from '../src/lib/server/filters/compile';
+import {
+  compileWorkflowItemFilterDetailed,
+  setWorkflowItemFilterCompiler
+} from '../src/lib/server/filters/compile';
 import { executeOperation } from '../src/lib/server/http/runtime';
 import { createHttpOperation, createHttpService } from '../src/lib/server/http/service';
 import { getProviderForModel } from '../src/lib/server/providers/registry';
+import { createObjectType, setBaseFields } from '../src/lib/server/records/object-types';
 import { createSecret } from '../src/lib/server/secrets/service';
-import { setTicketFilterCompiler } from '../src/lib/server/tickets/query';
-import { createTicketSync, installTicketService } from '../src/lib/server/tickets/service';
 import { setHttpToolInvoker } from '../src/lib/server/tools/http-locator';
 import { registerNativeTools } from '../src/lib/server/tools/native';
 import { registerCoreNativeTools } from '../src/lib/server/tools/native/register';
 import { getDefaultToolRegistry, resetToolRegistry } from '../src/lib/server/tools/registry';
 import { registerTriggerJobHandlers } from '../src/lib/server/triggers/handlers';
 import { createTrigger } from '../src/lib/server/triggers/service';
+import {
+  addWorkflowItemNoteSync,
+  createWorkflowItemSync,
+  requestWorkflowItemTransitionSync,
+  transferWorkflowItemSync
+} from '../src/lib/server/workflow-items/service';
 import { createWorkflow, setTransferRule } from '../src/lib/server/workflows/service';
 import { createUserRecord, createWorkspaceWithOwner } from '../src/lib/server/workspaces/service';
 
@@ -208,22 +216,47 @@ async function main() {
         key: spec.key,
         name: spec.name,
         type: spec.type,
+        scope: 'record',
         options: spec.options ?? null
       });
       fieldIds.set(spec.key, field.id);
     }
+
+    // ---------------------------------------------------------- object type
+    // The workspace defines its own Object Type; there is no built-in Ticket type.
+    const objectType = createObjectType(db, actor, {
+      key: 'claim',
+      name: 'Claim',
+      pluralName: 'Claims',
+      description: 'An insurance request, claim or query being handled.'
+    });
+    await setBaseFields(
+      db,
+      actor,
+      objectType.id,
+      fieldSpecs.map((spec, index) => ({
+        fieldDefinitionId: fieldIds.get(spec.key)!,
+        position: index,
+        required: false,
+        showInList: true,
+        showOnCard: spec.card ?? false,
+        filterable: true
+      }))
+    );
 
     // ------------------------------------------------------------- workflows
     const intake = createWorkflow(db, actor, {
       name: 'Intake',
       key: 'INT',
       template: 'intake',
-      description: 'Receives heterogeneous events, classifies them and routes the ticket onward.'
+      objectTypeId: objectType.id,
+      description: 'Receives heterogeneous events, classifies them and routes the work onward.'
     });
     const claims = createWorkflow(db, actor, {
       name: 'Claims',
       key: 'CLM',
       template: 'claims',
+      objectTypeId: objectType.id,
       description: 'Investigation with a human review gate, then a decision.'
     });
 
@@ -360,18 +393,18 @@ async function main() {
       .map((tool) => tool.key);
     const triageAgent = createAgent(db, actor, {
       name: 'Triage Agent',
-      description: 'Classifies incoming requests, extracts fields and routes the ticket.',
+      description: 'Classifies incoming requests, extracts fields and routes the work.',
       workflowId: intake.workflow.id,
       providerId,
       modelId,
       instructions: [
         'You are the intake triage agent for a claims and servicing team.',
         '',
-        'For each ticket:',
-        '1. Read the ticket and any linked documents.',
+        'For each work item:',
+        '1. Read the record and any linked documents.',
         '2. Extract Customer, Customer Email, Request Type, Policy Number and Claim Amount when present.',
-        '3. Set the fields with mentat.ticket.fields.setMany.',
-        '4. Route the ticket with mentat.ticket.transfer: claims go to the Claims workflow,',
+        '3. Set the fields with workflowItems.setFields.',
+        '4. Route the work with workflowItems.transfer: claims go to the Claims workflow,',
         '   everything else stays and moves to Needs information.',
         '5. Leave a short note explaining the classification.'
       ].join('\n'),
@@ -384,15 +417,15 @@ async function main() {
       },
       permissions: {
         native: [
-          'mentat.ticket.get',
-          'mentat.ticket.fields.get',
-          'mentat.ticket.fields.setMany',
-          'mentat.ticket.addNote',
-          'mentat.ticket.transfer',
+          'workflowItems.get',
+          'workflowItems.getFields',
+          'workflowItems.setFields',
+          'workflowItems.addNote',
+          'workflowItems.transfer',
           'files.list',
           'files.getSummary'
         ],
-        canTransferTickets: true,
+        canTransferWork: true,
         httpOperationIds: []
       }
     });
@@ -413,11 +446,11 @@ async function main() {
       executionConfig: { maxSteps: 10, temperature: 0.2, timeoutSeconds: 240 },
       permissions: {
         native: [
-          'mentat.ticket.get',
-          'mentat.ticket.fields.get',
-          'mentat.ticket.fields.setMany',
-          'mentat.ticket.addNote',
-          'mentat.ticket.requestTransition',
+          'workflowItems.get',
+          'workflowItems.getFields',
+          'workflowItems.setFields',
+          'workflowItems.addNote',
+          'workflowItems.requestTransition',
           'mentat.data.find',
           'mentat.cache.get'
         ]
@@ -449,7 +482,7 @@ async function main() {
       }
     });
 
-    // --------------------------------------------------------------- tickets
+    // ------------------------------------------------------------- work items
     const samples = [
       {
         title: 'Storm damage claim — 12 Harbour Street',
@@ -487,68 +520,75 @@ async function main() {
       }
     ];
 
-    const createdTickets: Array<{ id: string; key: string }> = [];
+    const createdItems: string[] = [];
     for (const sample of samples) {
-      const ticket = createTicketSync(db, actor, {
+      const item = createWorkflowItemSync(db, actor, {
         workflowId: intake.workflow.id,
-        title: sample.title,
-        description: sample.description,
-        priority: sample.priority,
-        fields: sample.fields,
+        record: {
+          objectTypeId: objectType.id,
+          displayName: sample.title,
+          fields: sample.fields,
+          structuredData: { description: sample.description, priority: sample.priority }
+        },
         provenance: {
           sourceType: 'incoming_email',
-          sourceReference: `msg-${createdTickets.length + 1}`
+          sourceReference: `msg-${createdItems.length + 1}`
         }
       });
-      createdTickets.push({ id: ticket.id, key: ticket.key });
+      createdItems.push(item.id);
     }
 
-    // One ticket that has already reached the human gate, so the review UI has work.
-    const { transferTicketSync, requestTransitionSync, addNoteSync } = await import(
-      '../src/lib/server/tickets/service'
-    );
-    const gateTicket = createTicketSync(db, actor, {
+    // One item already reached the human gate, so the review UI has work.
+    const gate = createWorkflowItemSync(db, actor, {
       workflowId: intake.workflow.id,
-      title: 'Liability claim — delivery damage',
-      description: 'Third-party claim for damaged goods during delivery.',
-      priority: 'urgent',
-      fields: {
-        customer: 'Ridgeline Logistics',
-        customer_email: 'claims@ridgeline.test',
-        request_type: 'claim',
-        policy_number: 'POL-998812',
-        claim_amount: 42_000,
-        external_reference: 'MSG-2026-0004'
+      record: {
+        objectTypeId: objectType.id,
+        displayName: 'Liability claim — delivery damage',
+        fields: {
+          customer: 'Ridgeline Logistics',
+          customer_email: 'claims@ridgeline.test',
+          request_type: 'claim',
+          policy_number: 'POL-998812',
+          claim_amount: 42_000,
+          external_reference: 'MSG-2026-0004'
+        },
+        structuredData: {
+          description: 'Third-party claim for damaged goods during delivery.',
+          priority: 'urgent'
+        }
       },
       provenance: { sourceType: 'webhook', sourceReference: 'delivery-damage-1' }
     });
-    transferTicketSync(db, actor, {
-      ticketId: gateTicket.id,
+    const transferred = transferWorkflowItemSync(db, actor, {
+      workflowItemId: gate.id,
       targetWorkflowId: claims.workflow.id,
       reason: 'Classified as a claim by the triage agent'
     });
-    requestTransitionSync(db, actor, {
-      ticketId: gateTicket.id,
+    const gateItemId = transferred.workflowItem.id;
+    requestWorkflowItemTransitionSync(db, actor, {
+      workflowItemId: gateItemId,
       targetStateId: claimsStates['Investigation']!,
       comment: 'Investigation started'
     });
-    addNoteSync(db, actor, {
-      ticketId: gateTicket.id,
-      body: 'Assessed at $42,000 against policy POL-998812. Recommend approval subject to excess.',
-      isSystem: true,
-      authorLabel: 'Claims Investigator'
+    addWorkflowItemNoteSync(db, actor, {
+      workflowItemId: gateItemId,
+      body: 'Assessed at $42,000 against policy POL-998812. Recommend approval subject to excess.'
     });
-    requestTransitionSync(db, actor, {
-      ticketId: gateTicket.id,
+    requestWorkflowItemTransitionSync(db, actor, {
+      workflowItemId: gateItemId,
       targetStateId: claimsStates['Human review']!,
-      comment: 'Assessment complete, requesting review'
+      comment: 'Assessment complete, requesting review',
+      fieldValues: {
+        review_outcome: 'approved',
+        reviewer_notes: 'Recommend approval subject to excess.'
+      }
     });
 
     // --------------------------------------------------------------- triggers
     const webhookTrigger = await createTrigger(db, actor, {
       workflowId: intake.workflow.id,
       name: 'Inbound email',
-      description: 'Accepts normalised inbound email events and creates intake tickets.',
+      description: 'Accepts normalised inbound email events and creates intake work.',
       type: 'webhook',
       config: {
         signatureRequired: false,
@@ -587,20 +627,20 @@ async function main() {
       isShared: true
     });
     await addWidget(db, actor, dashboard.id, {
-      title: 'Open tickets',
+      title: 'Open work',
       type: 'kpi',
       size: 'sm',
-      dataSource: { kind: 'tickets', workflowIds: [intake.workflow.id, claims.workflow.id] },
+      dataSource: { kind: 'workflow_items', workflowIds: [intake.workflow.id, claims.workflow.id] },
       measure: { aggregation: 'count' },
       grouping: { by: 'none' },
       timeRange: { kind: 'all' },
       visualization: { valueFormat: 'number' }
     });
     await addWidget(db, actor, dashboard.id, {
-      title: 'Tickets by state',
+      title: 'Work by state',
       type: 'bar',
       size: 'md',
-      dataSource: { kind: 'tickets', workflowIds: [claims.workflow.id] },
+      dataSource: { kind: 'workflow_items', workflowIds: [claims.workflow.id] },
       measure: { aggregation: 'count' },
       grouping: { by: 'state' },
       timeRange: { kind: 'all' },
@@ -610,7 +650,7 @@ async function main() {
       title: 'Claim amount by risk category',
       type: 'bar',
       size: 'md',
-      dataSource: { kind: 'tickets', workflowIds: [claims.workflow.id] },
+      dataSource: { kind: 'workflow_items', workflowIds: [claims.workflow.id] },
       measure: { aggregation: 'sum', fieldKey: 'claim_amount' },
       grouping: { by: 'field', fieldKey: 'risk_category' },
       timeRange: { kind: 'all' },
@@ -647,7 +687,7 @@ async function main() {
         `  Reviewer  : reviewer@mentat.local / ${DEMO_PASSWORD}`,
         '',
         `  Workflows : ${intake.workflow.name} (${intake.workflow.key}), ${claims.workflow.name} (${claims.workflow.key})`,
-        `  Tickets   : ${createdTickets.length + 1} (one waiting at the human gate)`,
+        `  Work items: ${createdItems.length + 1} (one waiting at the human gate)`,
         `  Agents    : ${triageAgent.name}, ${claimsAgent.name}`,
         `  Provider  : Local Ollama at ${env().MENTAT_OLLAMA_URL} (refresh models once it is running)`,
         `  Webhook   : /api/webhooks/${webhookTrigger.webhookToken}`,
@@ -666,7 +706,6 @@ async function main() {
 
 /** Wire the same locators bootstrap installs, so the seed can use the services. */
 function wireServices(db: Executor) {
-  installTicketService(() => db);
   installFileService({ db });
   registerExecutionJobHandlers();
   registerFileJobHandlers();
@@ -688,8 +727,8 @@ function wireServices(db: Executor) {
       error: result.error
     };
   });
-  setTicketFilterCompiler({
-    compile: (executor, options) => compileTicketFilterDetailed(executor, options)
+  setWorkflowItemFilterCompiler({
+    compile: (executor, options) => compileWorkflowItemFilterDetailed(executor, options)
   });
   resetToolRegistry();
   registerNativeTools(getDefaultToolRegistry());

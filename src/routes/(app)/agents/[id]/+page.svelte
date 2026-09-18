@@ -59,8 +59,8 @@ interface AgentBody {
   permissions: {
     native: string[];
     httpOperationIds: string[];
-    canTransferTickets: boolean;
-    canCreateTickets: boolean;
+    canTransferWork: boolean;
+    canCreateWork: boolean;
     canWriteWorkspaceState: boolean;
     canUploadFiles: boolean;
     writableFieldKeys: string[];
@@ -105,8 +105,8 @@ let requireApprovalForMutations = $state(false);
 
 let nativePermissions = $state<string[]>([]);
 let httpOperationIds = $state<string[]>([]);
-let canCreateTickets = $state(false);
-let canTransferTickets = $state(false);
+let canCreateWork = $state(false);
+let canTransferWork = $state(false);
 let canWriteWorkspaceState = $state(false);
 let canUploadFiles = $state(false);
 let writableFieldKeys = $state<string[]>([]);
@@ -181,8 +181,8 @@ function hydrate(next: AgentView) {
   const permissions: AgentPermissions = next.permissions ?? {};
   nativePermissions = [...(permissions.native ?? [])];
   httpOperationIds = [...(permissions.httpOperationIds ?? [])];
-  canCreateTickets = permissions.canCreateTickets ?? false;
-  canTransferTickets = permissions.canTransferTickets ?? false;
+  canCreateWork = permissions.canCreateWork ?? false;
+  canTransferWork = permissions.canTransferWork ?? false;
   canWriteWorkspaceState = permissions.canWriteWorkspaceState ?? false;
   canUploadFiles = permissions.canUploadFiles ?? false;
   writableFieldKeys = [...(permissions.writableFieldKeys ?? [])];
@@ -220,8 +220,8 @@ function buildBody(): AgentBody {
     permissions: {
       native: [...nativePermissions].sort(),
       httpOperationIds: [...httpOperationIds].sort(),
-      canTransferTickets,
-      canCreateTickets,
+      canTransferWork,
+      canCreateWork,
       canWriteWorkspaceState,
       canUploadFiles,
       writableFieldKeys: [...writableFieldKeys]
@@ -278,8 +278,7 @@ const executionInvalidCount = $derived(
 const grantedPermissionCount = $derived(
   nativePermissions.length +
     httpOperationIds.length +
-    [canCreateTickets, canTransferTickets, canWriteWorkspaceState, canUploadFiles].filter(Boolean)
-      .length
+    [canCreateWork, canTransferWork, canWriteWorkspaceState, canUploadFiles].filter(Boolean).length
 );
 
 const scopeOptions = $derived([
@@ -452,7 +451,7 @@ async function archive() {
     {#if activeTab === 'identity'}
       <Section
         title="Identity"
-        description="The agent's name, scope and the instructions the model receives before any skill or ticket context."
+        description="The agent's name, scope and the instructions the model receives before any skill or work item context."
       >
         <div class="grid gap-4 md:grid-cols-2">
           <Input
@@ -507,8 +506,8 @@ async function archive() {
       <PermissionEditor
         bind:native={nativePermissions}
         bind:httpOperationIds
-        bind:canCreateTickets
-        bind:canTransferTickets
+        bind:canCreateWork
+        bind:canTransferWork
         bind:canWriteWorkspaceState
         bind:canUploadFiles
         bind:writableFieldKeys

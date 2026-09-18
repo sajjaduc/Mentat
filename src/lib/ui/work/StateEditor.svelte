@@ -5,7 +5,7 @@
  * A state is the unit of workflow policy: who may act, which agent runs, what the
  * deterministic fallback is, whether a human gate stops progression, and how much
  * context is assembled for the model. The form exposes all of it because a hidden
- * default is indistinguishable from a bug when a ticket behaves unexpectedly.
+ * default is indistinguishable from a bug when a workItem behaves unexpectedly.
  */
 import { untrack } from 'svelte';
 import Badge from '$ui/primitives/Badge.svelte';
@@ -14,6 +14,7 @@ import Input from '$ui/primitives/Input.svelte';
 import Modal from '$ui/primitives/Modal.svelte';
 import Select from '$ui/primitives/Select.svelte';
 import Textarea from '$ui/primitives/Textarea.svelte';
+import ZodSchemaBox from '$ui/schema/ZodSchemaBox.svelte';
 import MultiSelect from '$ui/work/MultiSelect.svelte';
 import type {
   AgentOption,
@@ -69,7 +70,7 @@ const ACTION_TYPES: Array<{ value: '' | SystemAction['type']; label: string }> =
   { value: 'transition', label: 'Transition to a state' },
   { value: 'setFields', label: 'Set field values' },
   { value: 'emitEvent', label: 'Emit an event' },
-  { value: 'createTicket', label: 'Create a ticket' },
+  { value: 'createWorkItem', label: 'Create a work item' },
   { value: 'http', label: 'Call an HTTP operation' },
   { value: 'wait', label: 'Wait' }
 ];
@@ -111,6 +112,11 @@ interface Form {
   ctxFullFile: boolean;
   ctxHistory: boolean;
   ctxStateHistory: boolean;
+  ctxRecordSchema: boolean;
+  submitRequired: boolean;
+  submitMaxNudges: string;
+  submitAllowWorkflowChange: boolean;
+  stateSchema: string;
 }
 
 function emptyForm(): Form {
@@ -149,7 +155,12 @@ function emptyForm(): Form {
     ctxFileFields: [],
     ctxFullFile: false,
     ctxHistory: false,
-    ctxStateHistory: false
+    ctxStateHistory: false,
+    ctxRecordSchema: true,
+    submitRequired: false,
+    submitMaxNudges: '2',
+    submitAllowWorkflowChange: true,
+    stateSchema: ''
   };
 }
 
@@ -196,7 +207,12 @@ function formOf(source: WorkflowState | null): Form {
     ctxFileFields: context?.includeFileFields ?? [],
     ctxFullFile: context?.includeFullFileContent === true,
     ctxHistory: context?.includeHistory === true,
-    ctxStateHistory: context?.includeStateHistory === true
+    ctxStateHistory: context?.includeStateHistory === true,
+    ctxRecordSchema: context?.includeRecordSchema !== false,
+    submitRequired: source.config?.requiredSubmission !== undefined,
+    submitMaxNudges: String(source.config?.requiredSubmission?.maxNudges ?? 2),
+    submitAllowWorkflowChange: source.config?.requiredSubmission?.allowWorkflowChange !== false,
+    stateSchema: source.config?.zodSchema ?? ''
   };
 }
 
@@ -233,9 +249,9 @@ function buildSystemAction(): SystemAction | undefined {
     }
     case 'emitEvent':
       return { type: 'emitEvent', name: form.actionName };
-    case 'createTicket':
+    case 'createWorkItem':
       return {
-        type: 'createTicket',
+        type: 'createWorkItem',
         workflowId: form.actionWorkflowId,
         titleTemplate: form.actionTitleTemplate
       };
@@ -269,7 +285,8 @@ function save() {
     includeFileFields: form.ctxFileFields,
     includeFullFileContent: form.ctxFullFile,
     includeHistory: form.ctxHistory,
-    includeStateHistory: form.ctxStateHistory
+    includeStateHistory: form.ctxStateHistory,
+    includeRecordSchema: form.ctxRecordSchema
   };
   const body: Record<string, unknown> = {
     name: form.name.trim(),
@@ -299,7 +316,14 @@ function save() {
       wipLimit: form.wipLimit === '' ? undefined : Number(form.wipLimit),
       runOncePerEntry: existing?.config?.runOncePerEntry,
       allowedToolKeys: existing?.config?.allowedToolKeys,
-      slaSeconds: existing?.config?.slaSeconds
+      slaSeconds: existing?.config?.slaSeconds,
+      zodSchema: form.stateSchema.trim() === '' ? undefined : form.stateSchema.trim(),
+      requiredSubmission: form.submitRequired
+        ? {
+            maxNudges: Number(form.submitMaxNudges) || 2,
+            allowWorkflowChange: form.submitAllowWorkflowChange
+          }
+        : undefined
     }
   };
   onsave(body);
@@ -381,7 +405,7 @@ function save() {
       />
       <label class="mt-5 flex items-center gap-2 text-xs text-[var(--color-ink-muted)]">
         <input type="checkbox" bind:checked={form.autoExecute} />
-        Auto-execute when the ticket enters this state
+        Auto-execute when the work item enters this state
       </label>
     </section>
 
@@ -461,11 +485,30 @@ function save() {
           <input type="checkbox" bind:checked={form.ctxFullFile} /> Full file content
         </label>
         <label class="flex items-center gap-1.5 text-xs">
-          <input type="checkbox" bind:checked={form.ctxHistory} /> Ticket history
+          <input type="checkbox" bind:checked={form.ctxHistory} /> Work item history
         </label>
         <label class="flex items-center gap-1.5 text-xs">
           <input type="checkbox" bind:checked={form.ctxStateHistory} /> State history
         </label>
+        <label class="flex items-center gap-1.5 text-xs">
+          <input type="checkbox" bind:checked={form.ctxRecordSchema} /> Record schema &amp; contract
+        </label>
+        <label class="flex items-center gap-1.5 text-xs">
+          <input type="checkbox" bind:checked={form.submitRequired} /> Require validated submit
+        </label>
+        {#if form.submitRequired}
+          <label class="flex items-center gap-1.5 text-xs">
+            Max repair nudges
+            <input
+              class="w-16 rounded-[var(--radius-xs)] border border-[var(--color-border-subtle)] bg-[var(--color-surface)] px-1.5 py-0.5"
+              value={form.submitMaxNudges}
+              oninput={(event) => (form.submitMaxNudges = (event.currentTarget as HTMLInputElement).value)}
+            />
+          </label>
+          <label class="flex items-center gap-1.5 text-xs">
+            <input type="checkbox" bind:checked={form.submitAllowWorkflowChange} /> Allow moving to another workflow
+          </label>
+        {/if}
       </div>
       <div class="grid gap-3 sm:grid-cols-2">
         <MultiSelect
@@ -488,6 +531,26 @@ function save() {
           oninput={(event) => (form.ctxRecentNotes = (event.currentTarget as HTMLInputElement).value)}
         />
       </div>
+    </section>
+
+    <section class="space-y-3 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] p-3">
+      <h3 class="text-xs font-semibold tracking-wider text-[var(--color-ink-subtle)] uppercase">
+        State schema
+      </h3>
+      <p class="text-[11px] text-[var(--color-ink-subtle)]">
+        Optional. When set, a submitted record must satisfy this Zod schema while work is in this
+        state — in addition to the Object Type contract. Test it against a sample, then save it to
+        this state and save the state.
+      </p>
+      <ZodSchemaBox
+        value={form.stateSchema}
+        saveLabel="Save schema to state"
+        hint="Compiled on every submission, so the schema that passed the test is the one the engine runs later."
+        placeholder={'z.object({\n  reviewer_note: z.string().min(1),\n  approved: z.boolean()\n})'}
+        onSave={(source) => {
+          form.stateSchema = source;
+        }}
+      />
     </section>
 
     <section class="space-y-3 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] p-3">
@@ -515,7 +578,7 @@ function save() {
         <Textarea value={form.actionValues} oninput={(event) => (form.actionValues = (event.currentTarget as HTMLTextAreaElement).value)} mono={true} label="Values (JSON)" rows={4} />
       {:else if form.actionType === 'emitEvent'}
         <Input value={form.actionName} oninput={(event) => (form.actionName = (event.currentTarget as HTMLInputElement).value)} label="Event name" />
-      {:else if form.actionType === 'createTicket'}
+      {:else if form.actionType === 'createWorkItem'}
         <Select
           label="Target workflow"
           placeholder="Choose a workflow"

@@ -27,7 +27,7 @@ export interface TriggerMapping {
   labels?: string[];
   attachmentPaths?: string[];
   dedupeTemplate?: string;
-  parentTicketPath?: string;
+  parentRecordPath?: string;
 }
 
 export interface TriggerConfig {
@@ -78,7 +78,8 @@ export interface TriggerEvent {
   /** Redacted payload snapshot for inspection. */
   payload: unknown;
   payloadBytes: number | null;
-  ticketId: string | null;
+  recordId: string | null;
+  workflowItemId: string | null;
   jobId: string | null;
   error: string | null;
   receivedAt: number;

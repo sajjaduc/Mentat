@@ -2,8 +2,8 @@
  * Scoped agent state (`state.get/set/delete/list`).
  *
  * State is durable key/value scratch space for agents and workflow authors. Its
- * whole design is the *scope*: a ticket-scoped value travels with the ticket, a
- * workflow-scoped value is shared inside one workflow, and a workspace-scoped value
+ * whole design is the *scope*: a workflow-item-scoped value travels with the work,
+ * a workflow-scoped value is shared inside one workflow, and a workspace-scoped value
  * is visible everywhere in the tenant. Arbitrary SQL is never exposed anywhere in
  * this module.
  *
@@ -45,22 +45,22 @@ export const MAX_STATE_NAMESPACE_LENGTH = 128;
 export const MAX_STATE_VALUE_BYTES = 256 * 1024;
 
 const MAX_LIST_LIMIT = 200;
-const SCOPES: StateScope[] = ['workspace', 'workflow', 'ticket', 'agent', 'run'];
+const SCOPES: StateScope[] = ['workspace', 'workflow', 'workflowItem', 'agent', 'run'];
 
 /** Which owner id a scope must carry to be addressable. */
 const REQUIRED_OWNER: Record<StateScope, OwnerField | null> = {
   workspace: null,
   workflow: 'workflowId',
-  ticket: 'ticketId',
+  workflowItem: 'workflowItemId',
   agent: 'agentId',
   run: 'runId'
 };
 
-export type OwnerField = 'workflowId' | 'ticketId' | 'agentId' | 'runId';
+export type OwnerField = 'workflowId' | 'workflowItemId' | 'agentId' | 'runId';
 
 export interface StateOwners {
   workflowId?: string | null;
-  ticketId?: string | null;
+  workflowItemId?: string | null;
   agentId?: string | null;
   runId?: string | null;
 }
@@ -70,7 +70,7 @@ export interface StateEntryView {
   workspaceId: string;
   scope: StateScope;
   workflowId: string | null;
-  ticketId: string | null;
+  workflowItemId: string | null;
   agentId: string | null;
   runId: string | null;
   namespace: string;
@@ -111,7 +111,7 @@ export interface ListStateInput extends StateOwners {
 
 interface NormalizedOwners {
   workflowId: string;
-  ticketId: string;
+  workflowItemId: string;
   agentId: string;
   runId: string;
 }
@@ -157,7 +157,7 @@ export function setStateValue(
         agentState.workspaceId,
         agentState.scope,
         agentState.workflowId,
-        agentState.ticketId,
+        agentState.workflowItemId,
         agentState.agentId,
         agentState.runId,
         agentState.namespace,
@@ -239,7 +239,7 @@ export function deleteStateValue(
 /**
  * List the newest entries in a scope, optionally filtered by namespace and key
  * prefix. Non-workspace scopes require their owner id, so a caller cannot
- * accidentally enumerate every ticket's state in one call.
+ * accidentally enumerate every workflow item's state in one call.
  */
 export function listState(
   db: Executor,
@@ -254,7 +254,7 @@ export function listState(
     eq(agentState.workspaceId, actor.workspaceId),
     eq(agentState.scope, input.scope),
     eq(agentState.workflowId, owners.workflowId),
-    eq(agentState.ticketId, owners.ticketId),
+    eq(agentState.workflowItemId, owners.workflowItemId),
     eq(agentState.agentId, owners.agentId),
     eq(agentState.runId, owners.runId),
     eq(agentState.namespace, normalizeNamespace(input.namespace))
@@ -292,7 +292,7 @@ function reapExpired(
         eq(agentState.workspaceId, workspaceId),
         eq(agentState.scope, scope),
         eq(agentState.workflowId, owners.workflowId),
-        eq(agentState.ticketId, owners.ticketId),
+        eq(agentState.workflowItemId, owners.workflowItemId),
         eq(agentState.agentId, owners.agentId),
         eq(agentState.runId, owners.runId),
         isNotNull(agentState.expiresAt),
@@ -320,7 +320,7 @@ function normalizeOwners(scope: StateScope, input: StateOwners): NormalizedOwner
   }
   const owners: NormalizedOwners = {
     workflowId: emptyToSentinel(input.workflowId),
-    ticketId: emptyToSentinel(input.ticketId),
+    workflowItemId: emptyToSentinel(input.workflowItemId),
     agentId: emptyToSentinel(input.agentId),
     runId: emptyToSentinel(input.runId)
   };
@@ -399,7 +399,7 @@ function identityWhere(
     eq(agentState.workspaceId, workspaceId),
     eq(agentState.scope, scope),
     eq(agentState.workflowId, owners.workflowId),
-    eq(agentState.ticketId, owners.ticketId),
+    eq(agentState.workflowItemId, owners.workflowItemId),
     eq(agentState.agentId, owners.agentId),
     eq(agentState.runId, owners.runId),
     eq(agentState.namespace, namespace),
@@ -412,7 +412,7 @@ function toStateView(row: {
   workspaceId: string;
   scope: StateScope;
   workflowId: string | null;
-  ticketId: string | null;
+  workflowItemId: string | null;
   agentId: string | null;
   runId: string | null;
   namespace: string;
@@ -430,7 +430,7 @@ function toStateView(row: {
     workspaceId: row.workspaceId,
     scope: row.scope,
     workflowId: sentinelToNull(row.workflowId),
-    ticketId: sentinelToNull(row.ticketId),
+    workflowItemId: sentinelToNull(row.workflowItemId),
     agentId: sentinelToNull(row.agentId),
     runId: sentinelToNull(row.runId),
     namespace: row.namespace,

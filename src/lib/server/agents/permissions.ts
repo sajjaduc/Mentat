@@ -3,33 +3,35 @@
  *
  * Two layers, deliberately:
  *
- *  - **Coarse service permissions** (`ticket:write`, `file:read`, …) gate the
+ *  - **Coarse service permissions** (`workflow_item:write`, `file:read`, …) gate the
  *    service methods the runner and tools call.
- *  - **Native capability keys** (`mentat.ticket.fields.set`, `files.read`, …) are
+ *  - **Native capability keys** (`workflowItems.setFields`, `files.read`, …) are
  *    placed in the same set verbatim, so the tool registry can assert the exact
  *    capability an agent was granted instead of inferring it from a coarse scope.
  *
  * The result is that an agent gets nothing implicitly: an empty permission
- * declaration yields an agent that can read the ticket it is working on and
+ * declaration yields an agent that can read the work it is working on and
  * nothing else.
  */
 import { Permissions } from '../core/context';
 import type { AgentPermissions } from '../db/schema';
 
 const READ_ONLY_BASELINE = [
-  Permissions.ticketRead,
   Permissions.workflowRead,
   Permissions.runRead,
   Permissions.agentRead,
   Permissions.fileRead,
   Permissions.dataRead,
   Permissions.cacheRead,
-  Permissions.configRead
+  Permissions.configRead,
+  Permissions.objectTypeRead,
+  Permissions.recordRead,
+  Permissions.workflowItemRead
 ];
 
 /**
  * Capability keys are namespaced, optionally with the `mentat.` product prefix
- * (`mentat.ticket.fields.set`) which is the form used by the native tool registry.
+ * (`mentat.workflowItems.setFields`) which is the form used by the native tool registry.
  * Comparison always happens on the un-prefixed form so a grant works whichever
  * spelling the caller used.
  */
@@ -58,8 +60,11 @@ export function agentPermissionsToSet(
   if (permissions.httpOperationIds && permissions.httpOperationIds.length > 0) {
     set.add(Permissions.httpInvoke);
   }
-  if (permissions.canCreateTickets) set.add(Permissions.ticketCreate);
-  if (permissions.canTransferTickets) set.add(Permissions.ticketTransfer);
+  if (permissions.canCreateWork) {
+    set.add(Permissions.workflowItemCreate);
+    set.add(Permissions.workflowItemWrite);
+  }
+  if (permissions.canTransferWork) set.add(Permissions.workflowItemTransfer);
   if (permissions.canUploadFiles) {
     set.add(Permissions.fileWrite);
     set.add(Permissions.fileDelete);
@@ -73,20 +78,23 @@ export function agentPermissionsToSet(
   // because the services they call assert at their own boundary.
   for (const rawKey of permissions.native ?? []) {
     const key = normalizeCapabilityKey(rawKey);
-    if (
-      key.startsWith('ticket.fields') ||
-      key.startsWith('ticket.note') ||
-      key.startsWith('ticket.artifact') ||
-      key.startsWith('ticket.relationship') ||
-      key.startsWith('ticket.transition')
-    ) {
-      set.add(Permissions.ticketWrite);
+    // Universal-model capabilities (ADR-0021): Records and WorkflowItems.
+    if (key === 'records.create') {
+      set.add(Permissions.recordCreate);
+      set.add(Permissions.recordWrite);
+    } else if (key.startsWith('records.')) {
+      set.add(Permissions.recordWrite);
     }
-    if (key === 'ticket.transfer') set.add(Permissions.ticketTransfer);
-    if (key === 'ticket.create' || key === 'tickets.create') set.add(Permissions.ticketCreate);
+    if (key === 'workflowItems.create') {
+      set.add(Permissions.workflowItemCreate);
+      set.add(Permissions.workflowItemWrite);
+    } else if (key.startsWith('workflowItems.')) {
+      set.add(Permissions.workflowItemWrite);
+    }
+    if (key === 'workflowItems.transfer') set.add(Permissions.workflowItemTransfer);
     if (key.startsWith('data.')) set.add(Permissions.dataWrite);
     if (key.startsWith('cache.')) set.add(Permissions.cacheWrite);
-    if (key.startsWith('files.setFields') || key.startsWith('files.linkToTicket')) {
+    if (key.startsWith('files.setFields') || key.startsWith('files.linkToWorkItem')) {
       set.add(Permissions.fileWrite);
     }
     if (key.startsWith('http.')) set.add(Permissions.httpInvoke);

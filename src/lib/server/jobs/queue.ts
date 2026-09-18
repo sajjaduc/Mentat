@@ -47,7 +47,8 @@ export interface EnqueueInput {
   dedupeKey?: string;
   idempotencyKey?: string;
   timeoutSeconds?: number;
-  ticketId?: string | null;
+  recordId?: string | null;
+  workflowItemId?: string | null;
   runId?: string | null;
   parentJobId?: string | null;
   actorType?: 'user' | 'agent' | 'system' | 'api' | 'extraction';
@@ -167,7 +168,8 @@ export function enqueueJobSync(db: Executor, input: EnqueueInput): Job {
       timeoutSeconds: input.timeoutSeconds ?? null,
       dedupeKey: input.dedupeKey ?? null,
       idempotencyKey: input.idempotencyKey ?? null,
-      ticketId: input.ticketId ?? null,
+      recordId: input.recordId ?? null,
+      workflowItemId: input.workflowItemId ?? null,
       runId: input.runId ?? null,
       parentJobId: input.parentJobId ?? null,
       createdAt: now,
@@ -188,7 +190,8 @@ export function enqueueJobSync(db: Executor, input: EnqueueInput): Job {
     entityType: 'job',
     entityId: job.id,
     jobId: job.id,
-    ticketId: job.ticketId,
+    recordId: job.recordId,
+    workflowItemId: job.workflowItemId,
     runId: job.runId,
     summary: `Job ${input.type} enqueued`,
     data: { type: input.type, queue: job.queue, availableAt, dedupeKey: input.dedupeKey ?? null }
@@ -294,7 +297,8 @@ export class SqliteJobQueue implements JobQueue {
       entityType: 'job',
       entityId: job.id,
       jobId: job.id,
-      ticketId: job.ticketId,
+      recordId: job.recordId,
+      workflowItemId: job.workflowItemId,
       runId: job.runId,
       summary: `Job ${job.type} completed`,
       data: { attempts: job.attempts },
@@ -361,7 +365,8 @@ export class SqliteJobQueue implements JobQueue {
       entityType: 'job',
       entityId: jobId,
       jobId,
-      ticketId: job.ticketId,
+      recordId: job.recordId,
+      workflowItemId: job.workflowItemId,
       runId: job.runId,
       summary: willRetry
         ? `Job ${job.type} failed (attempt ${job.attempts}/${job.maxAttempts}); retry scheduled`
@@ -417,7 +422,8 @@ export class SqliteJobQueue implements JobQueue {
       entityType: 'job',
       entityId: jobId,
       jobId,
-      ticketId: job.ticketId,
+      recordId: job.recordId,
+      workflowItemId: job.workflowItemId,
       runId: job.runId,
       summary: `Job ${job.type} cancelled`,
       data: { reason: reason ?? null },
@@ -461,7 +467,8 @@ export class SqliteJobQueue implements JobQueue {
         entityType: 'job',
         entityId: job.id,
         jobId: job.id,
-        ticketId: job.ticketId,
+        recordId: job.recordId,
+        workflowItemId: job.workflowItemId,
         runId: job.runId,
         summary: `Job ${job.type} lease expired; returned to the queue`,
         data: { attempt: job.attempts },
@@ -553,7 +560,8 @@ export async function listJobs(
     workspaceId?: string;
     status?: JobStatus[];
     type?: JobType;
-    ticketId?: string;
+    recordId?: string;
+    workflowItemId?: string;
     runId?: string;
     limit?: number;
   } = {}
@@ -563,7 +571,8 @@ export async function listJobs(
   if (options.status && options.status.length > 0)
     conditions.push(inArray(jobs.status, options.status));
   if (options.type) conditions.push(eq(jobs.type, options.type));
-  if (options.ticketId) conditions.push(eq(jobs.ticketId, options.ticketId));
+  if (options.recordId) conditions.push(eq(jobs.recordId, options.recordId));
+  if (options.workflowItemId) conditions.push(eq(jobs.workflowItemId, options.workflowItemId));
   if (options.runId) conditions.push(eq(jobs.runId, options.runId));
   return db
     .select()

@@ -5,7 +5,7 @@
  * deliberate: hash the bytes before any expensive work, resolve storage from
  * workspace configuration, write the physical object *outside* any transaction
  * (ADR-0004 forbids I/O inside one), then create the logical file, its
- * provenance, its ticket/workflow links and its processing job in a single
+ * provenance, its work-item/record links and its processing job in a single
  * transaction. That is what makes `deduplicated` trustworthy and what guarantees
  * a file is never created without provenance.
  */
@@ -16,7 +16,7 @@ import { errors } from '../core/errors';
 import { sha256Hex } from '../core/hash';
 import { uuidv7 } from '../core/ids';
 import { type Executor, getDb, withTransaction } from '../db/client';
-import type { FileKind, FileRecord, TicketFileRelationship } from '../db/schema';
+import type { Blob, FileKind, FileLinkRelationship, FileRecord } from '../db/schema';
 import { type BlobStore, blobKeyFor } from '../storage/blob-store';
 import { readWorkspaceStorageSettings, resolveBlobStore } from '../storage/index';
 import {
@@ -60,8 +60,11 @@ export class DefaultFileService implements FileService {
     db?: Executor
   ): Promise<IngestFileResult> {
     assertPermission(actor, Permissions.fileWrite, 'Not permitted to ingest files');
-    if (input.ticketId) {
-      assertPermission(actor, Permissions.ticketWrite, 'Not permitted to link files to tickets');
+    if (input.workflowItemId) {
+      assertPermission(actor, Permissions.workflowItemWrite, 'Not permitted to link files to work');
+    }
+    if (input.recordId) {
+      assertPermission(actor, Permissions.recordWrite, 'Not permitted to link files to records');
     }
 
     const executor = this.executor(db);
@@ -88,8 +91,9 @@ export class DefaultFileService implements FileService {
     const primaryWorkflowId = input.workflowId ?? null;
     const occurredAt = input.source.occurredAt ?? Date.now();
     const runId = input.runId ?? actor.runId ?? null;
-    const linkTicketId = input.ticketId ?? input.source.ticketId ?? null;
-    const relationship: TicketFileRelationship = input.relationship ?? 'attachment';
+    const linkWorkflowItemId = input.workflowItemId ?? input.source.workflowItemId ?? null;
+    const linkRecordId = input.recordId ?? input.source.recordId ?? null;
+    const relationship: FileLinkRelationship = input.relationship ?? 'attachment';
 
     // Physical write happens before the transaction (ADR-0004 forbids I/O inside
     // one); the blob *row* is created inside the same transaction as the file so a
@@ -111,44 +115,20 @@ export class DefaultFileService implements FileService {
     }
 
     const result = await withTransaction(executor, (tx) => {
-      const existingBlob = repo.findBlobByHash(tx, actor.workspaceId, contentHash);
-      let deduplicated = existingBlob !== undefined && existingBlob.orphanedAt === null;
-      let blob = deduplicated ? existingBlob : undefined;
-      if (!blob && existingBlob) {
-        // Revive a tombstone: the bytes were just re-stored above.
-        blob = repo.updateBlob(tx, existingBlob.id, {
-          orphanedAt: null,
-          verifiedAt: null,
-          updatedAt: Date.now()
-        });
-      }
-      if (!blob) {
-        const key = storageKey ?? blobKeyFor(actor.workspaceId, contentHash);
-        const inserted = repo.insertBlobIfAbsent(tx, {
-          id: uuidv7(),
-          workspaceId: actor.workspaceId,
-          contentHash,
-          size: bytes.length,
-          mimeType,
-          storageProvider: storeKind,
-          storageKey: key,
-          createdAt: Date.now(),
-          updatedAt: Date.now()
-        });
-        if (inserted) {
-          blob = inserted;
-        } else {
-          // A concurrent ingest won the unique `(workspaceId, contentHash)` race.
-          const raced = repo.findBlobByHash(tx, actor.workspaceId, contentHash);
-          if (!raced) throw errors.internal('Blob row disappeared during ingest', { contentHash });
-          blob = raced;
-          deduplicated = true;
-        }
-      }
+      const { blob, deduplicated } = ensureBlobRow(tx, actor.workspaceId, {
+        contentHash,
+        size: bytes.length,
+        mimeType,
+        storeKind,
+        storageKey
+      });
 
       // Validate requested links inside the transaction so a bad id rolls the
       // whole ingest back instead of leaving a file without its link.
-      if (linkTicketId) repo.assertTicketInWorkspace(tx, actor.workspaceId, linkTicketId);
+      if (linkWorkflowItemId) {
+        repo.assertWorkflowItemInWorkspace(tx, actor.workspaceId, linkWorkflowItemId);
+      }
+      if (linkRecordId) repo.assertRecordInWorkspace(tx, actor.workspaceId, linkRecordId);
       if (primaryWorkflowId) {
         repo.assertWorkflowInWorkspace(tx, actor.workspaceId, primaryWorkflowId);
       }
@@ -195,7 +175,6 @@ export class DefaultFileService implements FileService {
         runId,
         toolCallId: actor.toolCallId ?? null,
         triggerEventId: input.source.triggerEventId ?? null,
-        ticketId: linkTicketId,
         deduplicated,
         observedContentHash: contentHash,
         detail: input.source.detail ?? null,
@@ -203,27 +182,14 @@ export class DefaultFileService implements FileService {
         createdAt: Date.now()
       });
 
-      if (linkTicketId) {
-        repo.upsertTicketFile(tx, {
-          workspaceId: actor.workspaceId,
-          ticketId: linkTicketId,
-          fileId: file.id,
-          relationship,
-          addedByType: actor.actorType,
-          addedById: actor.actorId,
-          addedByLabel: actor.actorLabel,
-          runId
-        });
-      }
-      if (primaryWorkflowId) {
-        repo.upsertWorkflowFile(tx, {
-          workspaceId: actor.workspaceId,
-          workflowId: primaryWorkflowId,
-          fileId: file.id,
-          addedByType: actor.actorType,
-          addedById: actor.actorId
-        });
-      }
+      writeIngestLinks(tx, actor, {
+        fileId: file.id,
+        relationship,
+        runId,
+        workflowItemId: linkWorkflowItemId,
+        recordId: linkRecordId,
+        workflowId: primaryWorkflowId
+      });
 
       writeAudit(tx, {
         workspaceId: actor.workspaceId,
@@ -234,7 +200,8 @@ export class DefaultFileService implements FileService {
         entityType: 'file',
         entityId: file.id,
         fileId: file.id,
-        ticketId: linkTicketId,
+        workflowItemId: linkWorkflowItemId,
+        recordId: linkRecordId,
         workflowId: primaryWorkflowId,
         runId,
         summary: `File "${filename}" ingested`,
@@ -278,7 +245,8 @@ export class DefaultFileService implements FileService {
           // Duplicate ingests while processing is active must not queue twice;
           // an explicit reprocess is allowed to queue a fresh run.
           dedupeKey: input.forceReprocess ? null : `file.process:${file.id}`,
-          ticketId: linkTicketId,
+          workflowItemId: linkWorkflowItemId,
+          recordId: linkRecordId,
           runId
         });
         processingQueued = true;
@@ -320,14 +288,18 @@ export class DefaultFileService implements FileService {
     return this.toView(executor, file);
   }
 
-  async listForTicket(
+  async listForWorkflowItem(
     actor: ActorContext,
-    ticketId: string,
+    workflowItemId: string,
     db?: Executor
   ): Promise<FileSummaryView[]> {
     assertPermission(actor, Permissions.fileRead, 'Not permitted to read files');
     const executor = this.executor(db);
-    const links = repo.listTicketFilesForTicket(executor, actor.workspaceId, ticketId);
+    const links = repo.listFileWorkflowItemLinksForWorkflowItem(
+      executor,
+      actor.workspaceId,
+      workflowItemId
+    );
     const views: FileSummaryView[] = [];
     for (const link of links) {
       const file = repo.findFile(executor, actor.workspaceId, link.fileId);
@@ -336,29 +308,45 @@ export class DefaultFileService implements FileService {
     return views;
   }
 
-  async linkToTicket(
+  async listForRecord(
+    actor: ActorContext,
+    recordId: string,
+    db?: Executor
+  ): Promise<FileSummaryView[]> {
+    assertPermission(actor, Permissions.fileRead, 'Not permitted to read files');
+    const executor = this.executor(db);
+    const links = repo.listFileRecordLinksForRecord(executor, actor.workspaceId, recordId);
+    const views: FileSummaryView[] = [];
+    for (const link of links) {
+      const file = repo.findFile(executor, actor.workspaceId, link.fileId);
+      if (file) views.push(this.toView(executor, file));
+    }
+    return views;
+  }
+
+  async linkToWorkflowItem(
     actor: ActorContext,
     input: {
       fileId: string;
-      ticketId: string;
-      relationship?: TicketFileRelationship;
+      workflowItemId: string;
+      relationship?: FileLinkRelationship;
       caption?: string | null;
       runId?: string | null;
     },
     db?: Executor
   ): Promise<void> {
     assertPermission(actor, Permissions.fileWrite, 'Not permitted to link files');
-    assertPermission(actor, Permissions.ticketWrite, 'Not permitted to link files to tickets');
+    assertPermission(actor, Permissions.workflowItemWrite, 'Not permitted to link files to work');
     const executor = this.executor(db);
     const runId = input.runId ?? actor.runId ?? null;
 
     await withTransaction(executor, (tx) => {
       const file = repo.findFile(tx, actor.workspaceId, input.fileId);
       if (!file) throw errors.notFound('File', input.fileId);
-      repo.assertTicketInWorkspace(tx, actor.workspaceId, input.ticketId);
-      repo.upsertTicketFile(tx, {
+      repo.assertWorkflowItemInWorkspace(tx, actor.workspaceId, input.workflowItemId);
+      repo.upsertFileWorkflowItemLink(tx, {
         workspaceId: actor.workspaceId,
-        ticketId: input.ticketId,
+        workflowItemId: input.workflowItemId,
         fileId: input.fileId,
         relationship: input.relationship ?? 'attachment',
         caption: input.caption ?? null,
@@ -369,16 +357,64 @@ export class DefaultFileService implements FileService {
       });
       writeAudit(tx, {
         workspaceId: actor.workspaceId,
-        action: AuditActions.fileLinkedToTicket,
+        action: AuditActions.workflowItemFileLinked,
         actorType: actor.actorType,
         actorId: actor.actorId,
         actorLabel: actor.actorLabel,
         entityType: 'file',
         entityId: input.fileId,
         fileId: input.fileId,
-        ticketId: input.ticketId,
+        workflowItemId: input.workflowItemId,
         runId,
-        summary: `File linked to ticket ${input.ticketId}`,
+        summary: `File linked to work item ${input.workflowItemId}`,
+        data: { relationship: input.relationship ?? 'attachment' }
+      });
+    });
+  }
+
+  async linkToRecord(
+    actor: ActorContext,
+    input: {
+      fileId: string;
+      recordId: string;
+      relationship?: FileLinkRelationship;
+      caption?: string | null;
+      runId?: string | null;
+    },
+    db?: Executor
+  ): Promise<void> {
+    assertPermission(actor, Permissions.fileWrite, 'Not permitted to link files');
+    assertPermission(actor, Permissions.recordWrite, 'Not permitted to link files to records');
+    const executor = this.executor(db);
+    const runId = input.runId ?? actor.runId ?? null;
+
+    await withTransaction(executor, (tx) => {
+      const file = repo.findFile(tx, actor.workspaceId, input.fileId);
+      if (!file) throw errors.notFound('File', input.fileId);
+      repo.assertRecordInWorkspace(tx, actor.workspaceId, input.recordId);
+      repo.upsertFileRecordLink(tx, {
+        workspaceId: actor.workspaceId,
+        recordId: input.recordId,
+        fileId: input.fileId,
+        relationship: input.relationship ?? 'attachment',
+        caption: input.caption ?? null,
+        addedByType: actor.actorType,
+        addedById: actor.actorId,
+        addedByLabel: actor.actorLabel,
+        runId
+      });
+      writeAudit(tx, {
+        workspaceId: actor.workspaceId,
+        action: AuditActions.recordFileLinked,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        actorLabel: actor.actorLabel,
+        entityType: 'file',
+        entityId: input.fileId,
+        fileId: input.fileId,
+        recordId: input.recordId,
+        runId,
+        summary: `File linked to record ${input.recordId}`,
         data: { relationship: input.relationship ?? 'attachment' }
       });
     });
@@ -471,7 +507,7 @@ export class DefaultFileService implements FileService {
     });
   }
 
-  /** Build the read model shared by `requireFile` and `listForTicket`. */
+  /** Build the read model shared by `requireFile`, `listForWorkflowItem` and `listForRecord`. */
   private toView(executor: Executor, file: FileRecord): FileSummaryView {
     return fileSummaryView(executor, file);
   }
@@ -487,6 +523,105 @@ export class DefaultFileService implements FileService {
   private async store(executor: Executor, workspaceId: string): Promise<BlobStore> {
     if (this.blobStore) return this.blobStore;
     return resolveBlobStore(executor, workspaceId);
+  }
+}
+
+/**
+ * Resolve the blob row for ingested bytes: reuse a live row, revive a tombstone
+ * (its bytes were just re-stored), or insert one while tolerating a concurrent
+ * writer that won the unique `(workspaceId, contentHash)` race.
+ */
+function ensureBlobRow(
+  tx: Executor,
+  workspaceId: string,
+  input: {
+    contentHash: string;
+    size: number;
+    mimeType: string;
+    storeKind: 'local' | 'gcs';
+    storageKey: string | null;
+  }
+): { blob: Blob; deduplicated: boolean } {
+  const existing = repo.findBlobByHash(tx, workspaceId, input.contentHash);
+  if (existing && existing.orphanedAt === null) {
+    return { blob: existing, deduplicated: true };
+  }
+  if (existing) {
+    const revived = repo.updateBlob(tx, existing.id, {
+      orphanedAt: null,
+      verifiedAt: null,
+      updatedAt: Date.now()
+    });
+    if (revived) return { blob: revived, deduplicated: false };
+  }
+  const key = input.storageKey ?? blobKeyFor(workspaceId, input.contentHash);
+  const inserted = repo.insertBlobIfAbsent(tx, {
+    id: uuidv7(),
+    workspaceId,
+    contentHash: input.contentHash,
+    size: input.size,
+    mimeType: input.mimeType,
+    storageProvider: input.storeKind,
+    storageKey: key,
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  });
+  if (inserted) return { blob: inserted, deduplicated: false };
+  const raced = repo.findBlobByHash(tx, workspaceId, input.contentHash);
+  if (!raced) {
+    throw errors.internal('Blob row disappeared during ingest', { contentHash: input.contentHash });
+  }
+  return { blob: raced, deduplicated: true };
+}
+
+/**
+ * Persist every requested file link inside the ingest transaction. A link to a
+ * missing work item/record/workflow has already been asserted by the caller.
+ */
+function writeIngestLinks(
+  tx: Executor,
+  actor: ActorContext,
+  input: {
+    fileId: string;
+    relationship: FileLinkRelationship;
+    runId: string | null;
+    workflowItemId: string | null;
+    recordId: string | null;
+    workflowId: string | null;
+  }
+): void {
+  if (input.workflowItemId) {
+    repo.upsertFileWorkflowItemLink(tx, {
+      workspaceId: actor.workspaceId,
+      workflowItemId: input.workflowItemId,
+      fileId: input.fileId,
+      relationship: input.relationship,
+      addedByType: actor.actorType,
+      addedById: actor.actorId,
+      addedByLabel: actor.actorLabel,
+      runId: input.runId
+    });
+  }
+  if (input.recordId) {
+    repo.upsertFileRecordLink(tx, {
+      workspaceId: actor.workspaceId,
+      recordId: input.recordId,
+      fileId: input.fileId,
+      relationship: input.relationship,
+      addedByType: actor.actorType,
+      addedById: actor.actorId,
+      addedByLabel: actor.actorLabel,
+      runId: input.runId
+    });
+  }
+  if (input.workflowId) {
+    repo.upsertWorkflowFile(tx, {
+      workspaceId: actor.workspaceId,
+      workflowId: input.workflowId,
+      fileId: input.fileId,
+      addedByType: actor.actorType,
+      addedById: actor.actorId
+    });
   }
 }
 

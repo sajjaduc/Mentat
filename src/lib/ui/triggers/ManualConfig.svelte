@@ -93,7 +93,7 @@ const noun = $derived(type === 'api' ? 'API caller' : 'person');
         <p class="text-sm font-semibold text-[var(--color-ink)]">Fire this trigger</p>
         <p class="text-xs leading-relaxed text-[var(--color-ink-subtle)]">
           Fires the trigger as if a {noun} had started the work. The mapping on this trigger
-          turns the payload into a ticket.
+          turns the payload into a work item.
         </p>
       </div>
       <div class="flex items-center gap-2">
@@ -157,8 +157,8 @@ const noun = $derived(type === 'api' ? 'API caller' : 'person');
             <dd class="truncate font-mono text-[var(--color-ink-muted)]">{asText(fireResult['jobId'])}</dd>
           </div>
           <div class="flex min-w-0 items-center gap-1.5">
-            <dt class="text-[var(--color-ink-subtle)]">Ticket</dt>
-            <dd class="truncate font-mono text-[var(--color-ink-muted)]">{asText(fireResult['ticketId'])}</dd>
+            <dt class="text-[var(--color-ink-subtle)]">Work item</dt>
+            <dd class="truncate font-mono text-[var(--color-ink-muted)]">{asText(fireResult['workflowItemId'])}</dd>
           </div>
         </dl>
         {#if typeof fireResult['error'] === 'string'}

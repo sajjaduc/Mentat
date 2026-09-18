@@ -6,13 +6,14 @@
  * agent can reach is reviewable in a single place, and a missing registration fails
  * at startup rather than at 3am inside a run.
  *
- * Ticket and file tools are owned here; state/data/cache tools are contributed by
+ * Work-item and file tools are owned here; state/data/cache tools are contributed by
  * the native-data module. Both entry points are composed below so the composition
  * itself is explicit.
  */
 import type { ToolRegistry } from '../types';
 import { fileTools } from './files';
-import { ticketTools } from './tickets';
+import { recordTools } from './records';
+import { workflowItemTools } from './workflow-items';
 
 export interface NativeToolRegistration {
   /** Registering twice is a programming error, not a runtime condition. */
@@ -21,7 +22,7 @@ export interface NativeToolRegistration {
 
 /** Tools that are always present. */
 export function registerCoreNativeTools(registry: ToolRegistry): void {
-  for (const tool of [...ticketTools, ...fileTools]) {
+  for (const tool of [...workflowItemTools, ...recordTools, ...fileTools]) {
     registry.register(tool);
   }
 }
@@ -40,6 +41,7 @@ export function registerNativeTools(
 }
 
 export const nativeToolOwnership = {
-  ticket: ticketTools.map((tool) => tool.key),
+  workflowItem: workflowItemTools.map((tool) => tool.key),
+  record: recordTools.map((tool) => tool.key),
   file: fileTools.map((tool) => tool.key)
 };

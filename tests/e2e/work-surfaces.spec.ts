@@ -9,8 +9,9 @@
 import { type APIRequestContext, expect, test } from '@playwright/test';
 import {
   apiCall,
-  createTicket,
+  createObjectType,
   createWorkflow,
+  createWorkItem,
   DEMO_PASSWORD,
   gotoApp,
   registerAndSignIn,
@@ -19,9 +20,9 @@ import {
 } from './helpers';
 
 /**
- * A fixed account, not a generated one: the first registration on a fresh
- * database owns the starter workspace, and every later worker or rerun must sign
- * in as that same owner rather than register a workspace-less stranger.
+ * A fixed account, not a generated one: the first registration on a fresh database
+ * owns its workspace, and every later worker or rerun signs in as that same account
+ * so the fixtures it created are still there.
  */
 const account = {
   email: 'work-surfaces-e2e@mentat.test',
@@ -71,26 +72,33 @@ test.beforeEach(async ({ page, request }) => {
 interface SeededWorkflow {
   id: string;
   name: string;
+  objectTypeId: string;
   states: Array<{ id: string; name: string }>;
-  tickets: Array<{ id: string; key: string; title: string }>;
+  items: Array<{ id: string; recordId: string; key: string; title: string }>;
 }
 
-async function seed(request: APIRequestContext, ticketTitles: string[]): Promise<SeededWorkflow> {
+async function seed(request: APIRequestContext, itemTitles: string[]): Promise<SeededWorkflow> {
   const name = `Board ${Math.random().toString(36).slice(2, 7)}`;
   const workflow = await createWorkflow(request, name, 'basic');
   const first = workflow.states[0];
   expect(first, 'the basic template creates states').toBeTruthy();
 
-  const tickets: SeededWorkflow['tickets'] = [];
-  for (const title of ticketTitles) {
-    const ticket = await createTicket(request, {
+  const items: SeededWorkflow['items'] = [];
+  for (const title of itemTitles) {
+    const item = await createWorkItem(request, {
       workflowId: workflow.id,
       title,
       stateId: first?.id
     });
-    tickets.push({ id: ticket.id, key: ticket.key, title });
+    items.push({ id: item.id, recordId: item.recordId, key: item.key, title });
   }
-  return { id: workflow.id, name, states: workflow.states, tickets };
+  return {
+    id: workflow.id,
+    name,
+    objectTypeId: workflow.objectTypeId,
+    states: workflow.states,
+    items
+  };
 }
 
 test.describe('workflow surfaces', () => {
@@ -99,11 +107,17 @@ test.describe('workflow surfaces', () => {
     request
   }) => {
     const seeded = await seed(request, []);
+    // A workflow must name the Object Type it processes (ADR-0021). Create it before
+    // the page loads so the dialog's Object Type picker includes it.
+    const createdName = `UI Created ${Math.random().toString(36).slice(2, 6)}`;
+    const dialogType = await createObjectType(request, `UI Dialog ${createdName}`);
 
     await gotoApp(page, '/workflows');
     const card = page.getByTestId('workflow-card').filter({ hasText: seeded.name });
     await expect(card).toBeVisible();
-    await expect(card).toContainText('tickets');
+    // The count noun comes from the workflow's Object Type plural name; it falls back
+    // to "items" when the list payload omits it.
+    await expect(card).toContainText(/0 (items|objects)/);
     await expect(card).toContainText('states');
 
     await page.getByRole('button', { name: 'Create workflow' }).first().click();
@@ -112,8 +126,8 @@ test.describe('workflow surfaces', () => {
     await expect(dialog.getByText('Blank')).toBeVisible();
     await expect(dialog.getByText('Intake')).toBeVisible();
 
-    const createdName = `UI Created ${Math.random().toString(36).slice(2, 6)}`;
     await dialog.getByLabel('Name').fill(createdName);
+    await dialog.getByLabel('Object Type (required)').selectOption(dialogType.id);
     await dialog.getByRole('button', { name: 'Create and open board' }).click();
 
     await expect(page).toHaveURL(/\/workflows\/[0-9a-f-]+\?tab=board/);
@@ -136,16 +150,26 @@ test.describe('workflow surfaces', () => {
     await expect(firstColumn.getByText('Alpha ticket')).toBeVisible();
     await expect(firstColumn.getByText('Beta ticket')).toBeVisible();
 
-    await page.getByLabel('Search tickets').fill('Alpha');
+    await firstColumn.getByRole('button', { name: /^Add .+ to / }).click();
+    await page.getByLabel('New item title').fill('Gamma ticket');
+    await firstColumn.getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(firstColumn.getByText('Gamma ticket')).toBeVisible();
+  });
+
+  test('board search narrows the visible cards', async ({ page, request }) => {
+    const seeded = await seed(request, ['Alpha ticket', 'Beta ticket']);
+
+    await gotoApp(page, `/workflows/${seeded.id}?tab=board`);
+    const firstColumn = page.getByTestId('board-column').nth(0);
     await expect(firstColumn.getByText('Alpha ticket')).toBeVisible();
+    await expect(firstColumn.getByText('Beta ticket')).toBeVisible();
+
+    await page.getByLabel('Search work items').fill('Alpha');
+    await expect(firstColumn.getByText('Alpha ticket')).toBeVisible();
+    // The board filter is the shared filter AST, so searching narrows the cards.
     await expect(firstColumn.getByText('Beta ticket')).toHaveCount(0);
     await page.getByRole('button', { name: /^Clear/ }).click();
     await expect(firstColumn.getByText('Beta ticket')).toBeVisible();
-
-    await page.getByRole('button', { name: `Add ticket to ${seeded.states[0]?.name}` }).click();
-    await page.getByLabel('New ticket title').fill('Gamma ticket');
-    await page.getByRole('button', { name: 'Add', exact: true }).click();
-    await expect(firstColumn.getByText('Gamma ticket')).toBeVisible();
   });
 
   test('a card moves between columns from the keyboard-accessible menu', async ({
@@ -179,28 +203,28 @@ test.describe('workflow surfaces', () => {
     ).toBeVisible();
   });
 
-  test('ticket drawer is URL-addressed, edits inline, and closes without navigating', async ({
+  test('work item drawer is URL-addressed, edits inline, and closes without navigating', async ({
     page,
     request
   }) => {
     const seeded = await seed(request, ['Drawer ticket']);
-    const ticket = seeded.tickets[0];
+    const item = seeded.items[0];
 
-    await gotoApp(page, `/workflows/${seeded.id}?tab=board&ticket=${ticket?.id}`);
+    await gotoApp(page, `/workflows/${seeded.id}?tab=board&workItem=${item?.id}`);
     const drawer = page.getByRole('dialog');
     await expect(drawer).toBeVisible();
-    await expect(drawer.getByText(ticket?.key ?? '')).toBeVisible();
+    await expect(drawer.getByText(item?.key ?? '')).toBeVisible();
 
-    const title = drawer.getByLabel('Ticket title');
+    const title = drawer.getByLabel('Work item title');
     await title.fill('Drawer ticket renamed');
     await title.blur();
     await page.reload();
-    await expect(page.getByRole('dialog').getByLabel('Ticket title')).toHaveValue(
+    await expect(page.getByRole('dialog').getByLabel('Work item title')).toHaveValue(
       'Drawer ticket renamed'
     );
 
     await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
-    await expect(page).not.toHaveURL(/ticket=/);
+    await expect(page).not.toHaveURL(/workItem=/);
     await expect(page.getByTestId('board-card').first()).toBeVisible();
   });
 
@@ -209,9 +233,9 @@ test.describe('workflow surfaces', () => {
     request
   }) => {
     const seeded = await seed(request, ['Tabs ticket']);
-    const ticket = seeded.tickets[0];
+    const item = seeded.items[0];
 
-    await gotoApp(page, `/workflows/${seeded.id}?tab=board&ticket=${ticket?.id}`);
+    await gotoApp(page, `/workflows/${seeded.id}?tab=board&workItem=${item?.id}`);
     const drawer = page.getByRole('dialog');
     await expect(drawer).toBeVisible();
 
@@ -281,18 +305,18 @@ test.describe('workflow surfaces', () => {
     await expect(page.getByRole('columnheader', { name: 'Priority' })).toHaveCount(0);
   });
 
-  test('my work buckets render counts and open the ticket drawer', async ({ page, request }) => {
+  test('my work buckets render counts and open the work item drawer', async ({ page, request }) => {
     await seed(request, ['My work ticket']);
 
     await gotoApp(page, '/my-work');
     await expect(page.getByRole('heading', { name: 'My Work', exact: true })).toBeVisible();
     await page.getByRole('tab', { name: /Waiting for me/ }).click();
-    const row = page.getByRole('row').filter({ hasText: 'My work ticket' });
+    const row = page.getByRole('row').filter({ hasText: 'My work ticket' }).first();
     await expect(row).toBeVisible();
 
     await row.click();
     await expect(page.getByRole('dialog')).toBeVisible();
-    await expect(page).toHaveURL(/ticket=/);
+    await expect(page).toHaveURL(/workItem=/);
   });
 
   test('approvals inbox renders its status filters and empty state', async ({ page, request }) => {

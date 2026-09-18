@@ -22,9 +22,10 @@ export * from './schema/files';
 export * from './schema/http';
 export * from './schema/mcp';
 export * from './schema/providers';
+export * from './schema/records';
 export * from './schema/tenancy';
-export * from './schema/tickets';
 export * from './schema/triggers';
+export * from './schema/workflow-items';
 export * from './schema/workflows';
 
 import * as schema from './schema/_helpers';
@@ -39,9 +40,10 @@ import * as files from './schema/files';
 import * as http from './schema/http';
 import * as mcp from './schema/mcp';
 import * as providers from './schema/providers';
+import * as records from './schema/records';
 import * as tenancy from './schema/tenancy';
-import * as tickets from './schema/tickets';
 import * as triggers from './schema/triggers';
+import * as workflowItems from './schema/workflow-items';
 import * as workflows from './schema/workflows';
 
 /** All tables, used by migrations tooling and the drizzle client. */
@@ -49,8 +51,9 @@ export const allSchema = {
   ...schema,
   ...tenancy,
   ...fields,
+  ...records,
   ...workflows,
-  ...tickets,
+  ...workflowItems,
   ...execution,
   ...agents,
   ...http,

@@ -34,6 +34,8 @@ const SETTLE_MS = 2_000;
 const WATCH_MS = 2_000;
 
 let workflowId = '';
+let objectTypeId = '';
+let recordId = '';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -52,6 +54,42 @@ test.beforeAll(async ({ playwright }) => {
     });
     void session;
 
+    // A stable Object Type + Record so the universal Record surfaces (and the
+    // workflow that processes it) have a subject. Workflows require an Object
+    // Type (ADR-0021), so this is created first.
+    const objectTypes = await apiCall<{ objectTypes: Array<{ id: string; key: string }> }>(
+      request,
+      'GET',
+      '/object-types'
+    );
+    const existingType = objectTypes.objectTypes.find((type) => type.key === 'stability_item');
+    objectTypeId =
+      existingType?.id ??
+      (
+        await apiCall<{ objectType: { id: string } }>(request, 'POST', '/object-types', {
+          data: { key: 'stability_item', name: 'Stability Item' }
+        })
+      ).objectType.id;
+    if (!existingType) {
+      await apiCall(request, 'PUT', `/object-types/${objectTypeId}/fields`, {
+        data: {
+          fields: [{ key: 'label', name: 'Label', type: 'short_text', isPrimaryDisplay: true }]
+        }
+      });
+    }
+    const recordPage = await apiCall<{ rows: Array<{ id: string }> }>(
+      request,
+      'GET',
+      `/records?objectTypeId=${objectTypeId}`
+    );
+    recordId =
+      recordPage.rows[0]?.id ??
+      (
+        await apiCall<{ record: { id: string } }>(request, 'POST', '/records', {
+          data: { objectTypeId, fields: { label: 'Stability record' } }
+        })
+      ).record.id;
+
     const workflows = await apiCall<{ workflows: Array<{ id: string; name: string }> }>(
       request,
       'GET',
@@ -62,7 +100,11 @@ test.beforeAll(async ({ playwright }) => {
       existing?.id ??
       (
         await apiCall<{ workflow: { id: string } }>(request, 'POST', '/workflows', {
-          data: { name: `Stability ${Date.now().toString(36)}`, template: 'basic' }
+          data: {
+            name: `Stability ${Date.now().toString(36)}`,
+            template: 'basic',
+            objectTypeId
+          }
         })
       ).workflow.id;
   } finally {
@@ -99,6 +141,9 @@ const surfaces: Array<{ path: () => string; name: string }> = [
   { name: 'tools', path: () => '/tools' },
   { name: 'http services', path: () => '/http-services' },
   { name: 'files', path: () => '/files' },
+  { name: 'records', path: () => '/records' },
+  { name: 'record detail', path: () => `/records/${recordId}?tab=overview` },
+  { name: 'object type settings', path: () => '/settings/object-types' },
   { name: 'models', path: () => '/models' },
   { name: 'dashboards', path: () => '/dashboards' },
   { name: 'data', path: () => '/data' },

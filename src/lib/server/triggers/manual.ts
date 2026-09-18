@@ -3,7 +3,7 @@
  *
  * Why this is its own entry point: a human clicking "run" and an API caller
  * posting an input must produce exactly the same durable event as a webhook. This
- * module does not create tickets directly — it validates the declared input
+ * module does not create work directly — it validates the declared input
  * schema, dedupes on a caller-supplied idempotency key, and enqueues the same
  * internal event path, so mapping, redaction and audit cannot drift.
  */
@@ -36,7 +36,10 @@ export interface FireManualInput {
 export interface FireManualResult {
   eventId: string;
   duplicate: boolean;
-  ticketId: string | null;
+  /** Original record id when the fire is a duplicate. */
+  recordId: string | null;
+  /** Original workflow item id when the fire is a duplicate. */
+  workflowItemId: string | null;
   jobId: string | null;
   status: TriggerEventStatus;
 }
@@ -160,7 +163,8 @@ export async function fireManual(
         actorLabel: actor.actorLabel,
         entityType: 'trigger_event',
         entityId: result.event.id,
-        ticketId: result.ticketId,
+        recordId: result.recordId,
+        workflowItemId: result.workflowItemId,
         workflowId: trigger.workflowId,
         summary: `Duplicate manual fire for "${trigger.name}" ignored`,
         data: { triggerId: trigger.id, idempotencyKey },
@@ -189,7 +193,8 @@ export async function fireManual(
     return {
       eventId: eventResult.event.id,
       duplicate: true,
-      ticketId: eventResult.ticketId,
+      recordId: eventResult.recordId,
+      workflowItemId: eventResult.workflowItemId,
       jobId: eventResult.event.jobId,
       status: eventResult.event.status
     };
@@ -212,7 +217,8 @@ export async function fireManual(
   return {
     eventId: eventResult.event.id,
     duplicate: false,
-    ticketId: null,
+    recordId: null,
+    workflowItemId: null,
     jobId: job.id,
     status: 'received'
   };

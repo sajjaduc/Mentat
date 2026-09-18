@@ -1,6 +1,6 @@
 <script lang="ts">
 /**
- * Drawer: the ticket detail surface.
+ * Drawer: the work item detail surface.
  *
  * Renders inside the page (not a portal) so URL state and scroll position are
  * preserved when it opens and closes. Escape closes it; focus is moved to the

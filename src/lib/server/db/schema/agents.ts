@@ -41,8 +41,8 @@ export interface AgentPermissions {
   /** Permission scopes for HTTP operations. */
   httpOperationIds?: string[];
   /** Whether the agent may transfer tickets between workflows. */
-  canTransferTickets?: boolean;
-  canCreateTickets?: boolean;
+  canTransferWork?: boolean;
+  canCreateWork?: boolean;
   /** Workspace-scoped state writes are opt-in. */
   canWriteWorkspaceState?: boolean;
   canUploadFiles?: boolean;
@@ -294,7 +294,7 @@ export const agentTools = sqliteTable(
   (table) => [uniqueIndex('agent_tools_unique').on(table.agentId, table.toolId)]
 );
 
-export type AgentStateScope = 'workspace' | 'workflow' | 'ticket' | 'agent' | 'run';
+export type AgentStateScope = 'workspace' | 'workflow' | 'workflowItem' | 'agent' | 'run';
 
 /**
  * Scoped key/value state for agents (`state.get/set/delete/list`).
@@ -312,7 +312,7 @@ export const agentState = sqliteTable(
       .references(() => workspaces.id, { onDelete: 'cascade' }),
     scope: text('scope').$type<AgentStateScope>().notNull(),
     workflowId: text('workflow_id'),
-    ticketId: text('ticket_id'),
+    workflowItemId: text('workflow_item_id'),
     agentId: text('agent_id'),
     runId: text('run_id'),
     namespace: text('namespace').notNull().default('default'),
@@ -330,7 +330,7 @@ export const agentState = sqliteTable(
       table.workspaceId,
       table.scope,
       table.workflowId,
-      table.ticketId,
+      table.workflowItemId,
       table.agentId,
       table.runId,
       table.namespace,

@@ -18,15 +18,19 @@ import { uuidv7 } from '../core/ids';
 import type { Executor } from '../db/client';
 import {
   type FieldDefinition,
+  type FieldOptions,
   type FieldScope,
   type FieldType,
+  type FieldValidation,
   fieldDefinitions,
-  ticketFieldValues,
-  tickets,
   type WorkflowField,
   workflowFields,
-  workflowStates
+  workflowItemFieldValues,
+  workflowItems,
+  workflowStates,
+  workflows
 } from '../db/schema';
+import { compileZodSource, type ProjectedZodField } from '../schemas/zod-source';
 import { requireWorkflow } from '../workflows/service';
 
 export interface WorkflowFieldView extends WorkflowField {
@@ -82,7 +86,7 @@ export function findFieldByKey(
   db: Executor,
   workspaceId: string,
   key: string,
-  scope: FieldScope = 'ticket'
+  scope: FieldScope = 'workflowItem'
 ): FieldDefinition | null {
   const rows = db
     .select()
@@ -123,7 +127,7 @@ export function createFieldDefinition(
   input: CreateFieldInput
 ): FieldDefinition {
   assertPermission(actor, Permissions.workflowWrite, 'Not permitted to define fields');
-  const scope = input.scope ?? 'ticket';
+  const scope = input.scope ?? 'workflowItem';
   const key = normalizeFieldKey(input.key ?? input.name, input.name);
   const name = input.name.trim();
   if (name.length === 0) throw errors.validation('Field name is required');
@@ -211,6 +215,84 @@ function validateFieldConfiguration(
   }
 }
 
+export interface EnsureFieldInput {
+  key: string;
+  name: string;
+  type: FieldType;
+  scope: FieldScope;
+  description?: string | null;
+  options?: FieldOptions | null;
+  validation?: FieldValidation | null;
+  defaultValue?: unknown;
+}
+
+/**
+ * Find a workspace field definition by key (including archived rows) or create it.
+ *
+ * Used when a Zod source is projected onto the field engine: saving the same schema
+ * twice must not create duplicate definitions, and a field previously archived must
+ * be revived rather than conflict with the unique (workspace, scope, key) index.
+ * When the projected metadata differs from the stored definition, the definition is
+ * updated so the field engine keeps matching the schema.
+ */
+export function ensureFieldDefinition(
+  db: Executor,
+  actor: ActorContext,
+  input: EnsureFieldInput
+): FieldDefinition {
+  const key = normalizeFieldKey(input.key, input.name);
+  const existing = db
+    .select()
+    .from(fieldDefinitions)
+    .where(
+      and(
+        eq(fieldDefinitions.workspaceId, actor.workspaceId),
+        eq(fieldDefinitions.scope, input.scope),
+        eq(fieldDefinitions.key, key)
+      )
+    )
+    .limit(1)
+    .all()[0];
+
+  if (!existing) {
+    return createFieldDefinition(db, actor, {
+      key,
+      name: input.name,
+      description: input.description ?? null,
+      type: input.type,
+      scope: input.scope,
+      options: (input.options as unknown as Record<string, unknown>) ?? null,
+      validation: (input.validation as unknown as Record<string, unknown>) ?? null,
+      defaultValue: input.defaultValue
+    });
+  }
+
+  if (existing.archivedAt !== null) {
+    db.update(fieldDefinitions)
+      .set({ archivedAt: null, updatedAt: Date.now() })
+      .where(eq(fieldDefinitions.id, existing.id))
+      .run();
+  }
+
+  const options = (input.options as unknown as Record<string, unknown>) ?? null;
+  const validation = (input.validation as unknown as Record<string, unknown>) ?? null;
+  const changed =
+    existing.type !== input.type ||
+    existing.name !== input.name ||
+    JSON.stringify(existing.options ?? null) !== JSON.stringify(options) ||
+    JSON.stringify(existing.validation ?? null) !== JSON.stringify(validation);
+  if (!changed) return existing;
+
+  return updateFieldDefinition(db, actor, {
+    fieldId: existing.id,
+    name: input.name,
+    description: input.description ?? null,
+    type: input.type,
+    options,
+    validation
+  });
+}
+
 export function updateFieldDefinition(
   db: Executor,
   actor: ActorContext,
@@ -279,8 +361,8 @@ export function archiveFieldDefinition(db: Executor, actor: ActorContext, fieldI
 
   const valueCount = db
     .select({ count: sql<number>`count(*)` })
-    .from(ticketFieldValues)
-    .where(eq(ticketFieldValues.fieldDefinitionId, fieldId))
+    .from(workflowItemFieldValues)
+    .where(eq(workflowItemFieldValues.fieldDefinitionId, fieldId))
     .all();
 
   const now = Date.now();
@@ -373,11 +455,16 @@ export function setWorkflowFields(
     if (missing.length > 0) {
       throw errors.validation('Unknown field definition(s)', { fieldDefinitionIds: missing });
     }
-    const wrongScope = found.filter((row) => row.scope !== 'ticket');
+    // Overlay fields come from the workflow's Object Type schema: both
+    // workflow-item-scoped and record-scoped definitions are valid (ADR-0021).
+    const wrongScope = found.filter(
+      (row) => row.scope !== 'workflowItem' && row.scope !== 'record'
+    );
     if (wrongScope.length > 0) {
-      throw errors.validation('Only ticket-scoped fields can be attached to a workflow', {
-        fieldDefinitionIds: wrongScope.map((row) => row.id)
-      });
+      throw errors.validation(
+        'Only workflow-item- or record-scoped fields can be attached to a workflow',
+        { fieldDefinitionIds: wrongScope.map((row) => row.id) }
+      );
     }
   }
 
@@ -441,6 +528,100 @@ export function setWorkflowFields(
   });
 
   return inserted;
+}
+
+export interface WorkflowSchemaSaveResult {
+  /** The stored, trimmed Zod source. */
+  source: string;
+  fields: WorkflowFieldView[];
+  projected: ProjectedZodField[];
+}
+
+/**
+ * Author a workflow's overlay schema as Zod source (ADR-0023).
+ *
+ * The source becomes the authoritative contract for the overlay; the workflow's
+ * bound fields are replaced with its projection. Display/state flags already set on
+ * a field with the same key are preserved, so re-saving a schema does not discard
+ * "required in states", card/list visibility or transfer requirements.
+ */
+export function setWorkflowZodSchema(
+  db: Executor,
+  actor: ActorContext,
+  workflowId: string,
+  source: string
+): WorkflowSchemaSaveResult {
+  assertPermission(actor, Permissions.workflowWrite, 'Not permitted to configure fields');
+  const workflow = requireWorkflow(db, actor.workspaceId, workflowId);
+  const compiled = compileZodSource(source);
+  if (!compiled.ok) throw errors.validation(compiled.message);
+  if (!compiled.object) {
+    throw errors.validation('The workflow schema must be a Zod object, for example z.object({}).');
+  }
+  if (compiled.invalidKeys.length > 0) {
+    throw errors.validation(
+      `These keys cannot be field keys: ${compiled.invalidKeys.join(', ')}. Use lowercase letters, numbers and underscores, starting with a letter.`,
+      { keys: compiled.invalidKeys }
+    );
+  }
+  if (compiled.fields.length === 0) {
+    throw errors.validation('The workflow schema declares no fields.');
+  }
+
+  const existing = new Map(
+    listWorkflowFields(db, actor, workflowId).map((view) => [view.definition.key, view])
+  );
+  const entries: WorkflowFieldInput[] = compiled.fields.map((field, index) => {
+    const definition = ensureFieldDefinition(db, actor, {
+      key: field.key,
+      name: field.name,
+      type: field.type,
+      scope: 'workflowItem',
+      description: field.description,
+      options: field.options,
+      validation: field.validation,
+      defaultValue: field.defaultValue
+    });
+    const previous = existing.get(field.key);
+    return {
+      fieldDefinitionId: definition.id,
+      position: index,
+      required: field.required,
+      visible: previous?.visible ?? true,
+      editable: previous?.editable ?? true,
+      defaultValue: field.defaultValue ?? previous?.defaultValue ?? null,
+      requiredInStates: previous?.requiredInStates ?? null,
+      // `.meta({ card, list, filterable })` overrides; otherwise the flags already
+      // set on this key survive a re-save.
+      showOnCard: field.meta.card ?? previous?.showOnCard ?? false,
+      showInList: field.meta.list ?? previous?.showInList ?? true,
+      filterable: field.meta.filterable ?? previous?.filterable ?? true,
+      requiredForTransfer: previous?.requiredForTransfer ?? false
+    };
+  });
+
+  const fields = setWorkflowFields(db, actor, workflowId, entries);
+  const settings = { ...(workflow.settings ?? {}) };
+  settings.zodSchema = compiled.source;
+  db.update(workflows)
+    .set({ settings: settings as never, updatedAt: Date.now() })
+    .where(eq(workflows.id, workflowId))
+    .run();
+
+  writeAudit(db, {
+    workspaceId: actor.workspaceId,
+    action: AuditActions.workflowUpdated,
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    actorLabel: actor.actorLabel,
+    entityType: 'workflow',
+    entityId: workflowId,
+    workflowId,
+    summary: `Workflow ${workflow.name} schema updated from Zod source`,
+    data: { fieldKeys: compiled.fields.map((field) => field.key) }
+  });
+
+  return { source: compiled.source, fields, projected: compiled.fields };
 }
 
 /**
@@ -540,31 +721,35 @@ export function writableFieldKeys(
   return new Set(editable.filter((key) => agentWritableFieldKeys.includes(key)));
 }
 
-/** Count tickets currently holding values for a field — used by the field admin UI. */
+/** Count work items currently holding values for a field — used by the field admin UI. */
 export function fieldUsage(db: Executor, workspaceId: string, fieldId: string): number {
   const rows = db
     .select({ count: sql<number>`count(*)` })
-    .from(ticketFieldValues)
+    .from(workflowItemFieldValues)
     .where(
       and(
-        eq(ticketFieldValues.workspaceId, workspaceId),
-        eq(ticketFieldValues.fieldDefinitionId, fieldId)
+        eq(workflowItemFieldValues.workspaceId, workspaceId),
+        eq(workflowItemFieldValues.fieldDefinitionId, fieldId)
       )
     )
     .all();
   return rows[0]?.count ?? 0;
 }
 
-/** Tickets that reference the field at all (for impact warnings before archiving). */
-export function fieldReferencedTickets(db: Executor, workspaceId: string, fieldId: string): number {
+/** Work items that reference the field at all (for impact warnings before archiving). */
+export function fieldReferencedWorkItems(
+  db: Executor,
+  workspaceId: string,
+  fieldId: string
+): number {
   const rows = db
-    .select({ count: sql<number>`count(distinct ${tickets.id})` })
-    .from(ticketFieldValues)
-    .innerJoin(tickets, eq(tickets.id, ticketFieldValues.ticketId))
+    .select({ count: sql<number>`count(distinct ${workflowItems.id})` })
+    .from(workflowItemFieldValues)
+    .innerJoin(workflowItems, eq(workflowItems.id, workflowItemFieldValues.workflowItemId))
     .where(
       and(
-        eq(ticketFieldValues.workspaceId, workspaceId),
-        eq(ticketFieldValues.fieldDefinitionId, fieldId)
+        eq(workflowItemFieldValues.workspaceId, workspaceId),
+        eq(workflowItemFieldValues.fieldDefinitionId, fieldId)
       )
     )
     .all();

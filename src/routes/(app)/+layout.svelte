@@ -66,6 +66,7 @@ const nav: NavGroup[] = $derived([
   {
     label: 'Resources',
     items: [
+      { href: '/records', label: 'Records', icon: 'layers' },
       { href: '/agents', label: 'Agents', icon: 'spark' },
       { href: '/skills', label: 'Skills', icon: 'book' },
       { href: '/tools', label: 'Tools', icon: 'wrench' },
@@ -120,6 +121,7 @@ const icons: Record<string, string> = {
   wrench: 'M14 6a4 4 0 105.7 3.7L21 8l-1.5-1.5-1.7 1.7A4 4 0 0014 6zM13 9l-8 8v3h3l8-8',
   globe: 'M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18',
   file: 'M7 3h7l5 5v13H7zM14 3v5h5',
+  layers: 'M12 3l9 5-9 5-9-5zM3 13l9 5 9-5M3 17l9 5 9-5',
   cpu: 'M8 8h8v8H8zM4 10v4M20 10v4M10 4h4M10 20h4M6 6h12v12H6z',
   chart: 'M4 20V10M10 20V4M16 20v-7M22 20H2',
   plug: 'M9 3v6M15 3v6M7 9h10v3a5 5 0 01-10 0zM12 17v4',

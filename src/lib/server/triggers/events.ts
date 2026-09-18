@@ -24,7 +24,6 @@ import { withTransaction } from '../db/client';
 import type { TriggerEventStatus } from '../db/schema';
 import { type Job, type Trigger, type TriggerEvent, triggerEvents, triggers } from '../db/schema';
 import { SqliteJobQueue } from '../jobs/queue';
-import { ticketService } from '../tickets/contracts';
 import { applyTriggerMapping, attachmentSourceType } from './mapping';
 import { recordTriggerError } from './service';
 
@@ -55,8 +54,10 @@ export interface InsertTriggerEventInput {
 export interface InsertTriggerEventResult {
   event: TriggerEvent;
   duplicate: boolean;
-  /** Original ticket id when the delivery is a duplicate. */
-  ticketId: string | null;
+  /** Original record id when the delivery is a duplicate. */
+  recordId: string | null;
+  /** Original workflow item id when the delivery is a duplicate. */
+  workflowItemId: string | null;
 }
 
 /**
@@ -85,7 +86,7 @@ export function insertTriggerEvent(
     .returning()
     .all()[0];
 
-  if (inserted) return { event: inserted, duplicate: false, ticketId: null };
+  if (inserted) return { event: inserted, duplicate: false, recordId: null, workflowItemId: null };
 
   const existing = db
     .select()
@@ -104,7 +105,12 @@ export function insertTriggerEvent(
       idempotencyKey: input.idempotencyKey
     });
   }
-  return { event: existing, duplicate: true, ticketId: existing.ticketId };
+  return {
+    event: existing,
+    duplicate: true,
+    recordId: existing.recordId,
+    workflowItemId: existing.workflowItemId
+  };
 }
 
 export interface EnqueueTriggerJobInput {
@@ -168,16 +174,17 @@ function loadTriggerForEvent(db: Executor, event: TriggerEvent): Trigger | null 
 
 export interface TriggerProcessResult {
   eventId: string;
-  ticketId: string | null;
+  recordId: string | null;
+  workflowItemId: string | null;
   workflowId: string | null;
   stateId: string | null;
   status: 'processed' | 'duplicate';
 }
 
 /**
- * Turn a persisted event into a ticket through the trigger's mapping. Safe to
- * call twice for the same event: the second call observes `processed` and returns
- * the original ticket id rather than creating duplicate work.
+ * Turn a persisted event into a Record + WorkflowItem through the trigger's
+ * mapping. Safe to call twice for the same event: the second call observes
+ * `processed` and returns the original ids rather than creating duplicate work.
  */
 export async function processTriggerEvent(
   db: Executor,
@@ -191,17 +198,25 @@ export async function processTriggerEvent(
     .all()[0];
   if (!event) throw errors.notFound('Trigger event', eventId);
 
-  if (event.status === 'processed' && event.ticketId) {
+  if (event.status === 'processed' && event.workflowItemId) {
     return {
       eventId,
-      ticketId: event.ticketId,
+      recordId: event.recordId,
+      workflowItemId: event.workflowItemId,
       workflowId: null,
       stateId: null,
       status: 'duplicate'
     };
   }
   if (event.status === 'ignored') {
-    return { eventId, ticketId: null, workflowId: null, stateId: null, status: 'duplicate' };
+    return {
+      eventId,
+      recordId: null,
+      workflowItemId: null,
+      workflowId: null,
+      stateId: null,
+      status: 'duplicate'
+    };
   }
 
   const trigger = loadTriggerForEvent(db, event);
@@ -212,7 +227,6 @@ export async function processTriggerEvent(
     const mapping = await applyTriggerMapping(db, {
       trigger,
       payload: event.payload,
-      ticketService: ticketService(),
       actor,
       // The file service is resolved lazily by the mapping only when the trigger
       // actually declares attachments, so a trigger without files does not depend
@@ -227,7 +241,8 @@ export async function processTriggerEvent(
       tx.update(triggerEvents)
         .set({
           status: 'processed',
-          ticketId: mapping.ticketId,
+          recordId: mapping.recordId,
+          workflowItemId: mapping.workflowItemId,
           processedAt: now,
           error: null
         })
@@ -239,9 +254,10 @@ export async function processTriggerEvent(
         actorType: 'system',
         entityType: 'trigger_event',
         entityId: eventId,
-        ticketId: mapping.ticketId,
+        recordId: mapping.recordId,
+        workflowItemId: mapping.workflowItemId,
         workflowId: mapping.workflowId,
-        summary: `Trigger event processed into ticket ${mapping.ticketId}`,
+        summary: `Trigger event processed into work ${mapping.workflowItemId}`,
         data: {
           triggerId: trigger.id,
           fieldKeysSet: mapping.fieldKeysSet,
@@ -254,7 +270,8 @@ export async function processTriggerEvent(
 
     return {
       eventId,
-      ticketId: mapping.ticketId,
+      recordId: mapping.recordId,
+      workflowItemId: mapping.workflowItemId,
       workflowId: mapping.workflowId,
       stateId: mapping.stateId,
       status: 'processed'

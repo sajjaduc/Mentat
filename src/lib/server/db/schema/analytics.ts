@@ -27,7 +27,7 @@ export type WidgetType =
   | 'aging';
 
 export interface WidgetDataSource {
-  kind: 'tickets' | 'state_history' | 'field_history' | 'runs' | 'files';
+  kind: 'state_history' | 'field_history' | 'runs' | 'files' | 'records' | 'workflow_items';
   workflowIds?: string[];
   /** For funnels: explicitly ordered milestones. Kanban order is never inferred. */
   funnelStages?: Array<{
@@ -51,6 +51,7 @@ export interface WidgetMeasure {
 export interface WidgetGrouping {
   by:
     | 'none'
+    | 'objectType'
     | 'state'
     | 'priority'
     | 'owner'

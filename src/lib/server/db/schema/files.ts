@@ -18,8 +18,9 @@
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { bool, createdAt, epochMs, json, primaryId, updatedAt } from './_helpers';
 import type { ActorType } from './fields';
+import { records } from './records';
 import { workspaces } from './tenancy';
-import { tickets } from './tickets';
+import { workflowItems } from './workflow-items';
 import { workflows } from './workflows';
 
 export type BlobStorageProvider = 'local' | 'gcs';
@@ -138,7 +139,6 @@ export const fileSources = sqliteTable(
     runId: text('run_id'),
     toolCallId: text('tool_call_id'),
     triggerEventId: text('trigger_event_id'),
-    ticketId: text('ticket_id'),
     /** True when ingestion reused an existing blob instead of storing new bytes. */
     deduplicated: bool('deduplicated'),
     /** SHA-256 of the incoming bytes, recorded even when a blob already existed. */
@@ -185,24 +185,30 @@ export const workflowFiles = sqliteTable(
   ]
 );
 
-export type TicketFileRelationship = 'attachment' | 'reference' | 'output' | 'evidence';
+/** File-link roles for the universal Record / WorkflowItem model. */
+export type FileLinkRelationship = 'attachment' | 'reference' | 'output' | 'evidence' | 'source';
 
-/** Explicit many-to-many: one file may support many tickets and vice versa. */
-export const ticketFiles = sqliteTable(
-  'ticket_files',
+export type ProcessingStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'skipped';
+
+/**
+ * Durable domain association: a File is evidence/content about a Record and stays
+ * organizational knowledge after any particular work item closes (ADR-0021).
+ */
+export const fileRecords = sqliteTable(
+  'file_records',
   {
     id: primaryId(),
     workspaceId: text('workspace_id')
       .notNull()
       .references(() => workspaces.id, { onDelete: 'cascade' }),
-    ticketId: text('ticket_id')
-      .notNull()
-      .references(() => tickets.id, { onDelete: 'cascade' }),
     fileId: text('file_id')
       .notNull()
       .references(() => files.id, { onDelete: 'cascade' }),
+    recordId: text('record_id')
+      .notNull()
+      .references(() => records.id, { onDelete: 'cascade' }),
     relationship: text('relationship')
-      .$type<TicketFileRelationship>()
+      .$type<FileLinkRelationship>()
       .notNull()
       .default('attachment'),
     caption: text('caption'),
@@ -214,14 +220,55 @@ export const ticketFiles = sqliteTable(
     removedAt: epochMs('removed_at')
   },
   (table) => [
-    uniqueIndex('ticket_files_unique').on(table.ticketId, table.fileId, table.relationship),
-    index('ticket_files_ticket_idx').on(table.workspaceId, table.ticketId, table.removedAt),
-    index('ticket_files_file_idx').on(table.workspaceId, table.fileId)
+    uniqueIndex('file_records_unique').on(table.fileId, table.recordId, table.relationship),
+    index('file_records_record_idx').on(table.workspaceId, table.recordId, table.removedAt),
+    index('file_records_file_idx').on(table.workspaceId, table.fileId)
   ]
 );
 
-export type ProcessingStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'skipped';
+/** Optional work-specific context: a file attached to one participation. */
+export const fileWorkflowItems = sqliteTable(
+  'file_workflow_items',
+  {
+    id: primaryId(),
+    workspaceId: text('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    fileId: text('file_id')
+      .notNull()
+      .references(() => files.id, { onDelete: 'cascade' }),
+    workflowItemId: text('workflow_item_id')
+      .notNull()
+      .references(() => workflowItems.id, { onDelete: 'cascade' }),
+    relationship: text('relationship')
+      .$type<FileLinkRelationship>()
+      .notNull()
+      .default('attachment'),
+    caption: text('caption'),
+    addedByType: text('added_by_type').$type<ActorType>(),
+    addedById: text('added_by_id'),
+    addedByLabel: text('added_by_label'),
+    runId: text('run_id'),
+    createdAt: createdAt(),
+    removedAt: epochMs('removed_at')
+  },
+  (table) => [
+    uniqueIndex('file_workflow_items_unique').on(
+      table.fileId,
+      table.workflowItemId,
+      table.relationship
+    ),
+    index('file_workflow_items_item_idx').on(
+      table.workspaceId,
+      table.workflowItemId,
+      table.removedAt
+    ),
+    index('file_workflow_items_file_idx').on(table.workspaceId, table.fileId)
+  ]
+);
 
+export type FileRecordLink = typeof fileRecords.$inferSelect;
+export type FileWorkflowItemLink = typeof fileWorkflowItems.$inferSelect;
 /**
  * One attempt to process a file. `processingKey` is the reuse identity:
  * `contentHash + processorType + processorVersion + configurationFingerprint`.
@@ -326,7 +373,6 @@ export type FileRecord = typeof files.$inferSelect;
 export type NewFileRecord = typeof files.$inferInsert;
 export type FileSource = typeof fileSources.$inferSelect;
 export type WorkflowFile = typeof workflowFiles.$inferSelect;
-export type TicketFile = typeof ticketFiles.$inferSelect;
 export type FileProcessingRun = typeof fileProcessingRuns.$inferSelect;
 export type FileExtractedContent = typeof fileExtractedContent.$inferSelect;
 export type FileSummary = typeof fileSummaries.$inferSelect;

@@ -24,8 +24,9 @@ import {
   type ApprovalStatus,
   agentRuns,
   approvalRequests,
-  tickets,
+  records,
   users,
+  workflowItems,
   workspaceMembers
 } from '../db/schema';
 import { publishRunEvent, RunEventTypes } from '../execution/events';
@@ -37,7 +38,8 @@ export interface RequestApprovalInput {
   description?: string | null;
   requestedAction: Record<string, unknown>;
   contextSnapshot?: unknown;
-  ticketId?: string | null;
+  recordId?: string | null;
+  workflowItemId?: string | null;
   workflowId?: string | null;
   runId?: string | null;
   stepId?: string | null;
@@ -59,7 +61,8 @@ export function requestApprovalSync(tx: Executor, input: RequestApprovalInput): 
     .values({
       id: uuidv7(now),
       workspaceId: input.workspaceId,
-      ticketId: input.ticketId ?? null,
+      recordId: input.recordId ?? null,
+      workflowItemId: input.workflowItemId ?? null,
       workflowId: input.workflowId ?? null,
       runId: input.runId ?? null,
       stepId: input.stepId ?? null,
@@ -91,7 +94,8 @@ export function requestApprovalSync(tx: Executor, input: RequestApprovalInput): 
     actorLabel: input.requestedByLabel ?? null,
     entityType: 'approval',
     entityId: inserted.id,
-    ticketId: inserted.ticketId,
+    recordId: inserted.recordId,
+    workflowItemId: inserted.workflowItemId,
     workflowId: inserted.workflowId,
     runId: inserted.runId,
     approvalId: inserted.id,
@@ -105,7 +109,8 @@ export function requestApprovalSync(tx: Executor, input: RequestApprovalInput): 
     {
       workspaceId: input.workspaceId,
       runId: inserted.runId,
-      ticketId: inserted.ticketId,
+      recordId: inserted.recordId,
+      workflowItemId: inserted.workflowItemId,
       type: RunEventTypes.approvalRequested,
       data: { approvalId: inserted.id, kind: input.kind, title: input.title }
     },
@@ -116,8 +121,8 @@ export function requestApprovalSync(tx: Executor, input: RequestApprovalInput): 
 }
 
 export interface ApprovalView extends ApprovalRequest {
-  ticketKey: string | null;
-  ticketTitle: string | null;
+  recordKey: string | null;
+  recordTitle: string | null;
   runStatus: string | null;
 }
 
@@ -126,7 +131,8 @@ export function listApprovals(
   actor: ActorContext,
   options: {
     status?: ApprovalStatus[];
-    ticketId?: string;
+    recordId?: string;
+    workflowItemId?: string;
     kind?: ApprovalKind;
     /** Only approvals the actor may decide. */
     assignedToMe?: boolean;
@@ -138,7 +144,10 @@ export function listApprovals(
   if (options.status && options.status.length > 0) {
     conditions.push(inArray(approvalRequests.status, options.status));
   }
-  if (options.ticketId) conditions.push(eq(approvalRequests.ticketId, options.ticketId));
+  if (options.recordId) conditions.push(eq(approvalRequests.recordId, options.recordId));
+  if (options.workflowItemId) {
+    conditions.push(eq(approvalRequests.workflowItemId, options.workflowItemId));
+  }
   if (options.kind) conditions.push(eq(approvalRequests.kind, options.kind));
   if (options.assignedToMe && actor.actorId) {
     conditions.push(
@@ -152,12 +161,16 @@ export function listApprovals(
   const rows = db
     .select({
       approval: approvalRequests,
-      ticketKey: tickets.key,
-      ticketTitle: tickets.title,
+      recordKey: records.key,
+      recordTitle: records.displayName,
       runStatus: agentRuns.status
     })
     .from(approvalRequests)
-    .leftJoin(tickets, eq(tickets.id, approvalRequests.ticketId))
+    .leftJoin(workflowItems, eq(workflowItems.id, approvalRequests.workflowItemId))
+    .leftJoin(
+      records,
+      eq(records.id, sql`coalesce(${approvalRequests.recordId}, ${workflowItems.recordId})`)
+    )
     .leftJoin(agentRuns, eq(agentRuns.id, approvalRequests.runId))
     .where(and(...conditions))
     .orderBy(desc(approvalRequests.createdAt))
@@ -166,8 +179,8 @@ export function listApprovals(
 
   return rows.map((row) => ({
     ...row.approval,
-    ticketKey: row.ticketKey ?? null,
-    ticketTitle: row.ticketTitle ?? null,
+    recordKey: row.recordKey ?? null,
+    recordTitle: row.recordTitle ?? null,
     runStatus: row.runStatus ?? null
   }));
 }
@@ -282,7 +295,8 @@ export function decideApprovalSync(
     actorLabel: actor.actorLabel,
     entityType: 'approval',
     entityId: approval.id,
-    ticketId: approval.ticketId,
+    recordId: approval.recordId,
+    workflowItemId: approval.workflowItemId,
     workflowId: approval.workflowId,
     runId: approval.runId,
     approvalId: approval.id,
@@ -297,7 +311,8 @@ export function decideApprovalSync(
     {
       workspaceId: actor.workspaceId,
       runId: approval.runId,
-      ticketId: approval.ticketId,
+      recordId: approval.recordId,
+      workflowItemId: approval.workflowItemId,
       type: RunEventTypes.approvalDecided,
       data: {
         approvalId: approval.id,
@@ -352,7 +367,8 @@ export function expireStaleApprovalsSync(
       actorType: 'system',
       entityType: 'approval',
       entityId: approval.id,
-      ticketId: approval.ticketId,
+      recordId: approval.recordId,
+      workflowItemId: approval.workflowItemId,
       runId: approval.runId,
       approvalId: approval.id,
       summary: `Approval expired: ${approval.title}`,

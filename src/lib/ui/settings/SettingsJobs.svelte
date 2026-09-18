@@ -30,7 +30,7 @@ let loading = $state(true);
 let error = $state<string | null>(null);
 let statusFilter = $state('');
 let typeFilter = $state('');
-let ticketFilter = $state('');
+let workItemFilter = $state('');
 
 let selected = $state<JobRecord | null>(null);
 let attempts = $state<JobAttempt[]>([]);
@@ -44,7 +44,7 @@ async function load() {
     const response = await api.get<{ jobs: JobRecord[] }>('/jobs', {
       status: statusFilter || undefined,
       type: typeFilter || undefined,
-      ticketId: ticketFilter || undefined,
+      workflowItemId: workItemFilter || undefined,
       limit: 200
     });
     jobs = response.jobs;
@@ -58,7 +58,7 @@ async function load() {
 $effect(() => {
   void statusFilter;
   void typeFilter;
-  void ticketFilter;
+  void workItemFilter;
   void load();
 });
 
@@ -106,7 +106,7 @@ function isLeased(job: JobRecord): boolean {
       bind:value={statusFilter}
     />
     <Input label="Type" bind:value={typeFilter} placeholder="file.process" />
-    <Input label="Ticket id" bind:value={ticketFilter} placeholder="Optional" />
+    <Input label="Work item id" bind:value={workItemFilter} placeholder="Optional" />
   </Card>
 
   {#if error}
@@ -204,8 +204,8 @@ function isLeased(job: JobRecord): boolean {
           <dd>{selected.leaseExpiresAt ? formatDateTime(selected.leaseExpiresAt) : '—'}</dd>
         </div>
         <div>
-          <dt class="text-[var(--color-ink-subtle)]">Ticket</dt>
-          <dd class="font-mono text-[11px]">{selected.ticketId ?? '—'}</dd>
+          <dt class="text-[var(--color-ink-subtle)]">Work item</dt>
+          <dd class="font-mono text-[11px]">{selected.workflowItemId ?? '—'}</dd>
         </div>
       </dl>
 

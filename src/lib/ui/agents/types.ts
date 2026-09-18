@@ -133,12 +133,12 @@ export interface AgentExecutionConfig {
 }
 
 export interface AgentPermissions {
-  /** Native capability keys, e.g. `ticket.fields.set` or `mentat.data.get`. */
+  /** Native capability keys, e.g. `work item.fields.set` or `mentat.data.get`. */
   native?: string[];
   /** HTTP operation ids the agent may invoke. */
   httpOperationIds?: string[];
-  canTransferTickets?: boolean;
-  canCreateTickets?: boolean;
+  canTransferWork?: boolean;
+  canCreateWork?: boolean;
   canWriteWorkspaceState?: boolean;
   canUploadFiles?: boolean;
   /** Field keys the agent may write; empty means none, `*` means all. */
@@ -338,7 +338,7 @@ export interface RunSummary {
   status: string;
   agentId: string | null;
   agent_name?: string | null;
-  ticket_key?: string | null;
+  record_key?: string | null;
   createdAt: number;
   [key: string]: unknown;
 }
@@ -388,7 +388,13 @@ export const PROVIDER_TYPE_LABELS: Record<ProviderType, string> = {
 };
 
 /** The namespaces the native permission checklist groups by. */
-export const NATIVE_PERMISSION_NAMESPACES = ['ticket', 'state', 'data', 'cache', 'files'] as const;
+export const NATIVE_PERMISSION_NAMESPACES = [
+  'workflowItems',
+  'state',
+  'data',
+  'cache',
+  'files'
+] as const;
 
 /** A workflow as the scope pickers need it. */
 export interface WorkflowOption {

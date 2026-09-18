@@ -1,9 +1,11 @@
 # Mentat architecture
 
 Mentat is a self-hostable work-orchestration platform. A **Workflow** is a project
-and a state machine presented as a Kanban board; **Tickets** move through
-user-defined **States**; states may wait for humans, invoke agents, require
-approvals, or run deterministic work.
+and a state machine presented as a Kanban board; **Records** are the durable things
+work is about and **WorkflowItems** are a Record's participation in one Workflow.
+The UI speaks in the vocabulary of the Workflow's Object Type (for example
+"Claims"), so ordinary users see a familiar board while the underlying model stays
+general (ADR-0021).
 
 This document is the map. It records the module layout, the dependency direction,
 the boundaries that must not be crossed, and the reasoning behind the decisions
@@ -53,7 +55,8 @@ Rules:
 | jobs | `src/lib/server/jobs` | durable queue, handler registry, worker runtime |
 | execution | `src/lib/server/execution` | state-entry engine, agent runner, run events, SSE |
 | approvals | `src/lib/server/approvals` | approval records, durable pause/resume |
-| tickets | `src/lib/server/tickets` | tickets, fields, notes, relationships, transfer, human gates |
+| records | `src/lib/server/records` | object types, records, typed base fields, external ids, domain relationships, notes |
+| workflow-items | `src/lib/server/workflow-items` | work participation, state machine, overlay fields, work notes/relationships, transfer vs add-participation |
 | workflows | `src/lib/server/workflows` | workflows, states, transitions, transfer rules |
 | agents | `src/lib/server/agents` | agents/skills versioning, context assembly |
 | tools | `src/lib/server/tools` | tool contract, registry, native tool implementations |
@@ -94,7 +97,7 @@ true async transactions for free.
 
 ### ADR-0005 — Typed fields, not one opaque JSON blob
 
-Ticket and file metadata use `field_definitions` plus typed value rows
+Record and file metadata use `field_definitions` plus typed value rows
 (`value_text`, `value_number`, `value_date`, `value_bool`, `value_json`) with a
 lowercase `search_text` projection. This supports validation, indexing, filtering,
 history and analytics — none of which are reliable over a single JSON column.
@@ -137,8 +140,8 @@ results are reused only when the full identity matches.
 
 ### ADR-0011 — Cross-workflow movement is a controlled operation
 
-`ticket.transfer` validates permission, destination workflow, destination state,
-required fields and mappings; preserves ticket identity, notes, artifacts and
+`workflowItems.transfer` validates permission, destination workflow, destination
+state, required fields and mappings; preserves record identity, notes, artifacts and
 lineage; appends audit events; updates workflow/state atomically; then triggers
 normal destination-state semantics. The default is **move, not copy**. A routing
 workflow is an ordinary workflow using ordinary primitives — there is no separate
@@ -146,16 +149,16 @@ workflow is an ordinary workflow using ordinary primitives — there is no separ
 
 ### ADR-0012 — One filtering language
 
-The filter AST in `src/lib/server/filters/ast.ts` powers ticket lists, file lists,
-saved views and dashboard widgets. Ticket and analytics filtering cannot drift
+The filter AST in `src/lib/server/filters/ast.ts` powers work lists, file lists,
+saved views and dashboard widgets. Work-item and analytics filtering cannot drift
 apart because there is only one representation.
 
 ### ADR-0013 — History is recorded, never inferred
 
-`ticket_state_history` stores intervals (`enteredAt`/`exitedAt`) and
-`ticket_workflow_history` stores moves. Current state alone cannot answer "how many
-entered Claims last month" or "how long did tickets spend in Human Review", so
-analytics reads history rather than current rows.
+`workflow_item_state_history` stores intervals (`enteredAt`/`exitedAt`) and
+`workflow_item_workflow_history` stores moves. Current state alone cannot answer
+"how many entered Claims last month" or "how long did work items spend in Human
+Review", so analytics reads history rather than current rows.
 
 ### ADR-0014 — HTTP is a first-class platform
 
@@ -201,6 +204,104 @@ configuration. A model's claim that it asked for permission is never sufficient.
 Plaintext is decrypted only inside execution, registered with the process-wide
 redactor immediately, referenced by id in audit rows, and structurally redacted
 from logs, run snapshots, HTTP request logs and diagnostics.
+
+### ADR-0021 — Records and WorkflowItems are the universal model
+
+There is no privileged Ticket primitive. The ontology is:
+
+```text
+Object Type  = schema for a kind of thing       (object_types + object_type_fields)
+Record       = durable instance and knowledge   (records + record_field_values)
+Workflow     = configurable process             (workflows.objectTypeId)
+WorkflowItem = a Record in one Workflow         (workflow_items + overlay values)
+File         = durable content/evidence         (file_records, file_workflow_items)
+Event        = historical fact/activity         (audit_events, run_events)
+```
+
+Consequences that the code enforces:
+
+- **State, owner and execution live on the WorkflowItem.** A Record never carries
+  `workflowId` or `stateId`; the same Record may have zero, one or several active
+  WorkflowItems (one per Workflow).
+- **Base fields belong to the Record; workflow overlays belong to the
+  WorkflowItem.** One field engine (`field_definitions` + typed value columns)
+  serves records, workflow items and files. Overlay values and their
+  `field_value_history` rows survive completion and transfer.
+- **Transfer and add-participation are different operations.**
+  `workflowItems.transfer` closes the source item and opens a destination item with
+  `sourceWorkflowItemId` lineage; `workflowItems.addParticipation` adds a second
+  Workflow without ending the first. Neither mutates a foreign key to "move" work.
+- **Domain relationships and work relationships are separate.** `record_relationships`
+  models `Business HAS_POLICY Policy`; `workflow_item_relationships` models
+  `item A BLOCKS item B`.
+- **One filtering language.** The filter AST gained `record_field` and
+  `relationship` kinds; record lists compile against `records`/`record_field_values`
+  and are type-aware (number/date/boolean columns), with unknown keys reported
+  rather than silently dropped.
+- **Unified analytics.** Dashboard widgets accept `records` and `workflow_items`
+  data sources. `analytics/universal.ts` compiles the same filter AST against the
+  canonical tables, groups by Object Type / state / workflow / owner / record field
+  / time, and derives funnels and time-in-state from `workflow_item_state_history`
+  rather than current rows.
+- **Two event families.** `record.*` facts are separate from
+  `workflow_item.*` process events; both are written to `run_events` in the same
+  transaction as the change.
+
+### ADR-0022 — Ticket has been removed; Records and WorkflowItems are the only work model
+
+The legacy Ticket tables, services, UI and projection bridge have been deleted.
+There is exactly one source of truth for work: `records` (durable identity and base
+field values) plus `workflow_items` (participation, state, owner, execution metadata,
+work notes, work relationships, workflow-overlay values and history). Files link
+durably to Records (`file_records`) and contextually to WorkflowItems
+(`file_workflow_items`). Jobs, agent runs, run events, approvals, trigger events,
+audit events and agent state all reference `recordId`/`workflowItemId`.
+
+There is no seeded system Object Type. A Workflow must name the Object Type it
+processes (`workflows.objectTypeId` is required), and users define the Object Types
+they need. This removes the last place where "Ticket" was privileged.
+
+### ADR-0023 — AI execution is a validated Record contract
+
+An agent run is *about* a subject: a Record + WorkflowItem. Input is
+always the record the agent is working on. Output is the same record plus a workflow
+directive (next `stateId`/`transitionId`, or a different `workflowId`).
+
+The Object Type's effective schema — base fields plus the target workflow's overlay
+— is compiled into a Zod schema (`records/contract.ts`). The `workflowItems.submit`
+tool validates the submitted record against that schema (strict: unknown fields are
+rejected) before anything is written. Invalid output is returned to the model as
+structured field issues so it can repair; a state that sets
+`config.requiredSubmission` forces the runner to keep going until a valid submission
+exists, then fails the run after `maxNudges`. If the submission names another
+workflow, the record is validated against *that* workflow's schema before the work
+transfers.
+
+**The contract is authored as Zod source.** An Object Type, a workflow overlay and a
+workflow state can each store a Zod expression (`settings.zodSchema` /
+`config.zodSchema`) written in one box, formatted on blur and tested against a JSON
+sample before saving (`schema/ZodSchemaBox.svelte`, `POST /schemas/test`). The stored
+source is authoritative and re-compiled at validation time, so constraints the typed
+field engine cannot express — coercions, minimum lengths, unions — are enforced. The
+bound `field_definitions` / `object_type_fields` / `workflow_fields` rows are a
+projection of the source (`schemas/zod-source.ts`), which is what keeps lists,
+filters, history and analytics working; editing fields directly clears the source and
+makes the field set authoritative again. A state's schema is additionally validated
+against the submitted record while the item is in that state. The same mechanism is
+reusable: author once, run later.
+
+This is why `outputSchema` on an agent is only a provider hint: the enforced contract
+is the Object Type schema plus the submission requirement, evaluated by Mentat, not
+by the model.
+
+### ADR-0024 — One dispatch path per WorkflowItem
+
+Agent and system states are dispatched through jobs enqueued in the same transaction
+that moved the item. Every workflow uses `workflow_item.enter`, which runs the agent
+against the record (with the contract) or executes the deterministic `SystemAction`
+(`transition`, `setFields`, `emitEvent`, `wait`). Human gates set `waitingOn` and
+enqueue nothing; terminal states close the item; stale or superseded entries are
+skipped rather than run, which makes duplicate delivery harmless.
 
 ## Human gates versus approvals
 

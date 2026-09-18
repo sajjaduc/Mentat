@@ -202,7 +202,7 @@ async function saveRecord() {
   try {
     if (editingRecord) {
       const response = await api.patch<{ record: CollectionDocument }>(
-        `/records/${editingRecord.id}`,
+        `/collections/${activeCollection.id}/records/${editingRecord.id}`,
         { data: parsed, expectedVersion: editingRecord.version }
       );
       records = records.map((record) =>
@@ -231,7 +231,7 @@ async function deleteRecord(record: CollectionDocument) {
   const previous = records;
   records = records.filter((entry) => entry.id !== record.id);
   try {
-    await api.delete(`/records/${record.id}`);
+    await api.delete(`/collections/${activeCollection?.id}/records/${record.id}`);
     pushToast({ tone: 'success', title: 'Record deleted', description: 'Deleted softly; history keeps pointing at the row.' });
   } catch (failure) {
     records = previous;
@@ -503,7 +503,7 @@ function onSectionChange(id: string) {
       <Card>
         <EmptyState
           title="No workspace state"
-          description="Load the inspector to list workspace-scoped keys. Ticket-, workflow-, agent- and run-scoped state is available through the API but not shown on this workspace view."
+          description="Load the inspector to list workspace-scoped keys. Work item-, workflow-, agent- and run-scoped state is available through the API but not shown on this workspace view."
         />
       </Card>
     {:else}

@@ -386,7 +386,7 @@ async function archive() {
                 bind:value={example.input}
                 rows={4}
                 mono
-                placeholder="The prompt or ticket context"
+                placeholder="The prompt or work item context"
               />
               <TextAreaField
                 label="Output"

@@ -88,8 +88,8 @@ export function formatBytes(bytes: number | null | undefined): string {
   return `${value.toFixed(value < 10 ? 1 : 0)} ${units[index]}`;
 }
 
-/** `CLAIM-42` style ticket keys are displayed verbatim; this guards malformed input. */
-export function formatTicketKey(key: string | null | undefined): string {
+/** `CLAIM-42` style record keys are displayed verbatim; this guards malformed input. */
+export function formatRecordKey(key: string | null | undefined): string {
   return key && key.length > 0 ? key : '—';
 }
 

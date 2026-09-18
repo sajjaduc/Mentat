@@ -33,7 +33,7 @@ describe('scoped state service', () => {
     const cases = [
       { scope: 'workspace' as const, owners: {} },
       { scope: 'workflow' as const, owners: { workflowId: 'wf-1' } },
-      { scope: 'ticket' as const, owners: { ticketId: 'tk-1' } },
+      { scope: 'workflowItem' as const, owners: { workflowItemId: 'wi-1' } },
       { scope: 'agent' as const, owners: { agentId: 'ag-1' } },
       { scope: 'run' as const, owners: { runId: 'run-1' } }
     ];
@@ -61,7 +61,7 @@ describe('scoped state service', () => {
       setStateValue(handle.db, actor, { scope: 'workflow', key: 'k', value: 1 })
     ).toThrow();
     expect(() =>
-      setStateValue(handle.db, actor, { scope: 'ticket', key: 'k', value: 1 })
+      setStateValue(handle.db, actor, { scope: 'workflowItem', key: 'k', value: 1 })
     ).toThrow();
     expect(() => setStateValue(handle.db, actor, { scope: 'agent', key: 'k', value: 1 })).toThrow();
     expect(() => setStateValue(handle.db, actor, { scope: 'run', key: 'k', value: 1 })).toThrow();
@@ -85,21 +85,25 @@ describe('scoped state service', () => {
     const actor = owner(workspaceA);
     const now = Date.now();
     setStateValue(handle.db, actor, {
-      scope: 'ticket',
-      ticketId: 'tk-1',
+      scope: 'workflowItem',
+      workflowItemId: 'tk-1',
       key: 'temp',
       value: 'x',
       ttlSeconds: 60,
       now
     });
     expect(
-      getStateValue(handle.db, actor, { scope: 'ticket', ticketId: 'tk-1', key: 'temp', now })
-        ?.value
+      getStateValue(handle.db, actor, {
+        scope: 'workflowItem',
+        workflowItemId: 'tk-1',
+        key: 'temp',
+        now
+      })?.value
     ).toBe('x');
     expect(
       getStateValue(handle.db, actor, {
-        scope: 'ticket',
-        ticketId: 'tk-1',
+        scope: 'workflowItem',
+        workflowItemId: 'tk-1',
         key: 'temp',
         now: now + 61_000
       })
@@ -218,10 +222,15 @@ describe('scoped state service', () => {
     expect(member.permissions.has('config:write')).toBe(false);
   });
 
-  test('ticket-scope writes do not need the workspace grant', () => {
+  test('workflow-item-scope writes do not need the workspace grant', () => {
     const agent = agentActor(workspaceA, 'agent-1', 'Agent', [Permissions.dataWrite]);
     expect(() =>
-      setStateValue(handle.db, agent, { scope: 'ticket', ticketId: 'tk-1', key: 'k', value: 1 })
+      setStateValue(handle.db, agent, {
+        scope: 'workflowItem',
+        workflowItemId: 'tk-1',
+        key: 'k',
+        value: 1
+      })
     ).not.toThrow();
   });
 
@@ -254,7 +263,12 @@ describe('scoped state service', () => {
   test('state writes are not audited at the service level by design', async () => {
     const actor = owner(workspaceA);
     setStateValue(handle.db, actor, { scope: 'workspace', key: 'k', value: 1 });
-    setStateValue(handle.db, actor, { scope: 'ticket', ticketId: 'tk-1', key: 'k', value: 1 });
+    setStateValue(handle.db, actor, {
+      scope: 'workflowItem',
+      workflowItemId: 'tk-1',
+      key: 'k',
+      value: 1
+    });
     const { queryAudit } = await import('../../../src/lib/server/audit/ledger');
     const rows = await queryAudit(handle.db, { workspaceId: workspaceA });
     expect(rows).toHaveLength(0);
@@ -264,13 +278,25 @@ describe('scoped state service', () => {
 describe('state value round trips across owners', () => {
   test('the same key in different owner slots is a different entry', () => {
     const actor = owner(workspaceA);
-    setStateValue(handle.db, actor, { scope: 'ticket', ticketId: 'tk-1', key: 'k', value: 'one' });
-    setStateValue(handle.db, actor, { scope: 'ticket', ticketId: 'tk-2', key: 'k', value: 'two' });
+    setStateValue(handle.db, actor, {
+      scope: 'workflowItem',
+      workflowItemId: 'tk-1',
+      key: 'k',
+      value: 'one'
+    });
+    setStateValue(handle.db, actor, {
+      scope: 'workflowItem',
+      workflowItemId: 'tk-2',
+      key: 'k',
+      value: 'two'
+    });
     expect(
-      getStateValue(handle.db, actor, { scope: 'ticket', ticketId: 'tk-1', key: 'k' })?.value
+      getStateValue(handle.db, actor, { scope: 'workflowItem', workflowItemId: 'tk-1', key: 'k' })
+        ?.value
     ).toBe('one');
     expect(
-      getStateValue(handle.db, actor, { scope: 'ticket', ticketId: 'tk-2', key: 'k' })?.value
+      getStateValue(handle.db, actor, { scope: 'workflowItem', workflowItemId: 'tk-2', key: 'k' })
+        ?.value
     ).toBe('two');
     const rows = handle.db.select().from(agentState).where(eq(agentState.key, 'k')).all();
     expect(rows).toHaveLength(2);

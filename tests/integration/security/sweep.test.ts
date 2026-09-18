@@ -138,12 +138,15 @@ describe('tenant isolation matrix', () => {
     expect(failures, failures.join('\n')).toEqual([]);
   });
 
-  test('another workspace cannot read a ticket, workflow, agent or file by id', async () => {
+  test('another workspace cannot read a work item, workflow, agent or file by id', async () => {
     const workflow = await createWorkflow(handle.db, owner.workspaceId, { name: 'Private' });
-    const ticket = await call('POST', '/tickets', {
-      body: { workflowId: workflow.id, title: 'Secret work' }
+    const item = await call('POST', '/workflow-items', {
+      body: {
+        workflowId: workflow.id,
+        record: { objectTypeId: workflow.objectTypeId, displayName: 'Secret work' }
+      }
     });
-    const ticketId = (ticket.body as { ticket: { id: string } }).ticket.id;
+    const itemId = (item.body as { workflowItem: { id: string } }).workflowItem.id;
 
     const agent = await call('POST', '/agents', { body: { name: 'Private agent' } });
     const agentId = (agent.body as { agent: { id: string } }).agent.id;
@@ -154,13 +157,13 @@ describe('tenant isolation matrix', () => {
     const secretId = (secret.body as { secret: { id: string } }).secret.id;
 
     for (const path of [
-      `/tickets/${ticketId}`,
+      `/workflow-items/${itemId}`,
       `/workflows/${workflow.id}`,
       `/agents/${agentId}`,
       `/secrets/${secretId}`,
-      `/tickets/${ticketId}/timeline`,
-      `/tickets/${ticketId}/fields`,
-      `/tickets/${ticketId}/notes`,
+      `/workflow-items/${itemId}/timeline`,
+      `/workflow-items/${itemId}/fields`,
+      `/workflow-items/${itemId}/notes`,
       `/workflows/${workflow.id}/board`
     ]) {
       const result = await call('GET', path, { actor: outsider });
@@ -174,17 +177,17 @@ describe('tenant isolation matrix', () => {
   });
 
   test('a listing never returns another workspace’s rows', async () => {
-    await createWorkflow(handle.db, owner.workspaceId, { name: 'Mine only' });
-    await call('POST', '/tickets', {
+    const mine = await createWorkflow(handle.db, owner.workspaceId, { name: 'Mine only' });
+    await call('POST', '/workflow-items', {
       body: {
-        workflowId: (await createWorkflow(handle.db, owner.workspaceId, { name: 'Mine 2' })).id,
-        title: 'Mine'
+        workflowId: mine.id,
+        record: { objectTypeId: mine.objectTypeId, displayName: 'Mine' }
       }
     });
 
     for (const path of [
       '/workflows',
-      '/tickets',
+      '/workflow-items',
       '/agents',
       '/files',
       '/triggers',
@@ -210,7 +213,14 @@ describe('tenant isolation matrix', () => {
   });
 
   test('an unauthenticated request to a protected route is refused', async () => {
-    for (const path of ['/workflows', '/tickets', '/agents', '/secrets', '/jobs', '/audit']) {
+    for (const path of [
+      '/workflows',
+      '/workflow-items',
+      '/agents',
+      '/secrets',
+      '/jobs',
+      '/audit'
+    ]) {
       const result = await call('GET', path, { actor: null });
       expect(result.status, path).toBe(401);
     }

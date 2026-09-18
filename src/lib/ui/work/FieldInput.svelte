@@ -13,10 +13,10 @@ import Badge from '$ui/primitives/Badge.svelte';
 import Input from '$ui/primitives/Input.svelte';
 import Select from '$ui/primitives/Select.svelte';
 import Textarea from '$ui/primitives/Textarea.svelte';
-import type { MemberOption, TeamOption, TicketFieldConfig } from '$ui/work/types';
+import type { MemberOption, TeamOption, WorkItemFieldConfig } from '$ui/work/types';
 
 interface Props {
-  config: TicketFieldConfig;
+  config: WorkItemFieldConfig;
   value: unknown;
   members?: MemberOption[];
   teams?: TeamOption[];

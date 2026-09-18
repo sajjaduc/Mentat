@@ -9,11 +9,11 @@ import { PRIORITIES, type Priority } from '$ui/work/format';
 import type { FilterAst, FilterCondition, FilterGroup, FilterNode } from '$ui/work/types';
 
 export { PRIORITIES };
-export type TicketPriority = Priority;
+export type WorkItemPriority = Priority;
 
 export interface FilterState {
   stateIds: string[];
-  priorities: TicketPriority[];
+  priorities: WorkItemPriority[];
   ownerUserId: string;
   labelIds: string[];
   search: string;
@@ -122,7 +122,7 @@ export function filterAstToState(ast: FilterAst | null): FilterState {
     if (entry.kind === 'state' && entry.key === 'stateId') {
       state.stateIds = asStringList(entry.value);
     } else if (entry.kind === 'system' && entry.key === 'priority') {
-      state.priorities = asStringList(entry.value).filter((value): value is TicketPriority =>
+      state.priorities = asStringList(entry.value).filter((value): value is WorkItemPriority =>
         (PRIORITIES as readonly string[]).includes(value)
       );
     } else if (entry.kind === 'owner' && entry.key === 'ownerUserId') {

@@ -4,7 +4,7 @@
  * These mirror exactly what the API returns (raw camelCase rows, epoch-ms
  * timestamps, JSON configs that may be null). They are declared here — never in a
  * component — so the board, list, drawer and configuration tabs cannot drift apart
- * in their understanding of a ticket or a state.
+ * in their understanding of a work item or a state.
  */
 
 /* ------------------------------------------------------------------ filters */
@@ -124,7 +124,7 @@ export interface FieldDefinition {
   name: string;
   description: string | null;
   type: FieldType;
-  scope: 'ticket' | 'file';
+  scope: 'workflowItem' | 'file' | 'record';
   options: FieldOptions | null;
   defaultValue: unknown;
   validation: FieldValidation | null;
@@ -156,8 +156,8 @@ export interface WorkflowFieldView {
   definition: FieldDefinition;
 }
 
-/** The configuration half of `GET /api/tickets/:id/fields`. */
-export interface TicketFieldConfig {
+/** The configuration half of `GET /api/workflow-items/:id/fields`. */
+export interface WorkItemFieldConfig {
   key: string;
   name: string;
   type: FieldType;
@@ -184,14 +184,20 @@ export interface TransferSettings {
 export interface WorkflowSettings {
   transfer?: TransferSettings;
   defaultTimezone?: string;
-  allowAgentTicketCreation?: boolean;
-  allowHumanTicketCreation?: boolean;
+  allowAgentWorkCreation?: boolean;
+  allowHumanWorkCreation?: boolean;
   requiresApprovalToClose?: boolean;
+  /** Authoritative Zod source for this workflow's overlay fields (ADR-0023). */
+  zodSchema?: string;
 }
 
 export interface Workflow {
   id: string;
   workspaceId: string;
+  /** The Object Type this Workflow processes (ADR-0021). */
+  objectTypeId: string | null;
+  objectTypeName?: string | null;
+  objectTypePluralName?: string | null;
   name: string;
   key: string;
   description: string | null;
@@ -206,7 +212,7 @@ export interface Workflow {
   archivedAt: number | null;
 }
 
-export type WorkflowListItem = Workflow & { stateCount: number; ticketCount: number };
+export type WorkflowListItem = Workflow & { stateCount: number; itemCount: number };
 
 export interface WorkflowTemplate {
   key: 'blank' | 'basic' | 'intake' | 'claims' | 'support';
@@ -238,15 +244,22 @@ export interface AgentContextConfig {
   includeFullFileContent?: boolean;
   includeHistory?: boolean;
   includeStateHistory?: boolean;
+  includeRecordSchema?: boolean;
 }
 
 export type SystemAction =
   | { type: 'transition'; targetStateId?: string }
   | { type: 'setFields'; values: Record<string, unknown> }
   | { type: 'emitEvent'; name: string }
-  | { type: 'createTicket'; workflowId: string; titleTemplate: string }
+  | { type: 'createWorkItem'; workflowId: string; titleTemplate: string }
   | { type: 'http'; operationId: string }
   | { type: 'wait'; seconds: number };
+
+export interface RequiredSubmissionConfig {
+  toolKey?: string;
+  maxNudges?: number;
+  allowWorkflowChange?: boolean;
+}
 
 export interface StateConfig {
   systemAction?: SystemAction;
@@ -255,6 +268,9 @@ export interface StateConfig {
   runOncePerEntry?: boolean;
   wipLimit?: number;
   slaSeconds?: number;
+  requiredSubmission?: RequiredSubmissionConfig;
+  /** Zod source validated against submissions while work is in this state (ADR-0023). */
+  zodSchema?: string;
 }
 
 export interface WorkflowState {
@@ -321,11 +337,12 @@ export interface WorkflowDetailResponse {
   transferRules: WorkflowTransferRule[];
 }
 
-/* ------------------------------------------------------------------ tickets */
+/* --------------------------------------------------------------- work items */
 
-export type TicketPriority = 'none' | 'low' | 'medium' | 'high' | 'urgent';
+export type WorkItemPriority = 'none' | 'low' | 'medium' | 'high' | 'urgent';
+export type WorkItemWait = 'human' | 'agent' | 'approval' | 'trigger' | 'none';
 
-export interface TicketProvenance {
+export interface WorkItemProvenance {
   sourceType?: string;
   sourceReference?: string;
   sourceLabel?: string;
@@ -335,54 +352,77 @@ export interface TicketProvenance {
   ingestedAt?: number;
 }
 
-export interface TicketLabelRef {
+export interface WorkItemLabelRef {
   id: string;
   name: string;
   color: string | null;
 }
 
-export interface Ticket {
+/** The durable Record a WorkflowItem is backed by. Identity lives here. */
+export interface WorkItemRecordRef {
   id: string;
+  displayName: string;
+  key: string | null;
+  objectTypeId: string;
+  objectTypeKey?: string | null;
+  objectTypeName?: string | null;
+  objectTypePluralName?: string | null;
+}
+
+export interface WorkItem {
+  id: string;
+  /** Explicit alias for `id`; nested API payloads use `workflowItemId`. */
+  workflowItemId: string;
   workspaceId: string;
   workflowId: string;
+  /** The durable Record this participation is backed by. */
+  recordId: string;
   stateId: string;
-  key: string;
+  ownerUserId: string | null;
+  ownerTeamId: string | null;
+  waitingOn: WorkItemWait | null;
+  participation: string;
+  version: number;
+  /** Durable identity: `displayName` and `key` come from the Record. */
+  record: WorkItemRecordRef;
+  /**
+   * Base Record fields mirrored onto the participation for list/board rendering.
+   * The canonical values live on `record` and the Record's Object Type schema.
+   */
+  key: string | null;
   number: number;
   title: string;
   description: string | null;
-  priority: TicketPriority;
-  ownerUserId: string | null;
-  ownerTeamId: string | null;
+  priority: WorkItemPriority;
   structuredData: Record<string, unknown> | null;
-  version: number;
-  originTicketId: string | null;
+  originWorkflowItemId: string | null;
   createdByType: string;
   createdById: string | null;
   createdByLabel: string | null;
-  provenance: TicketProvenance | null;
+  provenance: WorkItemProvenance | null;
   enteredStateAt: number;
   lastActivityAt: number;
   dueAt: number | null;
   slaDueAt: number | null;
   closedAt: number | null;
+  completedAt: number | null;
   stateRunCount: number;
-  waitingOn: 'human' | 'agent' | 'approval' | 'trigger' | 'none' | null;
   createdAt: number;
   updatedAt: number;
 }
 
-export interface TicketListRow {
-  ticket: Ticket;
+export interface WorkItemListRow {
+  workItem: WorkItem;
   stateName: string;
   stateKind: string;
   stateCategory: string;
   ownerName: string | null;
-  labels: TicketLabelRef[];
+  labels: WorkItemLabelRef[];
   fields: Record<string, unknown>;
 }
 
-export interface TicketPage {
-  rows: TicketListRow[];
+export interface WorkItemPage {
+  rows: WorkItemListRow[];
   nextCursor: string | null;
   total: number;
 }
@@ -406,7 +446,7 @@ export interface GateDecision {
   createdAt: number;
 }
 
-export interface TicketFileLink {
+export interface WorkItemFileLink {
   id: string;
   filename: string;
   mimeType: string;
@@ -415,7 +455,7 @@ export interface TicketFileLink {
   relationship: string;
 }
 
-export interface TicketRunSummary {
+export interface WorkItemRunSummary {
   id: string;
   status: string;
   agentId: string;
@@ -427,7 +467,7 @@ export interface TicketRunSummary {
   error: string | null;
 }
 
-export interface TicketApprovalSummary {
+export interface WorkItemApprovalSummary {
   id: string;
   kind: string;
   title: string;
@@ -436,15 +476,21 @@ export interface TicketApprovalSummary {
   decidedAt: number | null;
 }
 
-export interface TicketRelationshipView {
+export interface WorkItemRelationshipView {
   id: string;
   type: string;
   direction: 'outgoing' | 'incoming';
-  ticket: { id: string; key: string; title: string; stateId: string; stateName: string | null };
+  workItem: {
+    id: string;
+    key: string | null;
+    title: string;
+    stateId: string;
+    stateName: string | null;
+  };
   createdAt: number;
 }
 
-export interface TicketNoteView {
+export interface WorkItemNoteView {
   id: string;
   authorType: string;
   authorId: string | null;
@@ -455,18 +501,20 @@ export interface TicketNoteView {
   editedAt: number | null;
 }
 
-export interface TicketDetail {
-  ticket: Ticket;
+export interface WorkItemDetail {
+  workItem: WorkItem;
   key: string;
   state: WorkflowState;
   workflow: { id: string; name: string; key: string };
   fields: Record<string, unknown>;
-  labels: TicketLabelRef[];
-  notes: TicketNoteView[];
-  relationships: TicketRelationshipView[];
-  files: TicketFileLink[];
-  runs: TicketRunSummary[];
-  approvals: TicketApprovalSummary[];
+  /** Effective form configuration (Object Type base fields + workflow overlay). */
+  fieldConfig?: WorkItemFieldConfig[];
+  labels: WorkItemLabelRef[];
+  notes: WorkItemNoteView[];
+  relationships: WorkItemRelationshipView[];
+  files: WorkItemFileLink[];
+  runs: WorkItemRunSummary[];
+  approvals: WorkItemApprovalSummary[];
   availableTransitions: AvailableTransition[];
   humanGate: HumanGateConfig | null;
   gateDecisions: GateDecision[];
@@ -478,9 +526,9 @@ export interface TicketDetail {
   };
 }
 
-export interface TicketFieldValuesResponse {
+export interface WorkItemFieldValuesResponse {
   fields: Record<string, unknown>;
-  config: TicketFieldConfig[];
+  config: WorkItemFieldConfig[];
 }
 
 export interface TransferPreview {
@@ -533,7 +581,7 @@ export type RunStepType =
 export interface AgentRun {
   id: string;
   workspaceId: string;
-  ticketId: string | null;
+  workflowItemId: string | null;
   workflowId: string;
   stateId: string;
   agentId: string;
@@ -599,20 +647,21 @@ export interface WorkEvent {
   seq: number;
   type: string;
   runId: string | null;
-  ticketId: string | null;
+  workflowItemId: string | null;
   data: unknown;
   createdAt: number;
 }
 
 /* ----------------------------------------------------------------- approvals */
 
-export type ApprovalKind = 'state_transition' | 'tool_call' | 'transfer' | 'ticket_creation';
+export type ApprovalKind = 'state_transition' | 'tool_call' | 'transfer' | 'record_creation';
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'cancelled' | 'expired';
 
 export interface ApprovalRequest {
   id: string;
   workspaceId: string;
-  ticketId: string | null;
+  recordId: string | null;
+  workflowItemId: string | null;
   workflowId: string | null;
   runId: string | null;
   stepId: string | null;
@@ -639,8 +688,8 @@ export interface ApprovalRequest {
 }
 
 export interface ApprovalView extends ApprovalRequest {
-  ticketKey: string | null;
-  ticketTitle: string | null;
+  recordKey: string | null;
+  recordTitle: string | null;
   runStatus: string | null;
 }
 
@@ -651,7 +700,7 @@ export interface SavedView {
   workspaceId: string;
   name: string;
   description: string | null;
-  scope: 'tickets' | 'files';
+  scope: 'workflowItems' | 'files';
   workflowId: string | null;
   filterAst: FilterAst | null;
   sort: SortSpec[] | null;
@@ -666,7 +715,7 @@ export interface SavedView {
 export interface AppliedSavedView {
   id: string;
   name: string;
-  scope: 'tickets' | 'files';
+  scope: 'workflowItems' | 'files';
   workflowId: string | null;
   filter: FilterAst | null;
   sort: SortSpec[];
@@ -708,7 +757,7 @@ export interface StateEntryView {
   workspaceId: string;
   scope: string;
   workflowId: string | null;
-  ticketId: string | null;
+  workflowItemId: string | null;
   agentId: string | null;
   runId: string | null;
   namespace: string;
@@ -733,7 +782,7 @@ export interface FileSummaryView {
   createdAt: number;
   provenance: { sourceType: string; sourceLabel: string | null } | null;
   workflowIds: string[];
-  ticketIds: string[];
+  workflowItemIds: string[];
 }
 
 /* ------------------------------------------------------- resources / people */
@@ -774,7 +823,7 @@ export interface Label {
   name: string;
   color: string | null;
   description: string | null;
-  ticketCount?: number;
+  itemCount?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -791,7 +840,7 @@ export interface AuditEventView {
   actorLabel: string | null;
   entityType: string | null;
   entityId: string | null;
-  ticketId: string | null;
+  workflowItemId: string | null;
   workflowId: string | null;
   runId: string | null;
   jobId: string | null;
@@ -807,8 +856,8 @@ export type TimelineFilter = 'all' | 'human' | 'agents' | 'fields' | 'states' | 
 
 /* ------------------------------------------------------------ my work views */
 
-/** A column in the dense ticket table; `field:<key>` keys render a typed field. */
-export interface TicketColumn {
+/** A column in the dense work-item table; `field:<key>` keys render a typed field. */
+export interface WorkItemColumn {
   key: string;
   label: string;
   type?: FieldType;
@@ -818,12 +867,12 @@ export interface TicketColumn {
 }
 
 export interface MyWorkResponse {
-  assigned: TicketListRow[];
-  waitingForMe: TicketListRow[];
-  waitingForAgent: TicketListRow[];
-  waitingForApproval: TicketListRow[];
-  needsAttention: TicketListRow[];
-  createdByMe: TicketListRow[];
+  assigned: WorkItemListRow[];
+  waitingForMe: WorkItemListRow[];
+  waitingForAgent: WorkItemListRow[];
+  waitingForApproval: WorkItemListRow[];
+  needsAttention: WorkItemListRow[];
+  createdByMe: WorkItemListRow[];
 }
 
 export type MyWorkBucket = keyof MyWorkResponse;

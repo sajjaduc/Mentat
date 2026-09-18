@@ -11,7 +11,7 @@ import { countPendingApprovals } from '$server/approvals/service';
 import { listMemberships } from '$server/auth/sessions';
 import { ensureBootstrapped } from '$server/bootstrap';
 import { getDb } from '$server/db/client';
-import { myWork } from '$server/tickets/service';
+import { myWork } from '$server/workflow-items/service';
 import { requireWorkspace } from '$server/workspaces/service';
 import type { LayoutServerLoad } from './$types';
 

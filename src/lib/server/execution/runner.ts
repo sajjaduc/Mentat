@@ -36,10 +36,11 @@ import {
   agents,
   agentVersions,
   approvalRequests,
-  type Ticket,
+  records,
   type Tool,
   tools,
   type WorkflowState,
+  workflowItems,
   workflowStates
 } from '../db/schema';
 import {
@@ -55,10 +56,9 @@ import type {
   ToolCallRequest,
   ToolDefinitionForModel
 } from '../providers/types';
-import { requireTicketSync } from '../tickets/service';
 import { type InvokeToolResult, invokeTool } from '../tools/invoke';
 import { toolRegistry as defaultToolRegistry } from '../tools/registry';
-import { buildAgentRunContext } from './context';
+import { buildRecordRunContext } from './context';
 import { publishRunEvent, RunEventTypes } from './events';
 import { resolveProviderForModel } from './provider-lookup';
 
@@ -77,7 +77,9 @@ export interface RunOutcome {
 
 export interface StartRunInput {
   workspaceId: string;
-  ticket: Ticket;
+  /** Universal-model subject: a WorkflowItem participation and its Record. */
+  workflowItemId?: string | null;
+  recordId?: string | null;
   state: WorkflowState;
   agentId: string;
   triggerType: AgentRun['triggerType'];
@@ -106,7 +108,8 @@ export function createAgentRunSync(tx: Executor, input: StartRunInput): AgentRun
     .values({
       id: uuidv7(now),
       workspaceId: input.workspaceId,
-      ticketId: input.ticket.id,
+      recordId: input.recordId ?? null,
+      workflowItemId: input.workflowItemId ?? null,
       workflowId: input.state.workflowId,
       stateId: input.state.id,
       agentId: agent.id,
@@ -138,10 +141,11 @@ export function createAgentRunSync(tx: Executor, input: StartRunInput): AgentRun
     actorLabel: agent.name,
     entityType: 'agent_run',
     entityId: run.id,
-    ticketId: input.ticket.id,
+    recordId: input.recordId ?? null,
+    workflowItemId: input.workflowItemId ?? null,
     workflowId: input.state.workflowId,
     runId: run.id,
-    summary: `${agent.name} started on ${input.ticket.key} (version ${version})`,
+    summary: `${agent.name} started on ${runSubjectLabel(input)} (version ${version})`,
     data: {
       agentVersion: version,
       modelId: snapshot.modelId,
@@ -156,7 +160,8 @@ export function createAgentRunSync(tx: Executor, input: StartRunInput): AgentRun
     {
       workspaceId: input.workspaceId,
       runId: run.id,
-      ticketId: input.ticket.id,
+      recordId: input.recordId ?? null,
+      workflowItemId: input.workflowItemId ?? null,
       type: RunEventTypes.runQueued,
       data: { runId: run.id, agentId: agent.id, agentName: agent.name, agentVersion: version }
     },
@@ -164,6 +169,10 @@ export function createAgentRunSync(tx: Executor, input: StartRunInput): AgentRun
   );
 
   return run;
+}
+
+function runSubjectLabel(input: StartRunInput): string {
+  return input.recordId ?? input.workflowItemId ?? 'work';
 }
 
 function buildAgentActor(
@@ -197,7 +206,24 @@ export async function executeAgentRun(
   const workspaceId = run.workspaceId;
   const agent = requireAgent(db, workspaceId, run.agentId);
   const { snapshot } = requireAgentVersion(db, workspaceId, agent, run.agentVersionId || null);
-  const ticket = run.ticketId ? requireTicketSync(db, workspaceId, run.ticketId) : null;
+  const workflowItem = run.workflowItemId
+    ? (db
+        .select()
+        .from(workflowItems)
+        .where(
+          and(eq(workflowItems.workspaceId, workspaceId), eq(workflowItems.id, run.workflowItemId))
+        )
+        .limit(1)
+        .all()[0] ?? null)
+    : null;
+  const record = run.recordId
+    ? (db
+        .select()
+        .from(records)
+        .where(and(eq(records.workspaceId, workspaceId), eq(records.id, run.recordId)))
+        .limit(1)
+        .all()[0] ?? null)
+    : null;
   const state = db
     .select()
     .from(workflowStates)
@@ -268,7 +294,8 @@ export async function executeAgentRun(
     publishRunEvent(db, {
       workspaceId,
       runId,
-      ticketId: run.ticketId,
+      recordId: run.recordId,
+      workflowItemId: run.workflowItemId,
       type: RunEventTypes.runWarning,
       data: { kind: 'reasoning', message: reasoning.warning }
     });
@@ -279,15 +306,20 @@ export async function executeAgentRun(
   let steps = loadSteps(db, runId);
   let messages: ChatMessage[];
   if (steps.length === 0) {
-    const built = await buildAgentRunContext(db, {
-      workspaceId,
-      ticket: ticket ?? missingTicket(workspaceId, run),
-      workflowId: run.workflowId,
-      stateId: state.id,
-      stateName: state.name,
-      agent: snapshot,
-      config: state.config?.context ?? null
-    });
+    const built =
+      workflowItem && record
+        ? await buildRecordRunContext(db, {
+            workspaceId,
+            workflowItemId: workflowItem.id,
+            recordId: record.id,
+            workflowId: run.workflowId,
+            stateId: state.id,
+            stateName: state.name,
+            agent: snapshot,
+            config: state.config?.context ?? null,
+            requiredSubmission: state.config?.requiredSubmission ?? null
+          })
+        : missingSubject(workspaceId, run);
     messages = built.messages;
     persistStep(db, {
       workspaceId,
@@ -377,7 +409,8 @@ export async function executeAgentRun(
           publishRunEvent(db, {
             workspaceId,
             runId,
-            ticketId: run.ticketId,
+            recordId: run.recordId,
+            workflowItemId: run.workflowItemId,
             type: RunEventTypes.runDelta,
             data: { content: delta }
           });
@@ -386,7 +419,8 @@ export async function executeAgentRun(
           publishRunEvent(db, {
             workspaceId,
             runId,
-            ticketId: run.ticketId,
+            recordId: run.recordId,
+            workflowItemId: run.workflowItemId,
             type: RunEventTypes.runReasoning,
             data: { content: delta }
           });
@@ -430,6 +464,46 @@ export async function executeAgentRun(
     ];
 
     if (generation.toolCalls.length === 0) {
+      // A state may enforce a structured record submission (ADR-0023): the model
+      // must have called the contract tool successfully before the run can end.
+      const required = state.config?.requiredSubmission;
+      if (required) {
+        const toolKey = required.toolKey ?? 'workflowItems.submit';
+        if (!submissionSatisfied(db, runId, toolKey)) {
+          const maxNudges = required.maxNudges ?? 2;
+          const nudges = countSteps(db, runId, 'contract.nudge');
+          if (nudges < maxNudges) {
+            const reminder =
+              `You have not submitted the required result. Call the \`${toolKey}\` tool now with the ` +
+              'validated record fields and the workflow directive, then finish.';
+            stepIndex += 1;
+            persistStep(db, {
+              workspaceId,
+              runId,
+              index: stepIndex,
+              type: 'thought',
+              name: 'contract.nudge',
+              status: 'completed',
+              output: { content: reminder }
+            });
+            publishRunEvent(db, {
+              workspaceId,
+              runId,
+              recordId: run.recordId,
+              workflowItemId: run.workflowItemId,
+              type: RunEventTypes.runWarning,
+              data: { kind: 'required_submission', message: reminder, nudge: nudges + 1 }
+            });
+            messages = [...messages, { role: 'user', content: reminder }];
+            continue;
+          }
+          const failure = errors.precondition(
+            `The run finished without a valid ${toolKey} submission`
+          );
+          failRun(db, run, failure);
+          return { status: 'failed', runId, error: failure.message, steps: executedSteps };
+        }
+      }
       // Terminal: the model produced a final answer.
       const output = parseRunOutput(generation.content, snapshot.outputSchema);
       succeedRun(db, run, {
@@ -496,7 +570,8 @@ export async function executeAgentRun(
         actorLabel: agent.name,
         entityType: 'agent_run',
         entityId: run.id,
-        ticketId: run.ticketId,
+        recordId: run.recordId,
+        workflowItemId: run.workflowItemId,
         workflowId: run.workflowId,
         runId,
         summary: `Tool call started: ${toolCall.name}`,
@@ -511,7 +586,6 @@ export async function executeAgentRun(
           const created = requestToolApproval(db, {
             run,
             actor,
-            ticket,
             toolCall,
             descriptor,
             reason: approval.reason
@@ -576,7 +650,8 @@ export async function executeAgentRun(
         toolCall,
         workspaceId,
         runId,
-        ticketId: run.ticketId,
+        recordId: run.recordId,
+        workflowItemId: run.workflowItemId,
         workflowId: run.workflowId,
         stepId: callIndex.toString()
       });
@@ -612,7 +687,8 @@ export async function executeAgentRun(
         actorLabel: agent.name,
         entityType: 'agent_run',
         entityId: run.id,
-        ticketId: run.ticketId,
+        recordId: run.recordId,
+        workflowItemId: run.workflowItemId,
         workflowId: run.workflowId,
         runId,
         summary: `${result.ok ? 'Tool call' : 'Tool call failed'}: ${toolCall.name}`,
@@ -628,7 +704,8 @@ export async function executeAgentRun(
       publishRunEvent(db, {
         workspaceId,
         runId,
-        ticketId: run.ticketId,
+        recordId: run.recordId,
+        workflowItemId: run.workflowItemId,
         type: result.ok ? RunEventTypes.toolCompleted : RunEventTypes.toolFailed,
         data: {
           toolKey: toolCall.name,
@@ -666,14 +743,23 @@ export async function executeAgentRun(
   return { status: 'failed', runId, error: exhausted.message, steps: executedSteps };
 }
 
-function missingTicket(workspaceId: string, run: AgentRun): Ticket {
-  throw errors.precondition('Agent runs require a ticket in this milestone', {
+function missingSubject(workspaceId: string, run: AgentRun): never {
+  throw errors.precondition('Agent runs require a workflow item and record', {
     workspaceId,
     runId: run.id
   });
 }
 
-void missingTicket;
+/** True when the run already holds a completed result for `toolKey`. */
+function submissionSatisfied(db: Executor, runId: string, toolKey: string): boolean {
+  return loadSteps(db, runId).some(
+    (step) => step.type === 'tool_result' && step.name === toolKey && step.status === 'completed'
+  );
+}
+
+function countSteps(db: Executor, runId: string, name: string): number {
+  return loadSteps(db, runId).filter((step) => step.name === name).length;
+}
 
 // ---------------------------------------------------------------------------
 // Provider interaction
@@ -757,7 +843,8 @@ async function generateWithRetry(options: {
       publishRunEvent(getDb(), {
         workspaceId: options.run.workspaceId,
         runId: options.run.id,
-        ticketId: options.run.ticketId,
+        recordId: options.run.recordId,
+        workflowItemId: options.run.workflowItemId,
         type: RunEventTypes.retryScheduled,
         data: { attempt, delayMs: delay, reason: appError.code }
       });
@@ -861,8 +948,13 @@ function isMutatingCall(descriptor: ToolDescriptor, toolCall: ToolCallRequest): 
     return true;
   }
   const readOnlyPrefixes = [
-    'mentat.ticket.get',
-    'mentat.ticket.fields.get',
+    'workflowItems.get',
+    'workflowItems.search',
+    'workflowItems.getFields',
+    'records.get',
+    'records.search',
+    'records.getFields',
+    'objectTypes.list',
     'mentat.state.get',
     'mentat.state.list',
     'mentat.data.get',
@@ -887,7 +979,8 @@ async function runTool(
     toolCall: ToolCallRequest;
     workspaceId: string;
     runId: string;
-    ticketId: string | null;
+    recordId: string | null;
+    workflowItemId: string | null;
     workflowId: string | null;
     stepId: string | null;
   }
@@ -895,7 +988,8 @@ async function runTool(
   publishRunEvent(db, {
     workspaceId: options.workspaceId,
     runId: options.runId,
-    ticketId: options.ticketId,
+    recordId: options.recordId,
+    workflowItemId: options.workflowItemId,
     type: RunEventTypes.toolStarted,
     data: { toolKey: options.descriptor.key, arguments: options.toolCall.arguments }
   });
@@ -909,7 +1003,8 @@ async function runTool(
     input: options.toolCall.arguments,
     actor: options.actor,
     workspaceId: options.workspaceId,
-    ticketId: options.ticketId,
+    recordId: options.recordId,
+    workflowItemId: options.workflowItemId,
     workflowId: options.workflowId,
     runId: options.runId,
     stepId: options.stepId,
@@ -949,7 +1044,6 @@ function requestToolApproval(
   input: {
     run: AgentRun;
     actor: ActorContext;
-    ticket: Ticket | null;
     toolCall: ToolCallRequest;
     descriptor: ToolDescriptor;
     reason?: string;
@@ -962,7 +1056,8 @@ function requestToolApproval(
     .values({
       id: uuidv7(now),
       workspaceId: input.run.workspaceId,
-      ticketId: input.run.ticketId,
+      recordId: input.run.recordId,
+      workflowItemId: input.run.workflowItemId,
       workflowId: input.run.workflowId,
       runId: input.run.id,
       kind: 'tool_call',
@@ -974,8 +1069,8 @@ function requestToolApproval(
         arguments: input.toolCall.arguments
       }) as never,
       contextSnapshot: redactor.value({
-        ticketKey: input.ticket?.key ?? null,
-        ticketTitle: input.ticket?.title ?? null,
+        recordId: input.run.recordId,
+        workflowItemId: input.run.workflowItemId,
         agentId: input.run.agentId
       }) as never,
       requestedByType: 'agent',
@@ -995,7 +1090,8 @@ function requestToolApproval(
     actorId: input.run.agentId,
     entityType: 'approval',
     entityId: row.id,
-    ticketId: input.run.ticketId,
+    recordId: input.run.recordId,
+    workflowItemId: input.run.workflowItemId,
     workflowId: input.run.workflowId,
     runId: input.run.id,
     approvalId: row.id,
@@ -1007,7 +1103,8 @@ function requestToolApproval(
   publishRunEvent(db, {
     workspaceId: input.run.workspaceId,
     runId: input.run.id,
-    ticketId: input.run.ticketId,
+    recordId: input.run.recordId,
+    workflowItemId: input.run.workflowItemId,
     type: RunEventTypes.approvalRequested,
     data: { approvalId: row.id, toolKey: input.descriptor.key }
   });
@@ -1080,7 +1177,6 @@ async function rebuildMessages(
   steps: AgentRunStep[]
 ): Promise<ChatMessage[]> {
   const contextStep = steps.find((step) => step.type === 'context');
-  const ticket = run.ticketId ? requireTicketSync(db, run.workspaceId, run.ticketId) : null;
   let base: ChatMessage[];
   if (contextStep) {
     const snapshotData = contextStep.output as { system?: string; user?: string } | null;
@@ -1089,15 +1185,20 @@ async function rebuildMessages(
       { role: 'user', content: snapshotData?.user ?? '' }
     ];
   } else {
-    const built = await buildAgentRunContext(db, {
-      workspaceId: run.workspaceId,
-      ticket: (ticket as Ticket) ?? missingTicket(run.workspaceId, run),
-      workflowId: run.workflowId,
-      stateId: state.id,
-      stateName: state.name,
-      agent: snapshot,
-      config: state.config?.context ?? null
-    });
+    const built =
+      run.workflowItemId && run.recordId
+        ? await buildRecordRunContext(db, {
+            workspaceId: run.workspaceId,
+            workflowItemId: run.workflowItemId,
+            recordId: run.recordId,
+            workflowId: run.workflowId,
+            stateId: state.id,
+            stateName: state.name,
+            agent: snapshot,
+            config: state.config?.context ?? null,
+            requiredSubmission: state.config?.requiredSubmission ?? null
+          })
+        : missingSubject(run.workspaceId, run);
     base = built.messages;
   }
 
@@ -1210,13 +1311,9 @@ async function reconcilePendingToolCalls(
     const approval = existingApproval(db, options.run.id, toolCall.id);
     if (policy.required && (!approval || approval.status === 'pending')) {
       if (!approval) {
-        const ticket = options.run.ticketId
-          ? requireTicketSync(db, options.workspaceId, options.run.ticketId)
-          : null;
         const created = requestToolApproval(db, {
           run: options.run,
           actor: options.actor,
-          ticket,
           toolCall,
           descriptor,
           reason: policy.reason
@@ -1279,7 +1376,8 @@ async function reconcilePendingToolCalls(
       toolCall,
       workspaceId: options.workspaceId,
       runId: options.run.id,
-      ticketId: options.run.ticketId,
+      recordId: options.run.recordId,
+      workflowItemId: options.run.workflowItemId,
       workflowId: options.run.workflowId,
       stepId: `reconcile-${stepIndex + 1}`
     });
@@ -1335,7 +1433,8 @@ export function markRunStatus(
     publishRunEvent(db, {
       workspaceId: run.workspaceId,
       runId: run.id,
-      ticketId: run.ticketId,
+      recordId: run.recordId,
+      workflowItemId: run.workflowItemId,
       type: RunEventTypes.runStarted,
       data: { runId: run.id }
     });
@@ -1375,7 +1474,8 @@ function succeedRun(
     actorId: run.agentId,
     entityType: 'agent_run',
     entityId: run.id,
-    ticketId: run.ticketId,
+    recordId: run.recordId,
+    workflowItemId: run.workflowItemId,
     workflowId: run.workflowId,
     runId: run.id,
     summary: 'Agent run completed',
@@ -1388,7 +1488,8 @@ function succeedRun(
     {
       workspaceId: run.workspaceId,
       runId: run.id,
-      ticketId: run.ticketId,
+      recordId: run.recordId,
+      workflowItemId: run.workflowItemId,
       type: RunEventTypes.runCompleted,
       data: { usage: input.usage ?? null, stepId: input.stepId ?? null }
     },
@@ -1417,7 +1518,8 @@ export function failRun(db: Executor, run: AgentRun, error: ReturnType<typeof to
     actorId: run.agentId,
     entityType: 'agent_run',
     entityId: run.id,
-    ticketId: run.ticketId,
+    recordId: run.recordId,
+    workflowItemId: run.workflowItemId,
     workflowId: run.workflowId,
     runId: run.id,
     summary: `Agent run failed: ${error.message}`,
@@ -1430,7 +1532,8 @@ export function failRun(db: Executor, run: AgentRun, error: ReturnType<typeof to
     {
       workspaceId: run.workspaceId,
       runId: run.id,
-      ticketId: run.ticketId,
+      recordId: run.recordId,
+      workflowItemId: run.workflowItemId,
       type: RunEventTypes.runFailed,
       data: { error: error.message, code: error.code }
     },
@@ -1450,7 +1553,8 @@ export function cancelRun(db: Executor, run: AgentRun, reason: string): void {
     actorType: 'system',
     entityType: 'agent_run',
     entityId: run.id,
-    ticketId: run.ticketId,
+    recordId: run.recordId,
+    workflowItemId: run.workflowItemId,
     runId: run.id,
     summary: `Agent run cancelled: ${reason}`,
     occurredAt: now
@@ -1460,7 +1564,8 @@ export function cancelRun(db: Executor, run: AgentRun, reason: string): void {
     {
       workspaceId: run.workspaceId,
       runId: run.id,
-      ticketId: run.ticketId,
+      recordId: run.recordId,
+      workflowItemId: run.workflowItemId,
       type: RunEventTypes.runCancelled,
       data: { reason }
     },
@@ -1536,17 +1641,19 @@ export async function getRunDetail(db: Executor, workspaceId: string, runId: str
   };
 }
 
-/** Runs for a ticket, newest first — the Agent Work tab. */
-export async function listTicketRuns(
+/** Runs for a work item, newest first — the Agent Work tab. */
+export async function listWorkflowItemRuns(
   db: Executor,
   workspaceId: string,
-  ticketId: string,
+  workflowItemId: string,
   options: { limit?: number } = {}
 ) {
   return db
     .select()
     .from(agentRuns)
-    .where(and(eq(agentRuns.workspaceId, workspaceId), eq(agentRuns.ticketId, ticketId)))
+    .where(
+      and(eq(agentRuns.workspaceId, workspaceId), eq(agentRuns.workflowItemId, workflowItemId))
+    )
     .orderBy(asc(agentRuns.createdAt))
     .limit(Math.min(options.limit ?? 50, 200))
     .all();

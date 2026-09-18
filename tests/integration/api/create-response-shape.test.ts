@@ -194,7 +194,7 @@ describe('create responses match list rows', () => {
     const widget = await call('POST', `/dashboards/${dashboardId}/widgets`, {
       title: 'Count',
       type: 'kpi',
-      dataSource: { kind: 'tickets' },
+      dataSource: { kind: 'workflow_items' },
       measure: { aggregation: 'count' }
     });
     expect(widget.status).toBe(201);

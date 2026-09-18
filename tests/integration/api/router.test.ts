@@ -18,7 +18,7 @@ import {
   systemActor
 } from '../../../src/lib/server/core/context';
 import { uuidv7 } from '../../../src/lib/server/core/ids';
-import { users, workflowStates } from '../../../src/lib/server/db/schema';
+import { users, workflowStates, workspaceMembers } from '../../../src/lib/server/db/schema';
 import { clearProviderOverrides } from '../../../src/lib/server/providers/registry';
 import { resetToolRegistry } from '../../../src/lib/server/tools/registry';
 import { createTestDatabase, type TestDatabase } from '../../helpers/db';
@@ -49,6 +49,56 @@ async function call(
     request: new Request(`http://localhost/api${path}`, { method })
   });
   return result;
+}
+
+/**
+ * Object Types are explicit in the universal model (ADR-0021): a workflow must
+ * name one, and a Record instantiates one. Tests create their own rather than
+ * relying on a seeded Ticket type.
+ */
+async function createObjectTypeViaApi(
+  name = 'Claim',
+  settings?: Record<string, unknown>
+): Promise<string> {
+  const result = await call('POST', '/object-types', { body: { name, settings } });
+  expect(result.status).toBe(201);
+  return (result.body as { objectType: { id: string } }).objectType.id;
+}
+
+async function createWorkflowViaApi(options: {
+  name?: string;
+  template?: 'blank' | 'basic' | 'intake' | 'claims' | 'support';
+  objectTypeId: string;
+}): Promise<string> {
+  const result = await call('POST', '/workflows', {
+    body: {
+      name: options.name ?? 'Claims',
+      template: options.template ?? 'claims',
+      objectTypeId: options.objectTypeId
+    }
+  });
+  expect(result.status).toBe(201);
+  return (result.body as { workflow: { id: string } }).workflow.id;
+}
+
+/** Start work: put a Record into a workflow and return the work item. */
+async function startWorkViaApi(options: {
+  workflowId: string;
+  stateId?: string;
+  displayName?: string;
+  fields?: Record<string, unknown>;
+}): Promise<{ id: string; recordId: string }> {
+  const result = await call('POST', '/workflow-items', {
+    body: {
+      workflowId: options.workflowId,
+      stateId: options.stateId,
+      fields: options.fields,
+      record: { displayName: options.displayName ?? 'Work' }
+    }
+  });
+  expect(result.status).toBe(201);
+  const item = (result.body as { workflowItem: { id: string; recordId: string } }).workflowItem;
+  return { id: item.id, recordId: item.recordId };
 }
 
 beforeEach(async () => {
@@ -113,9 +163,9 @@ beforeEach(async () => {
 
 describe('route matching', () => {
   test('captures path parameters and refuses wrong shapes', () => {
-    expect(matchPath('/tickets/:id', '/tickets/abc')).toEqual({ id: 'abc' });
-    expect(matchPath('/tickets/:id', '/tickets/abc/notes')).toBeNull();
-    expect(matchPath('/tickets', '/tickets')).toEqual({});
+    expect(matchPath('/workflow-items/:id', '/workflow-items/abc')).toEqual({ id: 'abc' });
+    expect(matchPath('/workflow-items/:id', '/workflow-items/abc/notes')).toBeNull();
+    expect(matchPath('/workflow-items', '/workflow-items')).toEqual({});
   });
 
   test('resolves a route by method', () => {
@@ -187,6 +237,81 @@ describe('authentication and permissions', () => {
     expect(result.status).toBe(200);
   });
 
+  test('gives a new account a workspace even when the instance already has one', async () => {
+    // Regression guard: registration used to provision a workspace only on an empty
+    // database, so on a warmed instance it returned `workspaceId: null`. The account
+    // could sign in but every workspace-scoped request failed with
+    // "Workspace none not found" and no way to create one from the UI.
+    const result = await dispatchApi({
+      db: handle.db,
+      method: 'POST',
+      pathname: '/auth/register',
+      actor: null,
+      query: {},
+      rawBody: JSON.stringify({
+        email: 'second-account@example.test',
+        name: 'Second Account',
+        password: 'second-account-password'
+      }),
+      request: new Request('http://localhost/api/auth/register', { method: 'POST' })
+    });
+    expect(result.status).toBe(201);
+    const registered = result.body as { user: { id: string }; workspaceId: string | null };
+    const registeredWorkspaceId = registered.workspaceId;
+    if (!registeredWorkspaceId) throw new Error('registration returned no workspace');
+    expect(registeredWorkspaceId).not.toBe(workspaceId);
+
+    const memberships = handle.db
+      .select({ workspaceId: workspaceMembers.workspaceId, role: workspaceMembers.role })
+      .from(workspaceMembers)
+      .where(eq(workspaceMembers.userId, registered.user.id))
+      .all();
+    expect(memberships).toHaveLength(1);
+    expect(memberships[0]?.workspaceId).toBe(registeredWorkspaceId);
+    expect(memberships[0]?.role).toBe('owner');
+  });
+
+  test('lets a signed-in account with no workspace create its first one', async () => {
+    // The self-heal path the shell falls back to when an admin removes an account's
+    // last membership: creating a workspace must not require a permission that only
+    // members of an existing workspace can hold.
+    const userId = uuidv7();
+    const now = Date.now();
+    handle.db
+      .insert(users)
+      .values({
+        id: userId,
+        email: 'workspace-less@example.test',
+        name: 'Workspace Less',
+        createdAt: now,
+        updatedAt: now
+      })
+      .run();
+    const workspaceLess = createActorContext({
+      workspaceId: 'none',
+      actorType: 'user',
+      actorId: userId,
+      actorLabel: 'Workspace Less',
+      role: 'member',
+      permissions: []
+    });
+
+    const created = await call('POST', '/workspaces', {
+      actor: workspaceLess,
+      body: { name: 'First Workspace' }
+    });
+    expect(created.status).toBe(201);
+    const createdId = (created.body as { workspace: { id: string } }).workspace.id;
+    const memberships = handle.db
+      .select({ workspaceId: workspaceMembers.workspaceId, role: workspaceMembers.role })
+      .from(workspaceMembers)
+      .where(eq(workspaceMembers.userId, userId))
+      .all();
+    expect(memberships).toHaveLength(1);
+    expect(memberships[0]?.workspaceId).toBe(createdId);
+    expect(memberships[0]?.role).toBe('owner');
+  });
+
   test('returns 405 with an Allow header for a wrong method', async () => {
     const result = await call('DELETE', '/workflows');
     expect(result.status).toBe(405);
@@ -223,17 +348,10 @@ describe('validation', () => {
   });
 });
 
-describe('workflow and ticket lifecycle through the API', () => {
-  async function createWorkflowViaApi(): Promise<string> {
-    const result = await call('POST', '/workflows', {
-      body: { name: 'Claims', template: 'claims' }
-    });
-    expect(result.status).toBe(201);
-    return (result.body as { workflow: { id: string } }).workflow.id;
-  }
-
+describe('workflow and work-item lifecycle through the API', () => {
   test('creates a workflow from a template with states and transitions', async () => {
-    const workflowId = await createWorkflowViaApi();
+    const objectTypeId = await createObjectTypeViaApi();
+    const workflowId = await createWorkflowViaApi({ objectTypeId });
     const detail = await call('GET', `/workflows/${workflowId}`);
     expect(detail.status).toBe(200);
     const body = detail.body as {
@@ -246,81 +364,83 @@ describe('workflow and ticket lifecycle through the API', () => {
     expect(body.workflow.key.length).toBeGreaterThanOrEqual(2);
   });
 
-  test('creates a ticket, moves it and reads it back with its history', async () => {
-    const workflowId = await createWorkflowViaApi();
-
-    const created = await call('POST', '/tickets', {
-      body: { workflowId, title: 'Customer question' }
+  test('starts work, moves it and reads it back with its history', async () => {
+    const objectTypeId = await createObjectTypeViaApi('Claim', {
+      numbered: true,
+      keyPrefix: 'CLM'
     });
-    expect(created.status).toBe(201);
-    const ticketId = (created.body as { ticket: { id: string; key: string } }).ticket.id;
-    expect((created.body as { ticket: { key: string } }).ticket.key).toMatch(/^[A-Z]+-\d+$/);
+    const workflowId = await createWorkflowViaApi({ objectTypeId });
+    const item = await startWorkViaApi({ workflowId, displayName: 'Customer question' });
 
-    const detail = await call('GET', `/tickets/${ticketId}`);
+    const detail = await call('GET', `/workflow-items/${item.id}`);
     expect(detail.status).toBe(200);
+    const record = (detail.body as { record: { id: string; key: string | null } }).record;
+    expect(record.key).toMatch(/^[A-Z]+-\d+$/);
+
     const transitions = (
       detail.body as {
-        availableTransitions: Array<{ id: string; toStateName: string; allowed: boolean }>;
+        availableTransitions: Array<{ id: string; toStateName: string }>;
       }
     ).availableTransitions;
     expect(transitions.length).toBeGreaterThan(0);
 
-    const target = transitions.find((transition) => transition.allowed);
+    const target = transitions[0];
     expect(target).toBeDefined();
 
-    const moved = await call('POST', `/tickets/${ticketId}/transitions`, {
+    const moved = await call('POST', `/workflow-items/${item.id}/transitions`, {
       body: { transitionId: target?.id, comment: 'Starting work' }
     });
     expect(moved.status).toBe(200);
 
-    const timeline = await call('GET', `/tickets/${ticketId}/timeline`);
+    const timeline = await call('GET', `/workflow-items/${item.id}/timeline`);
     const events = (timeline.body as { events: Array<{ action: string }> }).events;
     const actions = events.map((event) => event.action);
-    expect(actions).toContain('ticket.created');
-    expect(actions).toContain('ticket.state.entered');
+    expect(actions).toContain('workflow_item.created');
+    expect(actions).toContain('workflow_item.state.entered');
 
     const board = await call('GET', `/workflows/${workflowId}/board`);
     expect(board.status).toBe(200);
-    const columns = (board.body as { columns: Array<{ tickets: unknown[] }> }).columns;
-    expect(columns.some((column) => column.tickets.length > 0)).toBe(true);
+    const columns = (board.body as { columns: Array<{ items: unknown[] }> }).columns;
+    expect(columns.some((column) => column.items.length > 0)).toBe(true);
   });
 
   test('sets typed field values and validates them', async () => {
-    const workflowId = await createWorkflowViaApi();
-    const field = await call('POST', '/fields', {
-      body: { key: 'claim_amount', name: 'Claim Amount', type: 'currency' }
-    });
-    expect(field.status).toBe(201);
-    const fieldId = (field.body as { field: { id: string } }).field.id;
-
-    const configured = await call('PUT', `/workflows/${workflowId}/fields`, {
-      body: { fields: [{ fieldDefinitionId: fieldId, required: true }] }
+    const objectTypeId = await createObjectTypeViaApi();
+    const configured = await call('PUT', `/object-types/${objectTypeId}/fields`, {
+      body: {
+        fields: [
+          { key: 'claim_amount', name: 'Claim Amount', type: 'currency' },
+          { key: 'claim_title', name: 'Claim Title', type: 'short_text', isPrimaryDisplay: true }
+        ]
+      }
     });
     expect(configured.status).toBe(200);
 
-    const ticket = await call('POST', '/tickets', {
-      body: { workflowId, title: 'Amounts', fields: { claim_amount: 1200 } }
+    const workflowId = await createWorkflowViaApi({ objectTypeId });
+    const item = await startWorkViaApi({
+      workflowId,
+      displayName: 'Amounts',
+      fields: { claim_amount: 1200 }
     });
-    const ticketId = (ticket.body as { ticket: { id: string } }).ticket.id;
 
-    const read = await call('GET', `/tickets/${ticketId}/fields`);
+    const read = await call('GET', `/workflow-items/${item.id}/fields`);
     expect((read.body as { fields: Record<string, unknown> }).fields.claim_amount).toBe(1200);
 
-    const invalid = await call('PUT', `/tickets/${ticketId}/fields`, {
+    const invalid = await call('PUT', `/workflow-items/${item.id}/fields`, {
       body: { values: { claim_amount: 'not money' } }
     });
     expect(invalid.status).toBe(422);
   });
 
-  test('refuses to delete a state that still holds tickets', async () => {
-    const workflowId = await createWorkflowViaApi();
-    await call('POST', '/tickets', { body: { workflowId, title: 'Occupies a state' } });
+  test('refuses to delete a state that still holds work items', async () => {
+    const objectTypeId = await createObjectTypeViaApi();
+    const workflowId = await createWorkflowViaApi({ objectTypeId });
+    await startWorkViaApi({ workflowId, displayName: 'Occupies a state' });
     const detail = await call('GET', `/workflows/${workflowId}`);
     const states = (detail.body as { states: Array<{ id: string }> }).states;
     const populated = states[0] as { id: string };
-    // The start state holds the ticket, so removal must be refused.
-    const occupants = (detail.body as { states: Array<{ id: string }> }).states.length;
-    expect(occupants).toBeGreaterThan(0);
+    // The start state holds the work item, so removal must be refused.
+    expect(states.length).toBeGreaterThan(0);
     const workflowStatesRows = handle.db
       .select()
       .from(workflowStates)
@@ -332,21 +452,79 @@ describe('workflow and ticket lifecycle through the API', () => {
   });
 });
 
+describe('schema source routes', () => {
+  test('tests a Zod source against a sample without saving anything', async () => {
+    const result = await call('POST', '/schemas/test', {
+      body: { source: `z.object({ code: z.string().min(3) })`, sample: { code: 'ab' } }
+    });
+    expect(result.status).toBe(200);
+    const body = result.body as {
+      ok: boolean;
+      compiled: boolean;
+      issues: Array<{ path: string }>;
+      fields: Array<{ key: string }>;
+    };
+    expect(body.compiled).toBe(true);
+    expect(body.ok).toBe(false);
+    expect(body.issues.some((issue) => issue.path === 'code')).toBe(true);
+    expect(body.fields.map((field) => field.key)).toEqual(['code']);
+  });
+
+  test('saves an Object Type schema and returns its projected fields', async () => {
+    const objectTypeId = await createObjectTypeViaApi('Policy');
+    const saved = await call('PUT', `/object-types/${objectTypeId}/zod-schema`, {
+      body: { source: `z.object({ policy_number: z.string().min(3) })` }
+    });
+    expect(saved.status).toBe(200);
+    const body = saved.body as { fields: Array<{ key: string; type: string }> };
+    expect(body.fields[0]?.key).toBe('policy_number');
+
+    const listed = await call('GET', `/object-types/${objectTypeId}/fields`);
+    const fields = (listed.body as { fields: Array<{ key: string }> }).fields;
+    expect(fields.map((field) => field.key)).toEqual(['policy_number']);
+  });
+
+  test('saves a workflow overlay schema', async () => {
+    const objectTypeId = await createObjectTypeViaApi('Policy');
+    const workflowId = await createWorkflowViaApi({ objectTypeId });
+    const saved = await call('PUT', `/workflows/${workflowId}/zod-schema`, {
+      body: { source: `z.object({ reviewer: z.string().min(3) })` }
+    });
+    expect(saved.status).toBe(200);
+    const fields = (saved.body as { fields: Array<{ definition: { key: string } }> }).fields;
+    expect(fields[0]?.definition.key).toBe('reviewer');
+  });
+
+  test('denies schema authoring to a member', async () => {
+    const objectTypeId = await createObjectTypeViaApi('Policy');
+    const deniedSave = await call('PUT', `/object-types/${objectTypeId}/zod-schema`, {
+      actor: viewer,
+      body: { source: `z.object({ a: z.string() })` }
+    });
+    expect(deniedSave.status).toBe(403);
+
+    const deniedTest = await call('POST', '/schemas/test', {
+      actor: viewer,
+      body: { source: `z.object({ a: z.string() })`, sample: { a: 'x' } }
+    });
+    expect(deniedTest.status).toBe(403);
+  });
+});
+
 describe('human gates and cross-workflow transfer through the API', () => {
-  test('an agent cannot move a ticket out of a human-gated state', async () => {
-    const created = (
-      await call('POST', '/workflows', { body: { name: 'Review', template: 'claims' } })
-    ).body as { workflow: { id: string } };
-    const id = created.workflow.id;
+  test('an agent cannot move work out of a human-gated state', async () => {
+    const objectTypeId = await createObjectTypeViaApi('Claim');
+    const id = await createWorkflowViaApi({ name: 'Review', objectTypeId });
     const detail = await call('GET', `/workflows/${id}`);
     const states = (detail.body as { states: Array<{ id: string; name: string }> }).states;
     const review = states.find((state) => state.name === 'Human review');
     expect(review).toBeDefined();
 
-    const ticket = await call('POST', '/tickets', {
-      body: { workflowId: id, stateId: review?.id, title: 'Needs review' }
+    const item = await startWorkViaApi({
+      workflowId: id,
+      stateId: review?.id,
+      displayName: 'Needs review'
     });
-    const ticketId = (ticket.body as { ticket: { id: string } }).ticket.id;
 
     const agent: ActorContext = {
       ...owner,
@@ -355,125 +533,126 @@ describe('human gates and cross-workflow transfer through the API', () => {
       actorId: uuidv7(),
       actorLabel: 'Triage agent'
     };
-    const attempt = await call('POST', `/tickets/${ticketId}/transitions`, {
+    const attempt = await call('POST', `/workflow-items/${item.id}/transitions`, {
       actor: agent,
       body: { targetStateId: states.find((state) => state.name === 'Approved')?.id }
     });
-    expect(attempt.status).toBe(409);
-    expect((attempt.body as { error: { code: string } }).error.code).toBe('human_gate_required');
+    // A human gate admits only a human decision; an agent is refused.
+    expect(attempt.status).toBe(403);
+    expect((attempt.body as { error: { code: string } }).error.code).toBe('forbidden');
   });
 
   test('a human decides the gate and the decision is recorded', async () => {
-    const created = (
-      await call('POST', '/workflows', { body: { name: 'Gated', template: 'claims' } })
-    ).body as { workflow: { id: string } };
-    const workflowId = created.workflow.id;
+    const objectTypeId = await createObjectTypeViaApi('Claim');
+    const workflowId = await createWorkflowViaApi({ name: 'Gated', objectTypeId });
     const detail = await call('GET', `/workflows/${workflowId}`);
     const states = (detail.body as { states: Array<{ id: string; name: string }> }).states;
     const reviewState = states.find((state) => state.name === 'Human review');
     const approvedState = states.find((state) => state.name === 'Approved');
     const investigative = states.find((state) => state.name === 'Investigation');
 
-    const ticket = await call('POST', '/tickets', {
-      body: { workflowId, stateId: investigative?.id, title: 'Claim' }
+    const item = await startWorkViaApi({
+      workflowId,
+      stateId: investigative?.id,
+      displayName: 'Claim'
     });
-    const ticketId = (ticket.body as { ticket: { id: string } }).ticket.id;
 
     // Move into the gate.
-    const intoGate = await call('GET', `/tickets/${ticketId}`);
+    const intoGate = await call('GET', `/workflow-items/${item.id}`);
     const available = (
       intoGate.body as { availableTransitions: Array<{ id: string; toStateId: string }> }
     ).availableTransitions;
     const toReview = available.find((transition) => transition.toStateId === reviewState?.id);
     expect(toReview).toBeDefined();
-    await call('POST', `/tickets/${ticketId}/transitions`, {
+    await call('POST', `/workflow-items/${item.id}/transitions`, {
       body: { transitionId: toReview?.id }
     });
 
     // A decision needs a comment (the template requires one).
-    const noComment = await call('POST', `/tickets/${ticketId}/transitions`, {
+    const noComment = await call('POST', `/workflow-items/${item.id}/transitions`, {
       body: { targetStateId: approvedState?.id }
     });
     expect(noComment.status).toBe(422);
 
-    const decided = await call('POST', `/tickets/${ticketId}/transitions`, {
+    const decided = await call('POST', `/workflow-items/${item.id}/transitions`, {
       body: { targetStateId: approvedState?.id, comment: 'Reviewed and approved' }
     });
     expect(decided.status).toBe(200);
 
-    const after = await call('GET', `/tickets/${ticketId}`);
-    expect((after.body as { gateDecisions: unknown[] }).gateDecisions).toHaveLength(1);
+    const after = await call('GET', `/workflow-items/${item.id}`);
+    expect((after.body as { state: { id: string } }).state.id).toBe(approvedState!.id);
+
+    // The gate decision and its comment are recorded on the state interval.
+    const history = (
+      after.body as { stateHistory: Array<{ stateName: string; reason: string | null }> }
+    ).stateHistory;
+    const approvedInterval = history.find((entry) => entry.stateName === 'Approved');
+    expect(approvedInterval?.reason).toBe('Reviewed and approved');
   });
 
-  test('transfers a ticket to another workflow preserving identity', async () => {
-    const intake = (
-      await call('POST', '/workflows', { body: { name: 'Intake', template: 'intake' } })
-    ).body as { workflow: { id: string } };
-    const claims = (
-      await call('POST', '/workflows', { body: { name: 'Claims', template: 'claims' } })
-    ).body as { workflow: { id: string } };
-
-    const ticket = await call('POST', '/tickets', {
-      body: { workflowId: intake.workflow.id, title: 'Inbound claim' }
+  test('transfers work to another workflow preserving Record identity', async () => {
+    const objectTypeId = await createObjectTypeViaApi('Claim', {
+      numbered: true,
+      keyPrefix: 'CLM'
     });
-    const ticketId = (ticket.body as { ticket: { id: string; key: string } }).ticket.id;
-    const originalKey = (ticket.body as { ticket: { key: string } }).ticket.key;
+    const intake = await createWorkflowViaApi({
+      name: 'Intake',
+      template: 'intake',
+      objectTypeId
+    });
+    const claims = await createWorkflowViaApi({ name: 'Claims', objectTypeId });
 
-    const preview = await call('POST', `/tickets/${ticketId}/transfer-preview`, {
-      body: { targetWorkflowId: claims.workflow.id }
+    const item = await startWorkViaApi({
+      workflowId: intake,
+      displayName: 'Inbound claim'
+    });
+    const original = await call('GET', `/workflow-items/${item.id}`);
+    const originalKey = (original.body as { record: { key: string } }).record.key;
+
+    const preview = await call('POST', `/workflow-items/${item.id}/transfer-preview`, {
+      body: { targetWorkflowId: claims }
     });
     expect(preview.status).toBe(200);
     expect((preview.body as { policy: { allowed: boolean } }).policy.allowed).toBe(true);
 
-    const transferred = await call('POST', `/tickets/${ticketId}/transfer`, {
-      body: { targetWorkflowId: claims.workflow.id, reason: 'Classified as a claim' }
+    const transferred = await call('POST', `/workflow-items/${item.id}/transfer`, {
+      body: { targetWorkflowId: claims, reason: 'Classified as a claim' }
     });
     expect(transferred.status).toBe(200);
 
-    const after = await call('GET', `/tickets/${ticketId}`);
-    expect((after.body as { ticket: { key: string; workflowId: string } }).ticket.key).toBe(
-      originalKey
-    );
-    expect((after.body as { ticket: { workflowId: string } }).ticket.workflowId).toBe(
-      claims.workflow.id
-    );
+    const destinationId = (transferred.body as { workflowItem: { id: string } }).workflowItem.id;
+    const after = await call('GET', `/workflow-items/${destinationId}`);
+    expect((after.body as { record: { key: string } }).record.key).toBe(originalKey);
+    expect((after.body as { workflowId: string }).workflowId).toBe(claims);
   });
 });
 
 describe('tenant isolation', () => {
   test('another workspace cannot read a workflow by id', async () => {
-    const created = (await call('POST', '/workflows', { body: { name: 'Private' } })).body as {
-      workflow: { id: string };
-    };
-    const workflowId = created.workflow.id;
+    const objectTypeId = await createObjectTypeViaApi();
+    const created = await createWorkflowViaApi({ name: 'Private', objectTypeId });
 
-    const result = await call('GET', `/workflows/${workflowId}`, { actor: outsider });
+    const result = await call('GET', `/workflows/${created}`, { actor: outsider });
     expect(result.status).toBe(404);
   });
 
-  test('another workspace cannot read a ticket by id', async () => {
-    const workflowId = (await call('POST', '/workflows', { body: { name: 'Private tickets' } }))
-      .body as { workflow: { id: string } };
-    const ticket = await call('POST', '/tickets', {
-      body: { workflowId: workflowId.workflow.id, title: 'Secret' }
-    });
-    const ticketId = (ticket.body as { ticket: { id: string } }).ticket.id;
+  test('another workspace cannot read a work item by id', async () => {
+    const objectTypeId = await createObjectTypeViaApi();
+    const workflowId = await createWorkflowViaApi({ name: 'Private work', objectTypeId });
+    const item = await startWorkViaApi({ workflowId, displayName: 'Secret' });
 
-    const result = await call('GET', `/tickets/${ticketId}`, { actor: outsider });
+    const result = await call('GET', `/workflow-items/${item.id}`, { actor: outsider });
     expect(result.status).toBe(404);
   });
 
-  test('listing tickets only ever returns the caller’s workspace', async () => {
-    const createdMine = (await call('POST', '/workflows', { body: { name: 'Mine' } })).body as {
-      workflow: { id: string };
-    };
-    await call('POST', '/tickets', {
-      body: { workflowId: createdMine.workflow.id, title: 'Mine' }
-    });
+  test('listing work items only ever returns the caller’s workspace', async () => {
+    const objectTypeId = await createObjectTypeViaApi();
+    const workflowId = await createWorkflowViaApi({ name: 'Mine', objectTypeId });
+    await startWorkViaApi({ workflowId, displayName: 'Mine' });
 
-    const mine = await call('GET', '/tickets');
+    const mine = await call('GET', '/workflow-items');
     expect((mine.body as { rows: unknown[] }).rows.length).toBe(1);
-    const theirs = await call('GET', '/tickets', { actor: outsider });
+    const theirs = await call('GET', '/workflow-items', { actor: outsider });
     expect((theirs.body as { rows: unknown[] }).rows.length).toBe(0);
   });
 });
@@ -508,12 +687,11 @@ describe('webhooks', () => {
   });
 
   test('a probe reveals only the trigger name', async () => {
-    const createdIntake = (await call('POST', '/workflows', { body: { name: 'Intake' } })).body as {
-      workflow: { id: string };
-    };
+    const objectTypeId = await createObjectTypeViaApi();
+    const createdIntake = await createWorkflowViaApi({ name: 'Intake', objectTypeId });
     const trigger = await call('POST', '/triggers', {
       body: {
-        workflowId: createdIntake.workflow.id,
+        workflowId: createdIntake,
         name: 'Inbound',
         type: 'webhook',
         config: { mapping: { titleTemplate: 'Inbound {{message.subject}}' } }

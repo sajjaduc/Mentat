@@ -28,7 +28,7 @@ export const GET: RequestHandler = async (event) => {
 
   const url = event.url;
   const runId = url.searchParams.get('runId');
-  const ticketId = url.searchParams.get('ticketId');
+  const workflowItemId = url.searchParams.get('workflowItemId');
   const sinceParam = url.searchParams.get('since');
   const since =
     sinceParam === null ? await currentHead(context.db, actor.workspaceId) : Number(sinceParam);
@@ -52,7 +52,7 @@ export const GET: RequestHandler = async (event) => {
             seq: entry.seq,
             type: entry.type,
             runId: entry.runId,
-            ticketId: entry.ticketId,
+            workflowItemId: entry.workflowItemId,
             data: entry.data,
             createdAt: entry.createdAt
           },
@@ -65,7 +65,7 @@ export const GET: RequestHandler = async (event) => {
         const missed = await listRunEvents(context.db, {
           workspaceId: actor.workspaceId,
           runId: runId ?? undefined,
-          ticketId: ticketId ?? undefined,
+          workflowItemId: workflowItemId ?? undefined,
           since: Number.isFinite(since) ? since : 0,
           limit: 500
         });
@@ -81,7 +81,7 @@ export const GET: RequestHandler = async (event) => {
         {
           workspaceId: actor.workspaceId,
           runId: runId ?? undefined,
-          ticketId: ticketId ?? undefined
+          workflowItemId: workflowItemId ?? undefined
         },
         sendEvent
       );

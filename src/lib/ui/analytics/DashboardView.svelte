@@ -4,7 +4,7 @@
  *
  * A responsive grid of widgets rendered from `POST /api/dashboards/:id/run`. The
  * dashboard's stored global filter and each widget's local filter are ANDed by the
- * server; the UI shows both, states that they use the same language as the ticket
+ * server; the UI shows both, states that they use the same language as the work item
  * list, and offers an additional *session* filter.
  *
  * The server's run handler accepts no request body yet, so a session filter is
@@ -63,7 +63,7 @@ const effectiveGlobalFilter = $derived(
   andOf([storedGlobalFilter, sessionFilter].filter((node): node is FilterAst => node !== null))
 );
 const globalFilterLabel = $derived(
-  isEmptyFilter(effectiveGlobalFilter) ? 'All tickets' : describeFilter(effectiveGlobalFilter)
+  isEmptyFilter(effectiveGlobalFilter) ? 'All work items' : describeFilter(effectiveGlobalFilter)
 );
 
 async function load() {
@@ -93,7 +93,7 @@ async function loadSupport() {
       .catch(() => undefined),
     api
       .get<{ fields: Array<{ key: string; name: string; type: string }> }>('/fields', {
-        scope: 'ticket'
+        scope: 'workflowItem'
       })
       .then(
         (response) =>
@@ -293,7 +293,7 @@ function gridSpan(size: DashboardWidget['size']): string {
         </div>
         <p class="text-[11px] leading-relaxed text-[var(--color-ink-subtle)]">
           The stored global filter and each widget's local filter are ANDed. Both use the same filter
-          language as the ticket list, so a saved view imports without translation. A session filter
+          language as the work item list, so a saved view imports without translation. A session filter
           is combined in the interface with the same AST combinator the server uses; the run endpoint
           does not accept a request filter yet, so it is not sent to the server.
         </p>
@@ -301,7 +301,7 @@ function gridSpan(size: DashboardWidget['size']): string {
           <FilterBuilder
             value={sessionFilter}
             allow={['system', 'field', 'state', 'workflow']}
-            ticketFields={fieldOptions}
+            workItemFields={fieldOptions}
             workflowOptions={workflows.map((entry) => ({ value: entry.id, label: entry.name }))}
             onchange={(next) => (sessionFilter = next)}
           />
@@ -318,7 +318,7 @@ function gridSpan(size: DashboardWidget['size']): string {
             <FilterBuilder
               value={storedGlobalFilter}
               allow={['system', 'field', 'state', 'workflow']}
-              ticketFields={fieldOptions}
+              workItemFields={fieldOptions}
               workflowOptions={workflows.map((entry) => ({ value: entry.id, label: entry.name }))}
               onchange={persistGlobalFilter}
             />

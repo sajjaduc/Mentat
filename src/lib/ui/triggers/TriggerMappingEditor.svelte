@@ -1,6 +1,6 @@
 <script lang="ts">
 /**
- * TriggerMappingEditor: the declarative payload → ticket mapping.
+ * TriggerMappingEditor: the declarative payload → work item mapping.
  *
  * A mapping is data, not code. Dot-paths select a value out of the incoming
  * payload, `{{path.to.value}}` templates compose several of them, and typed fields
@@ -8,7 +8,7 @@
  *
  * The strictness note is load-bearing: a title, dedupe key or field template that
  * references a path the payload does not contain fails the delivery. Silently
- * creating an empty ticket is the failure mode this mapping exists to prevent.
+ * creating an empty work item is the failure mode this mapping exists to prevent.
  */
 
 import { api, describeApiError } from '$ui/api';
@@ -34,7 +34,7 @@ type OptionalTextKey =
   | 'ownerUserId'
   | 'ownerTeamId'
   | 'dedupeTemplate'
-  | 'parentTicketPath';
+  | 'parentRecordPath';
 
 let fieldPaths = $state<Record<string, string>>(mapping.fieldPaths ?? {});
 let fieldTemplates = $state<Record<string, string>>(mapping.fieldTemplates ?? {});
@@ -106,7 +106,7 @@ const textHint = 'Use a dot path such as data.customer.email, or a list index su
   <p class="rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-muted)] px-3 py-2 text-xs leading-relaxed text-[var(--color-ink-subtle)]">
     Templates use <code class="font-mono">&#123;&#123;path.to.value&#125;&#125;</code> to read the incoming payload. A
     title, dedupe key or field template that references a path the payload does not contain
-    fails the delivery instead of silently creating an empty ticket. Description templates
+    fails the delivery instead of silently creating an empty work item. Description templates
     are lenient: a missing optional value simply produces no description.
   </p>
 
@@ -115,7 +115,7 @@ const textHint = 'Use a dot path such as data.customer.email, or a list index su
       label="Title path"
       value={mapping.titlePath ?? ''}
       placeholder="data.subject"
-      hint="A single payload value used verbatim as the ticket title."
+      hint="A single payload value used verbatim as the work item title."
       oninput={(event) => setText('titlePath', event.currentTarget.value)}
       class="font-mono"
     />
@@ -149,7 +149,7 @@ const textHint = 'Use a dot path such as data.customer.email, or a list index su
       placeholder="Use the trigger's workflow"
       options={workflowOptions}
       value={mapping.targetWorkflowId ?? ''}
-      hint="Send the mapped ticket to a different workflow than the trigger's own."
+      hint="Send the mapped work item to a different workflow than the trigger's own."
       onchange={(event) => onWorkflowChange(event.currentTarget.value)}
     />
     <div class="space-y-1.5">
@@ -187,7 +187,7 @@ const textHint = 'Use a dot path such as data.customer.email, or a list index su
       label="Owner user id"
       value={mapping.ownerUserId ?? ''}
       placeholder="usr_…"
-      hint="Assign every mapped ticket to this user."
+      hint="Assign every mapped work item to this user."
       oninput={(event) => setText('ownerUserId', event.currentTarget.value)}
       class="font-mono"
     />
@@ -195,7 +195,7 @@ const textHint = 'Use a dot path such as data.customer.email, or a list index su
       label="Owner team id"
       value={mapping.ownerTeamId ?? ''}
       placeholder="team_…"
-      hint="Assign every mapped ticket to this team."
+      hint="Assign every mapped work item to this team."
       oninput={(event) => setText('ownerTeamId', event.currentTarget.value)}
       class="font-mono"
     />
@@ -203,7 +203,7 @@ const textHint = 'Use a dot path such as data.customer.email, or a list index su
 
   <div class="grid gap-4 md:grid-cols-2">
     <div class="space-y-1.5">
-      <p class="text-xs font-medium text-[var(--color-ink-muted)]">Ticket fields from payload paths</p>
+      <p class="text-xs font-medium text-[var(--color-ink-muted)]">Work item fields from payload paths</p>
       <KeyValueEditor
         bind:value={fieldPaths}
         keyLabel="Field key"
@@ -216,7 +216,7 @@ const textHint = 'Use a dot path such as data.customer.email, or a list index su
       <p class="text-xs leading-relaxed text-[var(--color-ink-subtle)]">{textHint}</p>
     </div>
     <div class="space-y-1.5">
-      <p class="text-xs font-medium text-[var(--color-ink-muted)]">Ticket fields from templates</p>
+      <p class="text-xs font-medium text-[var(--color-ink-muted)]">Work item fields from templates</p>
       <KeyValueEditor
         bind:value={fieldTemplates}
         keyLabel="Field key"
@@ -253,17 +253,17 @@ const textHint = 'Use a dot path such as data.customer.email, or a list index su
     <Input
       label="Dedupe template"
       value={mapping.dedupeTemplate ?? ''}
-      placeholder="&#123;&#123;data.ticket_id&#125;&#125;"
-      hint="Same key means the same ticket. Pair with “Update on duplicate” to refresh it."
+      placeholder="&#123;&#123;data.record_id&#125;&#125;"
+      hint="Same key means the same work item. Pair with “Update on duplicate” to refresh it."
       oninput={(event) => setText('dedupeTemplate', event.currentTarget.value)}
       class="font-mono"
     />
     <Input
-      label="Parent ticket path"
-      value={mapping.parentTicketPath ?? ''}
-      placeholder="data.parent_ticket_id"
-      hint="Must resolve to an existing ticket id."
-      oninput={(event) => setText('parentTicketPath', event.currentTarget.value)}
+      label="Parent record path"
+      value={mapping.parentRecordPath ?? ''}
+      placeholder="data.parent_record_id"
+      hint="Must resolve to an existing record id."
+      oninput={(event) => setText('parentRecordPath', event.currentTarget.value)}
       class="font-mono"
     />
   </div>

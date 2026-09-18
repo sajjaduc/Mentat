@@ -32,7 +32,8 @@ export interface InvokeToolInput {
   input: Record<string, unknown>;
   actor: ActorContext;
   workspaceId: string;
-  ticketId?: string | null;
+  recordId?: string | null;
+  workflowItemId?: string | null;
   workflowId?: string | null;
   runId?: string | null;
   stepId?: string | null;
@@ -88,7 +89,8 @@ async function invokeNative(db: Executor, input: InvokeToolInput): Promise<Invok
     const result = await handler.execute(input.input, {
       actor: input.actor,
       db,
-      ticketId: input.ticketId ?? null,
+      recordId: input.recordId ?? null,
+      workflowItemId: input.workflowItemId ?? null,
       workflowId: input.workflowId ?? null,
       runId: input.runId ?? null,
       stepId: input.stepId ?? null,
@@ -152,7 +154,8 @@ async function invokeHttp(db: Executor, input: InvokeToolInput): Promise<InvokeT
       serviceId: implementation.serviceId,
       input: input.input,
       actor: input.actor,
-      ticketId: input.ticketId ?? null,
+      recordId: input.recordId ?? null,
+      workflowItemId: input.workflowItemId ?? null,
       workflowId: input.workflowId ?? null,
       runId: input.runId ?? null,
       stepId: input.stepId ?? null,

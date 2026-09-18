@@ -177,7 +177,7 @@ function webhookUrl(row: TriggerView): string | null {
     <div>
       <p class="text-sm font-semibold text-[var(--color-ink)]">Triggers</p>
       <p class="text-xs leading-relaxed text-[var(--color-ink-subtle)]">
-        Webhooks, schedules and on-demand entry points that turn an inbound signal into a ticket.
+        Webhooks, schedules and on-demand entry points that turn an inbound signal into a work item.
       </p>
     </div>
     <div class="flex items-center gap-2">
